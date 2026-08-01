@@ -12,6 +12,7 @@
 #include <vector>
 #include <set>
 #include "InputOverlay.hpp" // <-- GAMEPAD OVERLAY INCLUDED
+#include "Multiplayer.hpp"
 
 #ifndef IMNVNFUNC
 #define IMNVNFUNC __attribute__((visibility("default")))
@@ -739,6 +740,8 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
     if (InputOverlay::IsVisible()) {
         InputOverlay::Draw();
     }
+
+    Multiplayer::Draw();
 
     ImGui::Render();
     return ImGui::GetDrawData();

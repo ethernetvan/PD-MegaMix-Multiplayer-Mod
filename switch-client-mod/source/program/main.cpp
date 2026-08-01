@@ -24,6 +24,7 @@
 #include "imgui/imgui_nvn.h"
 #include "MotionImGui.hpp"
 #include "imgui/tenacity_font.h"
+#include "Multiplayer.hpp"
 
 // =========================================================
 // ADDRESSES & CONSTANTS (NSO = Ghidra - 0x100)
@@ -265,6 +266,8 @@ HOOK_DEFINE_TRAMPOLINE(FindOrCreateScoreHook) {
         
         DoForceRegister(id, g_scoreMap[id]);
         
+        Multiplayer::OnGameStateStart();
+
         return g_scoreMap[id];
     }
 };
@@ -387,6 +390,7 @@ HOOK_DEFINE_TRAMPOLINE(MainHook) {
             InitFreeCam();
             DebugMode::Init();
             MotionImGui::Init();
+            Multiplayer::Init();
         }
 
         FsHooks::Init();

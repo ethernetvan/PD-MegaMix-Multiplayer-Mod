@@ -7,13 +7,19 @@
 #include <set>
 
 bool Config::enableDebug = false;
+bool Config::enableMultiplayer = false;
+std::string Config::serverIp = "127.0.0.1";
+int Config::serverPort = 8080;
 std::string Config::modsDirectoryPath = "";
 std::vector<std::string> Config::priorityPaths;
 
 static void SaveConfig(const std::string& path) {
     std::string tomlContent = "# DML Switch Port - Global Configuration\n";
     tomlContent += "enabled = true\n";
-    tomlContent += "debug = " + std::string(Config::enableDebug ? "true" : "false") + "\n\n";
+    tomlContent += "debug = " + std::string(Config::enableDebug ? "true" : "false") + "\n";
+    tomlContent += "multiplayer = " + std::string(Config::enableMultiplayer ? "true" : "false") + "\n";
+    tomlContent += "server_ip = \"" + Config::serverIp + "\"\n";
+    tomlContent += "server_port = " + std::to_string(Config::serverPort) + "\n\n";
     tomlContent += "# Priority list (Top is highest priority).\n";
     tomlContent += "# New mods found on SD are automatically appended here.\n";
     tomlContent += "priority =[\n";
@@ -72,6 +78,9 @@ bool Config::init() {
         if (result) {
             auto config = std::move(result).table();
             enableDebug = config["debug"].value_or(false);
+            enableMultiplayer = config["multiplayer"].value_or(false);
+            serverIp = config["server_ip"].value_or("127.0.0.1");
+            serverPort = config["server_port"].value_or(8080);
             if (auto pArr = config["priority"].as_array()) {
                 for (auto& el : *pArr) {
                     std::string val = el.value_or("");
