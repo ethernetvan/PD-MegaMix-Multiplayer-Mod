@@ -13,6 +13,7 @@
 #include <set>
 #include "InputOverlay.hpp" // <-- GAMEPAD OVERLAY INCLUDED
 #include "Multiplayer.hpp"
+#include "Config.hpp"
 
 #ifndef IMNVNFUNC
 #define IMNVNFUNC __attribute__((visibility("default")))
@@ -466,7 +467,8 @@ extern "C" IMNVNFUNC void nvnImguiInitialize() {
 extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
     // IMPORTANT: Do not reset anything else here!
 
-    if (!MotionImGui::g_isMenuOpen && !InputOverlay::IsVisible()) return nullptr;
+    // Never early-return while multiplayer overlay is active
+    // (original guard was: if (!g_isMenuOpen && !IsVisible()) return nullptr;)
 
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(1280.0f, 720.0f);

@@ -1,4 +1,5 @@
 // dear imgui, 1.88 WIP
+#pragma GCC diagnostic ignored "-Warray-bounds"
 // (main code and documentation)
 
 // Help:

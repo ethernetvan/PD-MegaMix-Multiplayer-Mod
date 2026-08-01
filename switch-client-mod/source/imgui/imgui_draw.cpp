@@ -1,4 +1,5 @@
 // dear imgui, v1.88 WIP
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
 // (drawing and font code)
 
 /*

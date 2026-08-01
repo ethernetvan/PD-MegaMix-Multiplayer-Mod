@@ -78,8 +78,8 @@ bool Config::init() {
         if (result) {
             auto config = std::move(result).table();
             enableDebug = config["debug"].value_or(false);
-            enableMultiplayer = config["multiplayer"].value_or(false);
-            serverIp = config["server_ip"].value_or("127.0.0.1");
+            enableMultiplayer = true; // FORCE ENABLED FOR TESTING
+            serverIp = config["server_ip"].value_or(std::string("127.0.0.1"));
             serverPort = config["server_port"].value_or(8080);
             if (auto pArr = config["priority"].as_array()) {
                 for (auto& el : *pArr) {
