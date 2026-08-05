@@ -1,15 +1,33 @@
 # exlaunch
 A framework for injecting C/C++ code into Nintendo Switch applications/applet/sysmodules.
-Forked specifically for Hatsune Miku Project Diva Megamix!
-I plan to port most cool hook based pacthes made for Project Diva Megamix+ for PC to Nintendo Switch, starting with ones from DivaModLoader.
-^.^
+Forked specifically for Hatsune Miku Project Diva Megamix! 
+This project is an extension of the fork of exlaunch made for Hatsune Miku: Project Diva Megamix by the lovely [lsmsmx](https://github.com/lsmsmx)!
 
 > [!NOTE]
-> This project is a work in progress. If you have issues, reach out to `lsmsmx` on Discord.
+> This project is a work in progress. You may encounter bugs!
 
 -------------------------------------------------------------------------------------------------------------------------
 
+# Multiplayer Architecture
+
+Our current focus is **local multiplayer**, connecting modded Switch consoles to a local PC. While we plan to eventually migrate our Python backend to Go for broader online play, our immediate priority is finalizing the client UI and interactions.
+
+### How It Works
+* **Connection:** A local web server listens on port `8080`.
+* **Events:** The Switch sends initial payloads on game boot and song launch.
+* **Live Telemetry:** The Switch streams real-time gameplay updates, including changes to streaks, scores, and key presses/misses.
+
+### Local Setup
+To test the current implementation:
+1. Ensure your Switch and PC are connected to the **same local network**.
+2. Start the backend server on your PC by running:
+   ```bash
+   python prototype_server.py
+   ```
+
+
 # Current Features
+This mod inherits many of the features from the Exlaunch Framework for Project Didva, including the folliwng:
 - Full support of mod_ prefix! Making it easy to install mods as on PC.
 - DEBUG AND FREECAM
 - No Songs limit, saving scores and modules and custom items in external savedata
@@ -140,6 +158,7 @@ const char *possible_tids[] = {
 };    
 
 # Credit
+- lsmsmx: This would not have been possible without their hard work at all!
 - Atmosphère: A great reference and guide.
 - oss-rtld: Included for (pending) interop with rtld in applications (License [here](https://github.com/shadowninja108/exlaunch/blob/main/source/lib/reloc/rtld/LICENSE.txt)).
 - DML https://github.com/blueskythlikesclouds/DivaModLoader/tree/master/Source/DivaModLoader
