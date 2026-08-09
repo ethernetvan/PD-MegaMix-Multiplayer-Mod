@@ -444,7 +444,7 @@ namespace DebugMode {
                 g_transitionTimer--;
                 if (g_transitionTimer == 0 && g_targetState != GameState::MAX) {
                     ChangeGameSubState(g_targetState, g_targetSubState);
-                    Multiplayer::OnGameStateStart();
+                    Multiplayer::OnGameStateStart(0, nullptr);
                     g_targetState = GameState::MAX;
                     g_targetSubState = GameSubState::MAX;
                 }

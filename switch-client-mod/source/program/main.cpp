@@ -266,7 +266,7 @@ HOOK_DEFINE_TRAMPOLINE(FindOrCreateScoreHook) {
         
         DoForceRegister(id, g_scoreMap[id]);
         
-        Multiplayer::OnGameStateStart();
+        Multiplayer::OnGameStateStart(id, g_scoreMap[id]);
 
         return g_scoreMap[id];
     }
@@ -278,7 +278,9 @@ HOOK_DEFINE_TRAMPOLINE(FindScoreHook) {
         if (res || id <= 0) return res;
         
         std::scoped_lock lock(g_SaveMtx);
-        return g_scoreMap.count(id) ? g_scoreMap[id] : nullptr;
+        void* ptr = g_scoreMap.count(id) ? g_scoreMap[id] : nullptr;
+        Multiplayer::OnGameStateStart(id, ptr);
+        return ptr;
     }
 };
 
@@ -398,7 +400,6 @@ HOOK_DEFINE_TRAMPOLINE(MainHook) {
         Orig();
     }
 };
-
 
 extern "C" void exl_main(void* x0, void* x1) {
 
