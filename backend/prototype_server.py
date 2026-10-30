@@ -73,10 +73,32 @@ def start_prototype_server(switch_ip):
     for offset in range(-0x800000, 0x800000, chunk_size):
         addr = search_base + offset
         data = read_absolute(s, addr, chunk_size)
-        idx = data.find(MAGIC)
-        if idx != -1:
-            state_addr = addr + idx
-            print(f"Found MultiplayerState at 0x{state_addr:X}!")
+        
+        idx = 0
+        while True:
+            idx = data.find(MAGIC, idx)
+            if idx == -1:
+                break
+                
+            candidate_addr = addr + idx
+            
+            # Found the magic! Let's check if it's the real struct and not the string literal in .rodata
+            # We know the real struct has is_open == 1 right after the 16-byte magic
+            if idx + 40 <= len(data):
+                struct_data = data[idx:idx+40]
+            else:
+                struct_data = read_absolute(s, candidate_addr, 40)
+                
+            if len(struct_data) >= 40:
+                magic_bytes, is_open = struct.unpack('<16sI', struct_data[:20])
+                if is_open == 1:
+                    state_addr = candidate_addr
+                    break
+                    
+            idx += len(MAGIC)
+            
+        if state_addr != 0:
+            print(f"Found REAL MultiplayerState at 0x{state_addr:X}!")
             break
     
     if state_addr == 0:
@@ -110,13 +132,14 @@ def start_prototype_server(switch_ip):
                 time.sleep(5)
                 continue
             
-            if pv_id != last_song_started:
-                if pv_id > 0:
-                    print(f"SONG SELECTED / PLAYING! PV ID: {pv_id}")
-                    if score_ptr != 0:
-                        print(f"Saved Score Struct located at: 0x{score_ptr:X}")
-                
-            last_song_started = pv_id
+            if is_song_started != last_song_started:
+                if is_song_started == 1:
+                    print(f"\n--- RHYTHM GAME STARTED! ---")
+                    print(f"PV ID query bouncing around: {pv_id}")
+                else:
+                    print(f"\n--- RHYTHM GAME ENDED / MENU ---")
+                    
+            last_song_started = is_song_started
             
             time.sleep(0.5) # Poll twice a second
             

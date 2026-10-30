@@ -275,12 +275,31 @@ HOOK_DEFINE_TRAMPOLINE(FindOrCreateScoreHook) {
 HOOK_DEFINE_TRAMPOLINE(FindScoreHook) {
     static void* Callback(void* mgr, int32_t id) {
         void* res = Orig(mgr, id);
-        if (res || id <= 0) return res;
+        if (res) {
+            Multiplayer::OnGameStateStart(id, res);
+            return res;
+        }
+        
+        if (id <= 0) return nullptr;
         
         std::scoped_lock lock(g_SaveMtx);
         void* ptr = g_scoreMap.count(id) ? g_scoreMap[id] : nullptr;
         Multiplayer::OnGameStateStart(id, ptr);
         return ptr;
+    }
+};
+
+// --- NEW HOOKS FOR GAME STATE ---
+
+HOOK_DEFINE_TRAMPOLINE(ChangeGameSubStateHook) {
+    static void Callback(uint32_t state, int32_t substate) {
+        Orig(state, substate);
+        // State 9, Substate 5 = GAME (Rhythm Game Playing)
+        if (state == 9 && substate == 5) {
+            Multiplayer::SetSongStarted(true);
+        } else {
+            Multiplayer::SetSongStarted(false);
+        }
     }
 };
 
@@ -423,6 +442,9 @@ extern "C" void exl_main(void* x0, void* x1) {
     SaveManagerHook::InstallAtOffset(ADDR_SAVE_MANAGER);
     InitBoot2Hook::InstallAtOffset(ADDR_INIT_BOOT_2);
     SyncManagerHook::InstallAtOffset(ADDR_SYNC_MANAGER);
+    
+    // Using ADDR_CHANGE_GAME_SUB_STATE defined in DebugMode.cpp
+    ChangeGameSubStateHook::InstallAtOffset(FIX(0x00216810));
     
     FindModuleHook::InstallAtOffset(ADDR_FIND_MODULE_1);
     FindModule2Hook::InstallAtOffset(ADDR_FIND_MODULE_2);
