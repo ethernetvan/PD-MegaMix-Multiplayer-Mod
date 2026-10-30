@@ -30,6 +30,15 @@ struct Config {
     static int seBoost;
     static bool acapellaMode;
 
+    // Multiplayer
+    static bool mpEnabled;
+    static std::string mpServerIp;
+    static int mpServerPort;
+    static int mpDiscoveryPort;
+    static std::string mpPlayerName;
+    static bool mpShowStatus;
+    static std::string mpClientId;
+
     // Graphics
     static bool disableAdp;
     static bool enableSss;
@@ -98,4 +107,5 @@ struct Config {
     static uint32_t refractH;
 
     static bool init();
+    static void Save();
 };

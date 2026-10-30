@@ -3,6 +3,8 @@
 #include "lib.hpp"
 #include "fs.hpp"
 #include "hid.hpp"
+#include <nn/os.hpp>
+#include <cstdio>
 #include <cstring>
 #include <algorithm>
 #include <set>
@@ -34,6 +36,15 @@ int Config::bgmBoost = 0;
 int Config::btnBoost = 0;
 int Config::seBoost = 0;
 bool Config::acapellaMode = false;
+
+// Multiplayer
+bool Config::mpEnabled = true;
+std::string Config::mpServerIp = "";
+int Config::mpServerPort = 7777;
+int Config::mpDiscoveryPort = 7778;
+std::string Config::mpPlayerName = "Player";
+bool Config::mpShowStatus = true;
+std::string Config::mpClientId = "";
 
 // Graphics
 bool Config::disableAdp = false;
@@ -99,6 +110,16 @@ uint32_t Config::refractW = 1024;
 uint32_t Config::refractH = 512;
 
 bool Config::enableFtUi = false;
+
+static std::string EscapeTomlString(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        if (c == '\\' || c == '"') out += '\\';
+        out += c;
+    }
+    return out;
+}
 
 static void SaveConfig(const std::string& path) {
     std::string tomlContent = "# =========================================================\n";
@@ -283,6 +304,18 @@ static void SaveConfig(const std::string& path) {
     tomlContent += "#   - Click L3                 : Toggle Engine Mouse (LStick+Y: Move, ZL/ZR: Clicks)\n";
     tomlContent += "#   - Hold R3 + D-Pad Up/Down  : Select Debug Scene (Press A to load)\n\n";
 
+    tomlContent += "[multiplayer]\n";
+    tomlContent += "# LAN multiplayer client: connects to a PC server over TCP\n";
+    tomlContent += "enabled = " + std::string(Config::mpEnabled ? "true" : "false") + "\n";
+    tomlContent += "# Leave empty to auto-discover the server over UDP broadcast\n";
+    tomlContent += "server_ip = \"" + EscapeTomlString(Config::mpServerIp) + "\"\n";
+    tomlContent += "server_port = " + std::to_string(Config::mpServerPort) + "\n";
+    tomlContent += "discovery_port = " + std::to_string(Config::mpDiscoveryPort) + "\n";
+    tomlContent += "player_name = \"" + EscapeTomlString(Config::mpPlayerName) + "\"\n";
+    tomlContent += "show_status = " + std::string(Config::mpShowStatus ? "true" : "false") + "\n";
+    tomlContent += "# Auto-generated stable client id; do not edit\n";
+    tomlContent += "client_id = \"" + Config::mpClientId + "\"\n\n";
+
     tomlContent += "[leftover]\n";
     tomlContent += "# Master toggle for FT UI (its dead so dont enable it)\n";
     tomlContent += "ft_ui = " + std::string(Config::enableFtUi ? "true" : "false") + "\n";
@@ -407,6 +440,15 @@ bool Config::init() {
             refractW = (uint32_t)config["graphics"]["advanced"]["refract_w"].value_or(1024);
             refractH = (uint32_t)config["graphics"]["advanced"]["refract_h"].value_or(512);
 
+            // Multiplayer
+            mpEnabled = config["multiplayer"]["enabled"].value_or(true);
+            mpServerIp = config["multiplayer"]["server_ip"].value_or("");
+            mpServerPort = config["multiplayer"]["server_port"].value_or(7777);
+            mpDiscoveryPort = config["multiplayer"]["discovery_port"].value_or(7778);
+            mpPlayerName = config["multiplayer"]["player_name"].value_or("Player");
+            mpShowStatus = config["multiplayer"]["show_status"].value_or(true);
+            mpClientId = config["multiplayer"]["client_id"].value_or("");
+
             enableFtUi = config["leftover"]["ft_ui"].value_or(false);
         }
     }
@@ -428,13 +470,29 @@ bool Config::init() {
         }
     }
 
-    if (atmoPath.empty()) return true;
+    /* client_id must not depend on the atmosphere dir existing. */
+    bool idGenerated = false;
+    if (mpClientId.empty()) {
+        uint64_t seed = exl::util::GetRandomU64() ^
+                        nn::os::GetSystemTick().GetInt64Value() ^
+                        (nn::os::GetSystemTick().GetInt64Value() << 32);
+        char id[17];
+        snprintf(id, sizeof(id), "%016llx", (unsigned long long)seed);
+        mpClientId = id;
+        idGenerated = true;
+    }
+
+    if (atmoPath.empty()) {
+        if (idGenerated || !configExists)
+            SaveConfig(configPath);
+        return true;
+    }
 
     modsDirectoryPath = atmoPath + "/romfs/mods";
     nn::fs::CreateDirectory(modsDirectoryPath.c_str());
 
 
-    bool configChanged = !configExists;
+    bool configChanged = !configExists || idGenerated;
 
     if(enableMods) {
         // Scan SD card for mods
@@ -487,4 +545,8 @@ bool Config::init() {
 
     return true;
 
+}
+
+void Config::Save() {
+    SaveConfig("ExlSD:/MikuMikuSwitchPlugin/config.toml");
 }

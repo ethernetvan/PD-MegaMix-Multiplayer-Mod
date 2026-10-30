@@ -36,6 +36,19 @@ struct SongEntry {
 };
 
 static std::vector<SongEntry> s_songDb;
+
+bool GetSongDbEntry(int i, int32_t* id, char* name, size_t nameCap) {
+    if (i < 0 || (size_t)i >= s_songDb.size()) return false;
+    *id = s_songDb[i].id;
+    const std::string& n = s_songDb[i].name_en.empty()
+        ? s_songDb[i].name_jp : s_songDb[i].name_en;
+    size_t ln = n.size();
+    if (ln > 24) ln = 24;
+    if (ln > nameCap - 1) ln = nameCap - 1;
+    memcpy(name, n.data(), ln);
+    name[ln] = 0;
+    return true;
+}
 static bool s_isPvSelActive = false;
 static char s_inputBuf[256] = "";
 
@@ -204,6 +217,43 @@ static std::vector<std::string> ExtractAlnumWords(const std::string& str) {
     return words;
 }
 
+int32_t FindPvByName(const char* name) {
+    if (!name || !*name) return -1;
+    std::string cleanQuery = CleanUtf8String(name);
+    if (cleanQuery.empty()) return -1;
+    std::string lowerQuery = ToLowerAscii(cleanQuery);
+    for (const auto& entry : s_songDb) {
+        if (entry.name_jp == cleanQuery) return entry.id;
+        if (!entry.name_en.empty() &&
+            ToLowerAscii(entry.name_en) == lowerQuery) return entry.id;
+    }
+    for (const auto& entry : s_songDb) {
+        if (!entry.name_jp.empty() &&
+            entry.name_jp.find(cleanQuery) != std::string::npos)
+            return entry.id;
+        if (!entry.name_en.empty() &&
+            ToLowerAscii(entry.name_en).find(lowerQuery) != std::string::npos)
+            return entry.id;
+    }
+    return -1;
+}
+
+bool PvInDb(int32_t pv) { return DoesPvExistInDb(pv); }
+
+bool PvName(int32_t pv, char* name, size_t nameCap) {
+    for (const auto& e : s_songDb) {
+        if (e.id == pv) {
+            const std::string& n = e.name_en.empty() ? e.name_jp : e.name_en;
+            size_t ln = n.size();
+            if (ln > nameCap - 1) ln = nameCap - 1;
+            memcpy(name, n.data(), ln);
+            name[ln] = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
 static int32_t ResolvePvId(const std::string& rawQuery) {
     std::string cleanQuery = CleanUtf8String(rawQuery);
     if (cleanQuery.empty()) return -1;
@@ -265,58 +315,73 @@ static void ExecuteSearchAndJump() {
     }
 }
 
-static void ProcessJumpLogic() {
-    if (s_targetPvId <= 0) return;
+/* The selector write sequence from ProcessJumpLogic, factored for reuse.
+ * keepDifficulty=false reproduces the original (difficulty 3 / edition 0);
+ * keepDifficulty=true (MP) preserves current difficulty/edition and skips
+ * the sort-filter sound effect. Returns false if sel is null. */
+bool JumpSelectorToPv(void* selPtr, int32_t pvId, bool keepDifficulty) {
+    if (selPtr == nullptr || pvId <= 0) return false;
 
     uintptr_t base = exl::util::GetMainModuleInfo().m_Total.m_Start;
     uintptr_t pv_info = base + OFFSET_GLOBAL_PV_INFO;
+    uintptr_t sel = reinterpret_cast<uintptr_t>(selPtr);
 
-    if (s_selectorPtr != nullptr) {
-        uintptr_t sel = reinterpret_cast<uintptr_t>(s_selectorPtr);
+    int32_t mode = *reinterpret_cast<int32_t*>(sel + 0x26198);
+    if (mode < 0 || mode > 3) mode = 1;
 
-        int32_t mode = *reinterpret_cast<int32_t*>(sel + 0x26198);
-        if (mode < 0 || mode > 3) mode = 1;
-
-        int32_t all_folder = 19;
-        switch (mode) {
-            case 0: all_folder = 10; break;
-            case 1: all_folder = 19; break;
-            case 2: all_folder = 6;  break;
-            case 3: all_folder = 5;  break;
-        }
-
-        *reinterpret_cast<int32_t*>(sel + 0x261A0) = 3;
-        *reinterpret_cast<int32_t*>(sel + 0x261A4) = 0;
-
-        int32_t list_idx = (8 * mode) + (2 * 3) + 0;
-        uintptr_t extreme_vec_ptr = sel + 0x25DD0 + (list_idx * 0x18);
-        *reinterpret_cast<uintptr_t*>(sel + 0x260D0) = extreme_vec_ptr;
-
-        auto CreateSortedPVList = reinterpret_cast<CreateSortedPVList_t>(base + ADDR_CREATE_SORTED_PV_LIST);
-        CreateSortedPVList(reinterpret_cast<void*>(sel));
-
-        *reinterpret_cast<int32_t*>(sel + 0x2617C) = s_targetPvId;
-        *reinterpret_cast<int32_t*>(sel + 0x26184 + (mode * 4)) = all_folder;
-
-        int32_t* folder_ptr = reinterpret_cast<int32_t*>(sel + 0x26184 + (mode * 4));
-        *reinterpret_cast<int32_t**>(sel + 0x26118) = folder_ptr;
-
-        *reinterpret_cast<int32_t*>(sel + 0x26194) = 1;
-
-        *reinterpret_cast<int32_t*>(pv_info + 0x04) = s_targetPvId;
-        *reinterpret_cast<int32_t*>(pv_info + 0x08) = mode;
-        *reinterpret_cast<int32_t*>(pv_info + 0x0C) = 3;
-        *reinterpret_cast<int32_t*>(pv_info + 0x10) = all_folder;
-
-        *reinterpret_cast<uint8_t*>(sel + 0x25998) = 0;
-        *reinterpret_cast<uint8_t*>(sel + 0x25999) = 1;
-
-        auto ChangeSortFilter = reinterpret_cast<ChangeSortFilter_t>(base + ADDR_CHANGE_SORT_FILTER);
-        ChangeSortFilter(reinterpret_cast<void*>(sel), 0);
-
-        sound::PlaySoundEffectWrapped("se_ft_music_selector_sortfilter_change_01", 1.0f);
+    int32_t all_folder = 19;
+    switch (mode) {
+        case 0: all_folder = 10; break;
+        case 1: all_folder = 19; break;
+        case 2: all_folder = 6;  break;
+        case 3: all_folder = 5;  break;
     }
 
+    int32_t difficulty = 3, edition = 0;
+    if (keepDifficulty) {
+        difficulty = *reinterpret_cast<int32_t*>(sel + 0x261A0);
+        edition    = *reinterpret_cast<int32_t*>(sel + 0x261A4);
+    } else {
+        *reinterpret_cast<int32_t*>(sel + 0x261A0) = difficulty;
+        *reinterpret_cast<int32_t*>(sel + 0x261A4) = edition;
+    }
+
+    int32_t list_idx = (8 * mode) + (2 * difficulty) + edition;
+    uintptr_t extreme_vec_ptr = sel + 0x25DD0 + (list_idx * 0x18);
+    *reinterpret_cast<uintptr_t*>(sel + 0x260D0) = extreme_vec_ptr;
+
+    auto CreateSortedPVList = reinterpret_cast<CreateSortedPVList_t>(base + ADDR_CREATE_SORTED_PV_LIST);
+    CreateSortedPVList(selPtr);
+
+    *reinterpret_cast<int32_t*>(sel + 0x2617C) = pvId;
+    *reinterpret_cast<int32_t*>(sel + 0x26184 + (mode * 4)) = all_folder;
+
+    int32_t* folder_ptr = reinterpret_cast<int32_t*>(sel + 0x26184 + (mode * 4));
+    *reinterpret_cast<int32_t**>(sel + 0x26118) = folder_ptr;
+
+    *reinterpret_cast<int32_t*>(sel + 0x26194) = 1;
+
+    *reinterpret_cast<int32_t*>(pv_info + 0x04) = pvId;
+    *reinterpret_cast<int32_t*>(pv_info + 0x08) = mode;
+    if (!keepDifficulty)
+        *reinterpret_cast<int32_t*>(pv_info + 0x0C) = difficulty;
+    *reinterpret_cast<int32_t*>(pv_info + 0x10) = all_folder;
+
+    *reinterpret_cast<uint8_t*>(sel + 0x25998) = 0;
+    *reinterpret_cast<uint8_t*>(sel + 0x25999) = 1;
+
+    auto ChangeSortFilter = reinterpret_cast<ChangeSortFilter_t>(base + ADDR_CHANGE_SORT_FILTER);
+    ChangeSortFilter(selPtr, 0);
+
+    if (!keepDifficulty)
+        sound::PlaySoundEffectWrapped("se_ft_music_selector_sortfilter_change_01", 1.0f);
+    return true;
+}
+
+static void ProcessJumpLogic() {
+    if (s_targetPvId <= 0) return;
+    if (s_selectorPtr != nullptr)
+        JumpSelectorToPv(s_selectorPtr, s_targetPvId, false);
     s_targetPvId = -1;
 }
 

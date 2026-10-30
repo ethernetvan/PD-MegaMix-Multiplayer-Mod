@@ -7,20 +7,20 @@
 LOAD_KIND := Module
 
 # Program you're targetting. Used to determine where to deploy your files.
-PROGRAM_ID := 0100801011c3e000
+PROGRAM_ID := 01001CC00FA1A000
 
 # Optional path to copy the final ELF to, for convenience.
 ELF_EXTRACT :=
 
 # Python command to use. Must be Python 3.4+.
-PYTHON := python3
+PYTHON := python
 
 # JSON to use to make .npdm
 NPDM_JSON := qlaunch.json
 
 # Additional C/C++ flags to use.
-C_FLAGS := 
-CXX_FLAGS := 
+C_FLAGS := -Wno-error
+CXX_FLAGS := -Wno-error
 
 # AsRtld settings
 #------------------------
@@ -38,4 +38,4 @@ FTP_USERNAME := anonymous
 FTP_PASSWORD :=
 
 # Settings for deploying to Ryu. Used by the deploy-ryu.sh script.
-RYU_PATH := /mnt/c/Users/shado/AppData/Roaming/Ryujinx
+RYU_PATH := /c/Users/cl672/AppData/Roaming/Ryujinx

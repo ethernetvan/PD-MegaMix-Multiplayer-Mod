@@ -9,6 +9,7 @@
 #include "ImGui.hpp"
 #include "imgui/imgui.h"
 #include "overlays/VirtualKeyboard.hpp"
+#include "mp/MpInput.hpp"
 
 namespace keyboard {
 
@@ -200,6 +201,8 @@ namespace keyboard {
         if (Config::enableTouch || DebugMode::g_DebugModeEnabled || ImGui::g_isMenuOpen) {
             TouchSlider::Update(state);
         }
+
+        mp::input::Apply(state);
     }
 
     HOOK_DEFINE_TRAMPOLINE(GetNpadStateHandheldHook) {

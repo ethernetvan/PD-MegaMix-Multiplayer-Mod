@@ -6,6 +6,7 @@
 #include "common.hpp"
 #include "result.hpp"
 #include "../../ModLoader.hpp"
+#include "../../mp/MpNet.hpp"
 #include <unordered_set>
 
 static std::unordered_set<void*> patched_scene_controllers;
@@ -124,6 +125,7 @@ HOOK_DEFINE_TRAMPOLINE(StageResultSwitchInitHook) {
 		prj::string_view strv;
 		aet::LoadAetSet(results::AetSetID, &out);
 		spr::LoadSprSet(results::SprSetID, &strv);
+		mp::OnStageResult(true);
 		return Orig(a1);
 	}
 };
@@ -147,6 +149,7 @@ HOOK_DEFINE_TRAMPOLINE(StageResultSwitchDestHook) {
 
 		aet::UnloadAetSet(results::AetSetID);
 		spr::UnloadSprSet(results::SprSetID);
+		mp::OnStageResult(false);
 		return Orig(a1);
 	}
 };

@@ -7,6 +7,13 @@
 #include <lib/reloc/reloc.hpp>
 #include <lib/util/sys/mem_layout.hpp>
 
+namespace nn::hid { struct NpadHandheldState; }
+namespace mp::input {
+    void BeginBypass();
+    void EndBypass();
+    void Apply(::nn::hid::NpadHandheldState* st);
+}
+
 namespace nn::hid {
     inline bool g_keyboardModeEnabled = false;
 
@@ -120,10 +127,13 @@ namespace nn::hid {
 
         NpadHandheldState merged = {};
 
+        mp::input::BeginBypass();
         if (GetNpadStateHandheld) {
             GetNpadStateHandheld(&merged, CONTROLLER_HANDHELD);
             if ((merged.attributes & 1) != 0) {
+                mp::input::EndBypass();
                 keyboard::Inject(&merged);
+                mp::input::Apply(&merged);
                 cached_state = merged;
                 return merged;
             }
@@ -139,10 +149,12 @@ namespace nn::hid {
         NpadHandheldState sFK = {}, sJD = {};
         if (GetNpadStateFullKey) GetNpadStateFullKey(&sFK, CONTROLLER_PLAYER_1);
         if (GetNpadStateJoyDual) GetNpadStateJoyDual(&sJD, CONTROLLER_PLAYER_1);
+        mp::input::EndBypass();
         merged.buttons |= sFK.buttons | sJD.buttons;
         merge_sticks(sFK); merge_sticks(sJD);
 
         keyboard::Inject(&merged);
+        mp::input::Apply(&merged);
 
         cached_state = merged;
         return merged;

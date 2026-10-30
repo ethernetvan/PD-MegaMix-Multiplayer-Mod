@@ -37,6 +37,9 @@
 
 #include "MemoryHooks.hpp"
 
+#include "mp/MpApi.hpp"
+#include "mp/MpNet.hpp"
+
 #include "logger.hpp"
 
 #define MOUNT_NAME          "ExlSD"
@@ -57,6 +60,9 @@ HOOK_DEFINE_TRAMPOLINE(MainHook) {
         nn::fs::MountSdCardForDebug(MOUNT_NAME);
 
         Config::init();
+        mp::InstallSocketGuards();
+        if (Config::mpEnabled)
+            mp::Init();
         ModLoader::init();
         DebugMode::Init();
         ApplyCustomPatches();

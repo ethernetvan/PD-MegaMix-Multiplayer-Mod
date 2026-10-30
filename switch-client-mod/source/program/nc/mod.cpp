@@ -24,6 +24,7 @@
 #include "ui/result.hpp"
 
 #include "../ChartRandomizer.hpp"
+#include "../mp/MpNet.hpp"
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -69,6 +70,7 @@ HOOK_DEFINE_TRAMPOLINE(TaskPvGameInitHook) {
 // 2. TaskPvGameCtrl (0x64c940)
 HOOK_DEFINE_TRAMPOLINE(TaskPvGameCtrlHook) {
 	static bool Callback(uint64_t a1) {
+		bool ret = false;
 		if (!state.files_loaded)
 		{
 			bool aet_loading = aet::CheckAetSetLoading(AetSetID);
@@ -87,7 +89,9 @@ HOOK_DEFINE_TRAMPOLINE(TaskPvGameCtrlHook) {
 			}
 		}
 
-		return Orig(a1);
+		ret = Orig(a1);
+		mp::OnPvGameFrame();
+		return ret;
 	}
 };
 

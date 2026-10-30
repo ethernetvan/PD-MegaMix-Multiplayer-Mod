@@ -9,6 +9,7 @@
 
 #include "../../overlays/Hints.hpp"
 #include "../../overlays/SongQuickJump.hpp"
+#include "../../mp/MpNet.hpp"
 
 struct PVSelectorSwitch
 {
@@ -232,6 +233,7 @@ HOOK_DEFINE_TRAMPOLINE(PVSelectorSwitchInitHook) {
             pvsel::gs_win = std::make_unique<pvsel::GSWindow>();
             pvsel::gs_win->SetPreferredStyle(nc::GetSharedData().pv_sel_selected_style);
         }
+        mp::OnPvSelInit();
         return Orig(a1);
     }
 };
@@ -285,6 +287,7 @@ HOOK_DEFINE_TRAMPOLINE(PVSelectorSwitchCtrlHook) {
 
         SetGlobalStateSelectedData(sel);
         nc::GetSharedData().pv_sel_selected_style = pvsel::GetPreferredStyleOrDefault();
+        mp::OnPvSelFrame(sel);
         return ret;
     }
 };
@@ -292,6 +295,7 @@ HOOK_DEFINE_TRAMPOLINE(PVSelectorSwitchCtrlHook) {
 HOOK_DEFINE_TRAMPOLINE(PVSelectorSwitchDestHook) {
     static bool Callback(uint64_t a1) {
 
+        mp::OnPvSelDest();
         Hints::SetPvSelActive(false);
         Hints::SetSongConfirmActive(false);
         SongQuickJump::SetPvSelActive(false);
