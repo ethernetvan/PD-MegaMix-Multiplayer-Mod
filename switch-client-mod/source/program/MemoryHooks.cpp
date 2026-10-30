@@ -272,28 +272,12 @@ namespace MemoryHooks {
         }
     };
 
-    // FREE (0x0004bdf0) - TRACK LARGE DEALLOCATIONS
+    // FREE (0x0004bdf0)
+    // No StandardAllocator::GetSizeOf here: on hardware the SDK aborts when
+    // the pointer belongs to a different allocator (e.g. ImGui's font atlas
+    // on the first frame), crashing the game at boot.
     HOOK_DEFINE_TRAMPOLINE(SegaFreeHook) {
         static void Callback(void* ptr) {
-            if (ptr != nullptr) {
-                EnsureSdkAllocators();
-                uintptr_t base = exl::util::GetMainModuleInfo().m_Total.m_Start;
-                uintptr_t ptrVal = reinterpret_cast<uintptr_t>(ptr);
-
-                uintptr_t largeStart = base + 0x14ceb000;
-                uintptr_t largeEnd   = largeStart + 0x38400000;
-                void* srcPool = (ptrVal >= largeStart && ptrVal < largeEnd)
-                                    ? reinterpret_cast<void*>(base + 0x4d0eb000)
-                                    : reinterpret_cast<void*>(base + 0x4d0eb048);
-
-                if (s_StdGetSizeOfFn) {
-                    size_t freedSize = s_StdGetSizeOfFn(srcPool, ptr);
-                    if (freedSize >= 1024 * 1024) {
-                        uintptr_t caller, parent;
-                        GetCallers(caller, parent);
-                    }
-                }
-            }
             Orig(ptr);
         }
     };
