@@ -1,5 +1,9 @@
 # MegaMix Switch Multiplayer Mod — agent notes
 
+Current status, design and the prioritized open-work list: `docs/MULTIPLAYER_STATUS.md`.
+Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\tools\`:
+`drive.py` (admin taps/screens for Ryujinx), `v1run.sh` (rebuild + Ryujinx + bot round), `nx.py` (real Switch).
+
 ## Target
 - Hatsune Miku Project DIVA Mega Mix, EN, TID `01001CC00FA1A000`, update **1.0.6** (v393216), main build ID `179265bd41f7781dac979e77702011241b442ba1`.
 - All `InstallAtOffset` / `base + 0x...` offsets in `switch-client-mod/source/program` are main-module offsets for that build.
