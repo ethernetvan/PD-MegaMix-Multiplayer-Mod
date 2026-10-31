@@ -201,6 +201,7 @@ function ActivityFeed({ l }: { l: LobbySnap }) {
 function AdminPanel({ l }: { l: LobbySnap }) {
   const { socket, toast, state } = useStore();
   const [confirm, setConfirm] = useState<string | null>(null);
+  const [assigning, setAssigning] = useState(false);
   const act = async (msg: Record<string, unknown>) => {
     try {
       const r = await socket.action({ lobby: l.code, ...msg });
@@ -217,13 +218,25 @@ function AdminPanel({ l }: { l: LobbySnap }) {
         {modes.map((m) => (
           <button
             key={m}
-            className={`seg-btn${l.pick_mode === m ? " on" : ""}`}
-            onClick={() => act({ op: "set_pick_mode", mode: m })}
+            className={`seg-btn${
+              l.pick_mode === m || (m === "assigned" && assigning) ? " on" : ""
+            }`}
+            onClick={() => {
+              if (m === "assigned" && l.pick_mode !== "assigned") {
+                setAssigning(true); // choose a member first; action on Assign
+                return;
+              }
+              setAssigning(false);
+              act({ op: "set_pick_mode", mode: m });
+            }}
           >
             {PICK_LABEL[m]}
           </button>
         ))}
       </div>
+      {assigning && l.pick_mode !== "assigned" && (
+        <p className="dim">Pick a member to assign as the picker</p>
+      )}
       {l.pending_pick_mode && (
         <p className="dim">
           {PICK_LABEL[l.pending_pick_mode.mode]}
@@ -238,12 +251,14 @@ function AdminPanel({ l }: { l: LobbySnap }) {
           <li key={m.mid}>
             <span className={m.connected ? "" : "dim"}>{m.name}</span>
             <span className="spacer" />
-            {l.pick_mode === "assigned" && m.mid !== l.assigned && (
+            {((l.pick_mode === "assigned" && m.mid !== l.assigned) ||
+              (assigning && l.pick_mode !== "assigned")) && (
               <button
                 className="btn sm"
-                onClick={() =>
-                  act({ op: "set_pick_mode", mode: "assigned", member: m.mid })
-                }
+                onClick={() => {
+                  setAssigning(false);
+                  act({ op: "set_pick_mode", mode: "assigned", member: m.mid });
+                }}
               >
                 Assign
               </button>

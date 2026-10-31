@@ -13,10 +13,12 @@ export default function Header({ onLogin }: { onLogin: () => void }) {
       <span className={`pill ${state.status}`}>
         {state.status === "live" ? "live" : state.status}
       </span>
-      <span className="dim">
-        {snap ? snap.server.clients_online : 0} console
-        {snap && snap.server.clients_online === 1 ? "" : "s"} online
-      </span>
+      {state.status === "live" && (
+        <span className="dim">
+          {snap ? snap.server.clients_online : 0} console
+          {snap && snap.server.clients_online === 1 ? "" : "s"} online
+        </span>
+      )}
       <span className="spacer" />
       {you.name || you.admin ? (
         <span className="who">

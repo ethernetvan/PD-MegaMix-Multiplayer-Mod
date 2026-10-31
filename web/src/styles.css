@@ -617,3 +617,7 @@ tr.off td {
     width: 48px;
   }
 }
+
+.toasts, .toast {
+  pointer-events: none;
+}
