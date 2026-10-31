@@ -57,6 +57,8 @@ class Bot:
         self.w = None
         self._song_task = None
         self.ready = True
+        self.final_round = -1    # last round we sent `final` for
+        self.back_round = -1     # last round we sent `back_in_sel` for
 
     def send(self, m):
         self.w.write((json.dumps(m) + "\n").encode())
@@ -115,7 +117,9 @@ class Bot:
         return ", ".join(
             f"{x['name']}{'(L)' if x['cid'] == self.leader else ''}"
             f"{'[dc]' if not x['connected'] else ''}"
-            f"[{x.get('role', '?')}]" for x in m.get("members", []))
+            f"[{x.get('role', '?')}]"
+            f"{'[auto]' if x.get('autoplay') else ''}"
+            for x in m.get("members", []))
 
     async def on_msg(self, m):
         t = m.get("t")
@@ -180,7 +184,10 @@ class Bot:
             print(f"-- standings r{m['round']} complete={m['complete']}: "
                   + ", ".join(f"#{e['rank']} {e['name']}={e['score']}"
                               for e in m.get("e", [])))
-            if self.auto and self.playing:
+            if self.auto and \
+                    (self.playing or self.final_round == m["round"]) and \
+                    self.back_round != m["round"]:
+                self.back_round = m["round"]
                 await asyncio.sleep(2)
                 self.send({"t": "back_in_sel", "round": m["round"]})
         elif t == "round_end":
@@ -225,6 +232,7 @@ class Bot:
             self.send({"t": "final", "round": self.round, "score": score,
                        "pct": min(100.0, score / 3000.0), "max_combo": combo,
                        "jc": [5, 10, 8, 4, 2], "life": 80})
+            self.final_round = self.round
             print(f"-- sent final r{self.round}")
 
     async def state_loop(self):
@@ -311,11 +319,6 @@ class Bot:
             print("? - type help")
 
 
-async def amain(a):
-    bot = Bot(a)
-    await bot.run()
-
-
 def stdin_thread(loop, bot):
     for line in sys.stdin:
         asyncio.run_coroutine_threadsafe(bot.cmd(line.strip()), loop)
@@ -346,7 +349,7 @@ def main():
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.create_task(amain(a))
+    loop.create_task(bot.run())
     loop.create_task(bot.state_loop())
     threading.Thread(target=stdin_thread, args=(loop, bot), daemon=True).start()
     print("bot ready - type 'help'")
