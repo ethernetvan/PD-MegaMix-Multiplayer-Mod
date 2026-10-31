@@ -45,6 +45,23 @@ player leaves, emergency-exit ring, ZR×5 AutoPlay (single/double ZR side effect
 2D-mode / L3+ZR no-movie toggles still behave as the README describes), and the interactive bot CLI.
 Kill stale `mp_server.py` processes before starting a server (port 7778 conflicts).
 
+## Round 5 user feedback (supersedes items 1–7 where they conflict)
+- Whenever the user is asked to test: auto-deploy to the physical Switch first (`mm-re/tools/nx.py deploy`;
+  close the game first if config edits are needed).
+- AutoPlay IS allowed in a lobby, but the client must report it (`autoplay {on}`) and the server tracks it per
+  member and shows it to everyone (lobby members, board, standings, e.g. an "AUTO" tag).
+- Song picking defaults to passing/rotating, and every client shows "<name> is picking a song..." in song select.
+- Results: when the lobby owner leaves results, everyone still on results is moved on automatically (round_end
+  → client runs the results→song-list recipe: A, A, Down, A with delays); others may leave earlier on their own;
+  keep the 90s auto-progress fallback.
+- The Multiplayer button must REPLACE the AutoPlay badge in `overlays/Hints.cpp`, reusing its exact styling and
+  position (not a separate window).
+- Overlay: three large Switch-style rounded buttons filling the space — left pencil icon "Edit Name", middle
+  people icon "CREATE LOBBY", right geometric-shape icon "JOIN LOBBY". In a lobby, equally large touch targets
+  for leave/settings. Only the X closes the overlay (no outside-tap close); make the X a large touch target.
+- Bot: `python bot.py` gets `error proto_mismatch` then a SystemExit traceback — hello must send `proto: 1`; handle
+  server errors/disconnects without tracebacks (stay running, allow reconnect).
+
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
    they leave) separately from `leader` (current song picker). Owner chooses `pick_mode`:
