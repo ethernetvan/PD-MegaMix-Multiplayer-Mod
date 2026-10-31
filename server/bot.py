@@ -13,6 +13,13 @@ import sys
 import threading
 import time
 
+# song names contain characters (e.g. "♪") that a cp1252 console can't print
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 BASE_PVS = [249, 1, 3, 8, 15, 21, 30, 44, 55, 100]
 
 

@@ -3,7 +3,7 @@
 
 Protocol v1 (NDJSON, "t" = type)
 C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {code};
-      lobby_leave {}; sel {pv, name} (leader, SELECT only);
+      lobby_leave {}; kick {cid} (owner only); sel {pv, name} (leader, SELECT only);
       sel_ack {pv, has:bool, ok:bool, fb_pv:int (-1 none), fb_name:str};
       start_req {pv, name} (leader, SELECT only); launch_fail {round};
       loaded {round}; state {round, score, combo, pct, life};
@@ -251,6 +251,8 @@ class LobbyManager:
             self._ready(cid, msg, now)
         elif t == "set_pick_mode":
             self._set_pick_mode(cid, msg, now)
+        elif t == "kick":
+            self._kick(cid, msg.get("cid"), now)
         elif t == "autoplay":
             m = self._member(self._lobby_of(cid), cid)
             if m:
@@ -317,6 +319,20 @@ class LobbyManager:
             self._error(cid, "not_in_lobby", "not in a lobby")
             return
         self._remove_member(lobby, cid, reason, now)
+
+    def _kick(self, cid, target, now):
+        lobby = self._lobby_of(cid)
+        if lobby is None:
+            self._error(cid, "not_in_lobby", "not in a lobby")
+            return
+        if lobby.owner_cid != cid:
+            self._error(cid, "not_owner", "only the owner can kick")
+            return
+        if target == cid or self._member(lobby, target) is None:
+            self._error(cid, "bad_member", "kick target must be another member")
+            return
+        self.log(f"lobby {lobby.code}: {target} kicked by owner {cid}")
+        self._remove_member(lobby, target, "kicked", now)
 
     def _remove_member(self, lobby, cid, reason, now):
         idx = next((i for i, m in enumerate(lobby.members) if m.cid == cid), -1)
