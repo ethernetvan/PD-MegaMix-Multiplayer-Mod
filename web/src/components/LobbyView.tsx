@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { feedText } from "../feedText";
 import { fmtElapsed, fmtPct, fmtRel, fmtScore } from "../format";
 import { canAdmin, serverNow } from "../state";
@@ -15,6 +15,166 @@ const PICK_LABEL: Record<PickMode, string> = {
 
 function memberOf(l: LobbySnap, mid: string | null | undefined) {
   return l.members.find((m) => m.mid === mid);
+}
+
+/* Live leaderboard: rows are ordered by current % (the in-game win
+ * metric), animate into place when positions change (FLIP), flash and
+ * show a ▲/▼ marker on overtakes, and the combo count "pops" on every
+ * increase. */
+function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
+  const rows = (l.round?.players ?? [])
+    .map((mid) => memberOf(l, mid))
+    .filter((m): m is MemberSnap => !!m)
+    .sort((a, b) => b.pct - a.pct || b.score - a.score);
+
+  const rowEls = useRef(new Map<string, HTMLTableRowElement>());
+  const prevIdx = useRef(new Map<string, number>());
+  const preTops = useRef(new Map<string, number>());
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const [moves, setMoves] = useState<Map<string, "up" | "down">>(new Map());
+  const idx = new Map(rows.map((m, i) => [m.mid, i] as const));
+
+  // pre-commit: DOM still shows the previous order; capture each row's
+  // current visual top (includes any in-flight FLIP transform) so the
+  // post-commit pass can glide rows from wherever they actually are.
+  rowEls.current.forEach((el, mid) => {
+    preTops.current.set(mid, el.getBoundingClientRect().top);
+  });
+
+  useLayoutEffect(() => {
+    const mv = new Map<string, "up" | "down">();
+    rows.forEach((m) => {
+      const ni = idx.get(m.mid);
+      const p = prevIdx.current.get(m.mid);
+      if (p === undefined || ni === undefined || p === ni) return;
+      mv.set(m.mid, ni < p ? "up" : "down");
+      const el = rowEls.current.get(m.mid);
+      if (!el) return;
+      const t = getComputedStyle(el).transform;
+      const m42 = t === "none" ? 0 : new DOMMatrixReadOnly(t).m42;
+      const lastTop = el.getBoundingClientRect().top - (m42 || 0);
+      const d = (preTops.current.get(m.mid) ?? lastTop) - lastTop;
+      if (Math.abs(d) > 2) {
+        el.style.transition = "none";
+        el.style.transform = `translateY(${d}px)`;
+        void el.offsetHeight;
+        el.style.transition = "transform .55s cubic-bezier(.25,.9,.3,1)";
+        el.style.transform = "";
+      }
+    });
+    prevIdx.current = idx;
+    if (mv.size) {
+      setMoves((prev) => new Map([...prev, ...mv]));
+      mv.forEach((_, mid) => {
+        clearTimeout(timers.current.get(mid));
+        timers.current.set(
+          mid,
+          setTimeout(() => {
+            setMoves((prev) => {
+              const n = new Map(prev);
+              n.delete(mid);
+              return n;
+            });
+          }, 1600),
+        );
+      });
+    }
+  });
+
+  useEffect(
+    () => () => timers.current.forEach((t) => clearTimeout(t)),
+    [],
+  );
+
+  return (
+    <section className="panel">
+      <h3>
+        Live leaderboard{" "}
+        <span className="dim">
+          elapsed {fmtElapsed(l.round?.launch_at, now)}
+        </span>
+      </h3>
+      <div className="board-wrap">
+        <table className="board">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Player</th>
+              <th>Score</th>
+              <th>%</th>
+              <th>Combo</th>
+              <th>Life</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((m, i) => {
+              const lat = moves.get(m.mid);
+              return (
+                <tr
+                  key={m.mid}
+                  ref={(el) => {
+                    if (el) rowEls.current.set(m.mid, el);
+                    else rowEls.current.delete(m.mid);
+                  }}
+                  className={`${m.connected ? "" : "off"}${lat ? ` rd-${lat}` : ""}`}
+                >
+                  <td className="rank">
+                    {i + 1}
+                    {lat && (
+                      <span className={`dmark ${lat}`} aria-hidden>
+                        {lat === "up" ? "▲" : "▼"}
+                      </span>
+                    )}
+                  </td>
+                  <td>
+                    <span className="p-cell">
+                      <HexAvatar
+                        name={m.name}
+                        size={32}
+                        status={m.connected ? "online" : "offline"}
+                      />
+                      <span>
+                        {m.name}
+                        {m.autoplay && (
+                          <span className="badge auto">AUTO</span>
+                        )}
+                        {m.final && (
+                          <span className="badge done">✓ finished</span>
+                        )}
+                      </span>
+                    </span>
+                  </td>
+                  <td className="num score">{fmtScore(m.score)}</td>
+                  <td className="pct">
+                    <div className="bar gauge">
+                      <i
+                        style={{
+                          width: `${100 - Math.min(100, m.pct)}%`,
+                        }}
+                      />
+                      <span className="gauge-clear" aria-hidden />
+                      <span className="gauge-border" aria-hidden />
+                    </div>
+                    <span className="pct-num">{fmtPct(m.pct)}</span>
+                  </td>
+                  <td className="num combo">
+                    <span key={m.combo} className="pop">
+                      {m.combo}x
+                    </span>
+                  </td>
+                  <td className="life-cell">
+                    <div className="bar life">
+                      <i style={{ width: `${(m.life / 255) * 100}%` }} />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
 }
 
 function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
@@ -66,78 +226,7 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
     );
   }
   if (l.phase === "PLAYING") {
-    const rows = (l.round?.players ?? [])
-      .map((mid) => memberOf(l, mid))
-      .filter((m): m is MemberSnap => !!m)
-      .sort((a, b) => b.score - a.score);
-    return (
-      <section className="panel">
-        <h3>
-          Live leaderboard{" "}
-          <span className="dim">
-            elapsed {fmtElapsed(l.round?.launch_at, now)}
-          </span>
-        </h3>
-        <div className="board-wrap">
-          <table className="board">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Player</th>
-                <th>Score</th>
-                <th>%</th>
-                <th>Combo</th>
-                <th>Life</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((m, i) => (
-                <tr key={m.mid} className={m.connected ? "" : "off"}>
-                  <td className="rank">{i + 1}</td>
-                  <td>
-                    <span className="p-cell">
-                      <HexAvatar
-                        name={m.name}
-                        size={32}
-                        status={m.connected ? "online" : "offline"}
-                      />
-                      <span>
-                        {m.name}
-                        {m.autoplay && (
-                          <span className="badge auto">AUTO</span>
-                        )}
-                        {m.final && (
-                          <span className="badge done">✓ finished</span>
-                        )}
-                      </span>
-                    </span>
-                  </td>
-                  <td className="num score">{fmtScore(m.score)}</td>
-                  <td className="pct">
-                    <div className="bar gauge">
-                      <i
-                        style={{
-                          width: `${100 - Math.min(100, m.pct)}%`,
-                        }}
-                      />
-                      <span className="gauge-clear" aria-hidden />
-                      <span className="gauge-border" aria-hidden />
-                    </div>
-                    <span className="pct-num">{fmtPct(m.pct)}</span>
-                  </td>
-                  <td className="num">{m.combo}x</td>
-                  <td className="life-cell">
-                    <div className="bar life">
-                      <i style={{ width: `${(m.life / 255) * 100}%` }} />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    );
+    return <LiveBoard l={l} now={now} />;
   }
   const st = l.standings;
   if (!st) return null;

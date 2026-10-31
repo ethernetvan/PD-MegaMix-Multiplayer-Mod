@@ -1465,6 +1465,101 @@ tr.off td {
   font-style: italic;
   font-size: 18px;
   color: var(--dim);
+  position: relative;
+}
+
+/* --- live board motion: overtake slide/flash + combo pop --- */
+.board tbody tr {
+  will-change: transform;
+}
+
+/* leader by % — gold rank like results 1st place */
+.board tbody tr:first-child td.rank {
+  color: var(--yellow);
+  text-shadow: 0 0 10px rgba(255, 201, 51, 0.55);
+}
+
+.board tr.rd-up td {
+  animation: passUp 1.5s ease-out;
+}
+
+.board tr.rd-down td {
+  animation: passDown 1.5s ease-out;
+}
+
+@keyframes passUp {
+  0% {
+    background: rgba(87, 209, 92, 0.45);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@keyframes passDown {
+  0% {
+    background: rgba(255, 71, 87, 0.32);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.dmark {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  margin-top: -9px;
+  font-size: 13px;
+  font-style: normal;
+  animation: dmarkIn 1.6s ease-out forwards;
+}
+
+.dmark.up {
+  color: var(--green);
+  text-shadow: 0 0 8px rgba(87, 209, 92, 0.8);
+}
+
+.dmark.down {
+  color: var(--red);
+  text-shadow: 0 0 8px rgba(255, 71, 87, 0.8);
+}
+
+@keyframes dmarkIn {
+  0% {
+    opacity: 0;
+    transform: translateY(5px) scale(0.6);
+  }
+  18% {
+    opacity: 1;
+    transform: none;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.board td.combo .pop {
+  display: inline-block;
+  animation: comboPop 0.45s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+@keyframes comboPop {
+  0% {
+    transform: scale(0.6);
+  }
+  40% {
+    transform: scale(1.45);
+    color: var(--yellow);
+    text-shadow: 0 0 12px rgba(255, 201, 51, 0.9);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 /* results rank numerals — outlined blocky italic like the results screen */

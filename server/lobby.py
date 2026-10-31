@@ -656,7 +656,7 @@ class LobbyManager:
                       "score": m.state.get("score", 0),
                       "pct": m.state.get("pct", 0.0),
                       "connected": m.connected})
-        e.sort(key=lambda x: -x["score"])
+        e.sort(key=lambda x: (-x["pct"], -x["score"]))
         self._broadcast(lobby, {"t": "board", "round": r.id, "e": e})
 
     # ------------------------------------------------- RESULTS
@@ -701,7 +701,7 @@ class LobbyManager:
                          "life": f["life"] if f else 0,
                          "final": f is not None or not m.connected or stale,
                          "connected": m.connected})
-        rows.sort(key=lambda x: -x["score"])
+        rows.sort(key=lambda x: (-x["pct"], -x["score"]))
         for i, row in enumerate(rows):
             row["rank"] = i + 1
         complete = all(row["final"] for row in rows) if rows else True
