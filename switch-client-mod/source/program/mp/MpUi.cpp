@@ -43,6 +43,34 @@ static char   s_nameBuf[40] = "";
 static bool   s_kbArmed  = false;   /* keyboard was opened for this screen */
 static bool   s_prevOpen = false;
 
+/* ============================ pad navigation ============================
+ * Focusables are registered while each screen draws (same order every
+ * frame, so the push index is stable). Pad mode is entered on any nav
+ * button/stick input and left on any touch/mouse movement; in pad mode
+ * Ui::FHover draws the cyan ring on the focused item and FActivated
+ * fires on A. Touch behaviour is unchanged in pointer mode. */
+struct FocusItem { ImVec2 a, b; bool enabled; bool danger; };
+static FocusItem s_items[24];
+static int       s_itemCount = 0;
+static int       s_focusIdx = 0;
+static bool      s_padMode = false;
+static bool      s_padA = false;        /* A edge consumed this frame */
+static Screen    s_lastScreen = SC_HOME;
+static char      s_armCid[20] = "";     /* kick-armed member (2-step pad kick) */
+static uint64_t  s_armUntil = 0;
+static uint64_t  s_zrIgnoreUntil = 0;   /* ignore ZR edges right after open */
+static bool      s_exitArmed = false;   /* Exit Room armed (2-step pad) */
+static uint64_t  s_exitArmUntil = 0;
+static bool      s_padModeReq = false;  /* pad open requested (e.g. via ZR) */
+static uint64_t  s_holdStart[2] = {0, 0};
+static uint64_t  s_lastStep[2] = {0, 0};
+static int       s_lastDir[2] = {0, 0};
+
+static uint64_t NavNowMs() {
+    return (uint64_t)nn::os::GetSystemTick().GetInt64Value() * 1000
+           / nn::os::GetSystemTickFrequency();
+}
+
 /* ---- palette (Switch dark theme + Diva accents) ---- */
 static const ImU32 kBg        = IM_COL32(45, 45, 45, 246);
 static const ImU32 kCard      = IM_COL32(62, 62, 62, 255);
@@ -74,6 +102,28 @@ struct Ui {
 
     bool Hover(ImVec2 a, ImVec2 b) const {
         return mouse.x >= a.x && mouse.x <= b.x && mouse.y >= a.y && mouse.y <= b.y;
+    }
+    /* register a focusable; returns its index for this frame */
+    int Focus(ImVec2 a, ImVec2 b, bool enabled = true, bool danger = false) const {
+        if (s_itemCount < (int)(sizeof(s_items) / sizeof(s_items[0])))
+            s_items[s_itemCount] = {a, b, enabled, danger};
+        return s_itemCount++;
+    }
+    /* "hover" visual: pointer -> mouse hit-test; pad -> focused item */
+    bool FHover(int idx) const {
+        if (idx < 0 || idx >= s_itemCount) return false;
+        if (!s_padMode) return Hover(s_items[idx].a, s_items[idx].b);
+        return idx == s_focusIdx && s_items[idx].enabled;
+    }
+    /* activation: pointer -> mouse click; pad -> A on the focused item */
+    bool FActivated(int idx) const {
+        if (idx < 0 || idx >= s_itemCount) return false;
+        if (!s_padMode) return Hover(s_items[idx].a, s_items[idx].b) && clicked;
+        return idx == s_focusIdx && s_items[idx].enabled && s_padA;
+    }
+    bool FPadActivated(int idx) const {
+        return s_padMode && idx == s_focusIdx && idx < s_itemCount &&
+               s_items[idx].enabled && s_padA;
     }
     void Text(ImVec2 p, const char* s, float scale = 1.0f, ImU32 col = kText) const {
         dl->AddText(font, fs * scale, p, col, s);
@@ -111,9 +161,11 @@ struct Ui {
     enum BtnStyle { B_NORMAL, B_PRIMARY, B_DANGER, B_GHOST };
     /* Switch style flat button: rounded rect, cyan focus ring on hover */
     bool Button(ImVec2 a, ImVec2 b, const char* label, BtnStyle st = B_NORMAL,
-                float scale = 1.1f, bool enabled = true) const {
-        bool hov = enabled && Hover(a, b);
-        bool prs = hov && down;
+                float scale = 1.1f, bool enabled = true,
+                bool focusable = true) const {
+        int fi = Focus(a, b, enabled && focusable);
+        bool hov = enabled && FHover(fi);
+        bool prs = !s_padMode && hov && down;
         ImU32 bg = kCard, fg = kText, border = kLine;
         float r = 10.0f * k;
         switch (st) {
@@ -127,25 +179,43 @@ struct Ui {
         if (!enabled) { fg = kDim; }
         dl->AddRectFilled(a, b, bg, r);
         if (hov) {
-            float pulse = 0.65f + 0.35f * sinf(t * 6.0f);
-            ImU32 ring = (kAccent & 0x00FFFFFF) | ((ImU32)(255 * pulse) << 24);
-            dl->AddRect(ImVec2(a.x - 2 * k, a.y - 2 * k), ImVec2(b.x + 2 * k, b.y + 2 * k),
-                        ring, r + 2 * k, 0, 3.0f * k);
+            Ring(a, b, r);
         } else if (st != B_GHOST) {
             dl->AddRect(a, b, border, r, 0, 1.2f);
         }
         TextCentered(a, b, label, scale, fg);
-        return hov && clicked;
+        return enabled && FActivated(fi);
+    }
+    /* focus ring: bold pulsing ring + soft outer glow in pad mode,
+     * thin pulse for pointer hover */
+    void Ring(ImVec2 a, ImVec2 b, float r, float gap = 2.0f) const {
+        if (s_padMode) {
+            float g = (gap + 3.0f) * k;
+            ImU32 glow = (kAccent & 0x00FFFFFF) | (70u << 24);
+            dl->AddRect(ImVec2(a.x - g, a.y - g), ImVec2(b.x + g, b.y + g),
+                        glow, r + g, 0, 3.0f * k);
+        }
+        float pulse = s_padMode ? (0.85f + 0.15f * sinf(t * 6.0f))
+                                : (0.65f + 0.35f * sinf(t * 6.0f));
+        ImU32 ring = (kAccent & 0x00FFFFFF) | ((ImU32)(255 * pulse) << 24);
+        float e = gap * k;
+        dl->AddRect(ImVec2(a.x - e, a.y - e), ImVec2(b.x + e, b.y + e),
+                    ring, r + e, 0, (s_padMode ? 4.0f : 3.0f) * k);
     }
     /* round X close button */
     bool CloseButton(ImVec2 c, float rad) const {
-        bool hov = Hover(ImVec2(c.x - rad, c.y - rad), ImVec2(c.x + rad, c.y + rad));
+        int fi = Focus(ImVec2(c.x - rad, c.y - rad), ImVec2(c.x + rad, c.y + rad));
+        bool hov = FHover(fi);
         dl->AddCircleFilled(c, rad, hov && down ? kCardDown : (hov ? kCardHov : kCard), 32);
-        dl->AddCircle(c, rad, hov ? kAccent : kLine, 32, hov ? 3.0f * k : 1.2f);
+        dl->AddCircle(c, rad, hov ? kAccent : kLine, 32,
+                      hov ? (s_padMode ? 4.0f : 3.0f) * k : 1.2f);
+        if (hov && s_padMode)
+            dl->AddCircle(c, rad + 5.0f * k,
+                          (kAccent & 0x00FFFFFF) | (70u << 24), 32, 3.0f * k);
         float h = rad * 0.42f;
         dl->AddLine(ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), kText, 3.0f * k);
         dl->AddLine(ImVec2(c.x - h, c.y + h), ImVec2(c.x + h, c.y - h), kText, 3.0f * k);
-        return hov && clicked;
+        return FActivated(fi);
     }
 };
 
@@ -268,6 +338,59 @@ static void Footer(const Ui& u, ImVec2 a, ImVec2 b, const char* hint, float rese
         u.TextLeft(ImVec2(a.x + 30 * u.k, fy), ImVec2(b.x - 30 * u.k - reserveR, b.y), hint, 1.3f, kMuted);
 }
 
+/* ---- button guide glyphs (Switch style) ---- */
+static void BtnGlyph(const Ui& u, ImVec2 c, float r, const char* label) {
+    u.dl->AddCircleFilled(c, r, IM_COL32(232, 236, 240, 255), 24);
+    u.dl->AddCircle(c, r, kInk, 24, 1.4f * u.k);
+    ImVec2 ts = u.Size(label, 1.3f);
+    u.dl->AddText(u.font, u.fs * 1.3f,
+                  ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), kInk, label);
+}
+static void PillGlyph(const Ui& u, ImVec2 a, ImVec2 b, const char* label) {
+    float r = (b.y - a.y) * 0.5f;
+    u.dl->AddRectFilled(a, b, IM_COL32(232, 236, 240, 255), r);
+    u.dl->AddRect(a, b, kInk, r, 0, 1.4f * u.k);
+    ImVec2 ts = u.Size(label, 1.05f);
+    u.dl->AddText(u.font, u.fs * 1.05f,
+                  ImVec2((a.x + b.x - ts.x) * 0.5f, (a.y + b.y - ts.y) * 0.5f),
+                  kInk, label);
+}
+/* guide entries drawn right-aligned on the footer line */
+struct GuideEnt { const char* glyph; const char* label; };
+static float GuideW(const Ui& u, const GuideEnt* es, int n) {
+    float w = 0, r = u.fs * 0.95f;
+    for (int i = 0; i < n; i++) {
+        bool pill = strlen(es[i].glyph) > 1;
+        w += (pill ? r * 2.6f : r * 2.0f) + 6 * u.k +
+             u.Size(es[i].label, 1.4f).x + 18 * u.k;
+    }
+    return w;
+}
+static void DrawGuide(const Ui& u, ImVec2 a, ImVec2 b, const GuideEnt* es, int n) {
+    if (n <= 0) return;
+    float r = u.fs * 0.95f;
+    float x = b.x - 30 * u.k - GuideW(u, es, n);
+    float cy = b.y - 22 * u.k;
+    for (int i = 0; i < n; i++) {
+        if (strlen(es[i].glyph) > 1) {
+            float pw = r * 2.6f;
+            PillGlyph(u, ImVec2(x, cy - r), ImVec2(x + pw, cy + r), es[i].glyph);
+            x += pw;
+        } else {
+            BtnGlyph(u, ImVec2(x + r, cy), r, es[i].glyph);
+            x += r * 2.0f;
+        }
+        ImVec2 ts = u.Size(es[i].label, 1.4f);
+        u.dl->AddText(u.font, u.fs * 1.4f,
+                      ImVec2(x + 6 * u.k, cy - ts.y * 0.5f), kMuted, es[i].label);
+        x += 6 * u.k + ts.x + 18 * u.k;
+    }
+}
+/* the guide sits on the footer line; reserve its width for Footer() */
+static float GuideReserve(const Ui& u, const GuideEnt* es, int n) {
+    return n > 0 ? GuideW(u, es, n) + 10 * u.k : 0.0f;
+}
+
 /* ---------------------------------------------------------------- HOME */
 static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     float top = Header(u, a, b, "Multiplayer", true);
@@ -293,13 +416,11 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         { "EDIT NAME", true }, { "CREATE ROOM", online }, { "JOIN ROOM", online } };
     for (int i = 0; i < 3; i++) {
         ImVec2 ca(a.x + 30 * u.k + i * (cw + gap), cy0), cb(ca.x + cw, cy1);
-        bool hov = cards[i].enabled && u.Hover(ca, cb);
+        int fi = u.Focus(ca, cb, cards[i].enabled);
+        bool hov = cards[i].enabled && u.FHover(fi);
         u.dl->AddRectFilled(ca, cb, hov ? (u.down ? kCardDown : kCardHov) : kCard, 16 * u.k);
         if (hov) {
-            float pulse = 0.65f + 0.35f * sinf(u.t * 6.0f);
-            ImU32 ring = (kAccent & 0x00FFFFFF) | ((ImU32)(255 * pulse) << 24);
-            u.dl->AddRect(ImVec2(ca.x - 2 * u.k, ca.y - 2 * u.k), ImVec2(cb.x + 2 * u.k, cb.y + 2 * u.k),
-                          ring, 18 * u.k, 0, 3.5f * u.k);
+            u.Ring(ca, cb, 16 * u.k);
         } else {
             u.dl->AddRect(ca, cb, kLine, 16 * u.k, 0, 1.4f);
         }
@@ -313,7 +434,7 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
             u.dl->AddRectFilled(ca, cb, IM_COL32(45, 45, 45, 150), 16 * u.k);
         u.TextCentered(ImVec2(ca.x, cb.y - ih * 0.30f), ImVec2(cb.x, cb.y - ih * 0.08f),
                        cards[i].label, 1.9f, cards[i].enabled ? kText : kDim);
-        if (hov && u.clicked) {
+        if (u.FActivated(fi)) {
             sound::PlayEnterSE();
             if (i == 0) OpenEditName();
             else if (i == 1) CmdLobbyCreate();
@@ -333,6 +454,11 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         ImVec2 tsz = u.Size(tb, 1.15f);
         u.Text(ImVec2(b.x - 30 * u.k - tsz.x, pa.y + (pillH - tsz.y) * 0.5f), tb, 1.15f, kMuted);
     }
+    /* pad button guide, bottom-right of the content area */
+    const GuideEnt g[] = {{"A", "OK"}, {"B", "Close"}};
+    float gw = GuideW(u, g, 2);
+    ImVec2 ga(b.x - 30 * u.k - gw - 10 * u.k, a.y);
+    DrawGuide(u, ga, b, g, 2);
 }
 
 /* -------------------------------------------------- EDIT NAME / JOIN */
@@ -382,15 +508,19 @@ static void DrawTextScreen(const Ui& u, ImVec2 a, ImVec2 b, const char* title,
     float bw = (fb.x - fa.x - gap) * 0.5f;
     ImVec2 ca(fa.x, fb.y + 22 * u.k), cb(ca.x + bw, ca.y + bh);
     ImVec2 oa(cb.x + gap, ca.y), ob(oa.x + bw, cb.y);
-    if (u.Button(ca, cb, "CANCEL", Ui::B_NORMAL, 1.55f)) {
+    if (u.Button(ca, cb, "CANCEL", Ui::B_NORMAL, 1.55f, true, false)) {
         sound::PlayCancelSE();
         GoHomeOrRoom();
     }
-    if (u.Button(oa, ob, okLabel, Ui::B_PRIMARY, 1.55f, buf[0] != 0)) {
+    if (u.Button(oa, ob, okLabel, Ui::B_PRIMARY, 1.55f, buf[0] != 0, false)) {
         sound::PlayEnterSE();
         if (VirtualKeyboard::IsOpen()) VirtualKeyboard::Close();
         onOk();
     }
+    /* pad guide for the on-screen keyboard */
+    const GuideEnt g[] = {{"A", "Type"}, {"B", "Delete"}, {"Y", "Space"},
+                          {"X", "Caps"}, {"+", okLabel}};
+    DrawGuide(u, ImVec2(a.x, cb.y), b, g, 5);
 }
 
 /* ---------------------------------------------------------------- ROOM */
@@ -424,7 +554,25 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     float bx = b.x - 42 * u.k - 24 * u.k - 22 * u.k;   /* left of the X */
     float by = a.y + (66 * u.k - bh) * 0.5f;
     ImVec2 ea(bx - bw, by), eb(bx, by + bh);
-    if (u.Button(ea, eb, "Exit Room", Ui::B_DANGER, 1.4f)) {
+    /* Exit Room: pad needs a 2-step confirm, touch stays single-tap */
+    int fiExit = u.Focus(ea, eb, true, true);
+    bool ehov = u.FHover(fiExit);
+    u.dl->AddRectFilled(ea, eb, (ehov || s_exitArmed) ? kRed : kRedBg, 10 * u.k);
+    u.dl->AddRect(ea, eb, kRed, 10 * u.k, 0, (ehov || s_exitArmed) ? 2.0f : 1.2f);
+    if (ehov && s_padMode) u.Ring(ea, eb, 10 * u.k);
+    u.TextCentered(ea, eb, s_exitArmed ? "Press A to leave" : "Exit Room",
+                   1.4f, (ehov || s_exitArmed) ? kInk : kRed);
+    if (u.FPadActivated(fiExit)) {
+        if (s_exitArmed) {
+            s_exitArmed = false;
+            sound::PlayCancelSE();
+            CmdLobbyLeave();
+        } else {
+            s_exitArmed = true;
+            s_exitArmUntil = NavNowMs() + 3000;
+            sound::PlaySelectSE();
+        }
+    } else if (u.FActivated(fiExit)) {     /* touch single-tap */
         sound::PlayCancelSE();
         CmdLobbyLeave();
     }
@@ -498,9 +646,16 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         bool lead = strcmp(m.cid, s.leaderCid) == 0;
         ImVec2 ra(lx, ly + i * rowH), rb(b.x - 30 * u.k, ra.y + rowH - 6 * u.k);
         if (ra.y + rowH > cy1) break;
-        bool rowHov = assignMode && !lead && u.Hover(ra, ImVec2(rb.x - 44 * u.k, rb.y));
+        bool assignable = assignMode && !lead;
+        int fiRow = u.Focus(ra, ImVec2(rb.x - 44 * u.k, rb.y), assignable);
+        bool rowHov = assignable && u.FHover(fiRow);
+        bool armed = you == false && s_armCid[0] && strcmp(s_armCid, m.cid) == 0;
+        if (armed)
+            u.dl->AddRectFilled(ra, rb, kRedBg, 8 * u.k);
         if (you || rowHov)
             u.dl->AddRectFilled(ra, rb, rowHov ? kCardHov : kAccentBg, 8 * u.k);
+        if (rowHov && s_padMode)
+            u.Ring(ra, rb, 8 * u.k);
         char idx[6]; snprintf(idx, sizeof(idx), "%d.", i + 1);
         u.TextLeft(ImVec2(ra.x + 12 * u.k, ra.y), ImVec2(ra.x + 44 * u.k, rb.y), idx, 1.5f, kMuted);
         u.dl->AddCircleFilled(ImVec2(ra.x + 56 * u.k, (ra.y + rb.y) * 0.5f), 7 * u.k, MemberDot(m), 16);
@@ -520,23 +675,49 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
                 u.TextCentered(ta, tb, "LEADER", 0.95f, kGreen);
             }
         }
-        if (rowHov && u.clicked) {
+        if (assignable && u.FActivated(fiRow)) {
             sound::PlaySelectSE();
             CmdPickMode("assigned", m.cid);
         }
-        /* kick: owner only, never yourself */
+        /* kick: owner only, never yourself; pad needs a 2-step confirm */
         if (owner && !you) {
             float ks = 38 * u.k;
             ImVec2 ka(rb.x - 8 * u.k - ks, (ra.y + rb.y) * 0.5f - ks * 0.5f), kb(ka.x + ks, ka.y + ks);
-            bool kh = u.Hover(ImVec2(ka.x - 6 * u.k, ka.y - 6 * u.k), ImVec2(kb.x + 6 * u.k, kb.y + 6 * u.k));
-            u.dl->AddRectFilled(ka, kb, kh ? kRed : kRedBg, 5 * u.k);
-            u.dl->AddRect(ka, kb, kRed, 5 * u.k, 0, kh ? 2.0f : 1.2f);
+            int fiKick = u.Focus(ImVec2(ka.x - 6 * u.k, ka.y - 6 * u.k),
+                                 ImVec2(kb.x + 6 * u.k, kb.y + 6 * u.k), true, true);
+            bool kh = u.FHover(fiKick);
+            u.dl->AddRectFilled(ka, kb, (kh || armed) ? kRed : kRedBg, 5 * u.k);
+            if (kh && s_padMode)
+                u.Ring(ImVec2(ka.x - 4 * u.k, ka.y - 4 * u.k),
+                       ImVec2(kb.x + 4 * u.k, kb.y + 4 * u.k), 5 * u.k);
+            u.dl->AddRect(ka, kb, kRed, 5 * u.k, 0, (kh || armed) ? 2.0f : 1.2f);
             float h = ks * 0.26f; ImVec2 c((ka.x + kb.x) * 0.5f, (ka.y + kb.y) * 0.5f);
-            ImU32 xc = kh ? kInk : kRed;
+            ImU32 xc = (kh || armed) ? kInk : kRed;
             u.dl->AddLine(ImVec2(c.x - h, c.y - h), ImVec2(c.x + h, c.y + h), xc, 2.5f * u.k);
             u.dl->AddLine(ImVec2(c.x - h, c.y + h), ImVec2(c.x + h, c.y - h), xc, 2.5f * u.k);
-            if (kh && u.clicked) {
-                sound::PlayCancelSE();
+            if (armed) {
+                const char* hint = "A again to remove";
+                ImVec2 hs = u.Size(hint, 1.15f);
+                float ph = hs.y + 12 * u.k, pw = hs.x + 20 * u.k;
+                float my = (ka.y + kb.y) * 0.5f;
+                ImVec2 pa(ka.x - 8 * u.k - pw, my - ph * 0.5f), pb(pa.x + pw, pa.y + ph);
+                u.dl->AddRectFilled(pa, pb, kRedBg, ph * 0.5f);
+                u.dl->AddRect(pa, pb, kRed, ph * 0.5f, 0, 1.2f);
+                u.TextCentered(pa, pb, hint, 1.15f, kRed);
+            }
+            if (u.FPadActivated(fiKick)) {
+                if (armed) {
+                    sound::PlayCancelSE();
+                    CmdKick(m.cid);
+                    s_armCid[0] = 0;
+                } else {
+                    sound::PlaySelectSE();
+                    strncpy(s_armCid, m.cid, sizeof(s_armCid) - 1);
+                    s_armCid[sizeof(s_armCid) - 1] = 0;
+                    s_armUntil = NavNowMs() + 3000;
+                }
+            } else if (u.FActivated(fiKick)) {
+                sound::PlayCancelSE();      /* touch stays single-tap */
                 CmdKick(m.cid);
             }
         }
@@ -576,7 +757,11 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
                    MemberDot(s.members[i]));
             reserve = sz.x + 24 * u.k;
         }
-    Footer(u, a, b, foot, reserve);
+    const GuideEnt g[] = {{"A", "OK"}, {"B", "Close"}};
+    float gw = GuideW(u, g, 2);
+    DrawGuide(u, ImVec2(b.x - 30 * u.k - gw - reserve, a.y),
+              ImVec2(b.x - reserve, b.y), g, 2);
+    Footer(u, a, b, foot, reserve + gw + 10 * u.k);
     if (assignMode)
         u.TextLeft(ImVec2(lx, cy1 - 30 * u.k), ImVec2(b.x - 30 * u.k, cy1), "Tap a member to make them the song picker", 1.15f, kMuted);
 }
@@ -605,9 +790,11 @@ static void DrawRoomConfig(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     for (int i = 0; i < 3; i++) {
         ImVec2 oa(a.x + 30 * u.k + i * (ow + 18 * u.k), y), ob(oa.x + ow, oa.y + oh);
         bool sel = strcmp(s.pickMode, opts[i].mode) == 0;
-        bool hov = u.Hover(oa, ob);
+        int fi = u.Focus(oa, ob);
+        bool hov = u.FHover(fi);
         u.dl->AddRectFilled(oa, ob, sel ? kAccentBg : (hov ? kCardHov : kCard), 12 * u.k);
         u.dl->AddRect(oa, ob, (sel || hov) ? kAccent : kLine, 12 * u.k, 0, (sel || hov) ? 2.5f * u.k : 1.2f);
+        if (hov && s_padMode) u.Ring(oa, ob, 12 * u.k);
         /* radio */
         ImVec2 rc(oa.x + 24 * u.k, oa.y + 30 * u.k);
         u.dl->AddCircle(rc, 11 * u.k, sel ? kAccent : kMuted, 24, 2.0f * u.k);
@@ -617,7 +804,7 @@ static void DrawRoomConfig(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         char desc[96];
         u.Fit(opts[i].desc, ow - 28 * u.k, 1.15f, desc, sizeof(desc));
         u.Text(ImVec2(oa.x + 14 * u.k, oa.y + 62 * u.k), desc, 1.15f, kMuted);
-        if (hov && u.clicked && !sel) {
+        if (u.FActivated(fi) && !sel) {
             sound::PlaySelectSE();
             CmdPickMode(opts[i].mode, i == 2 ? s.myCid : nullptr);
         }
@@ -635,9 +822,11 @@ static void DrawRoomConfig(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         ImVec2 ra(a.x + 30 * u.k + col * (colW + 18 * u.k), y + row * rowH), rb(ra.x + colW, ra.y + rowH - 6 * u.k);
         if (rb.y > b.y - 50 * u.k) break;
         bool isPicker = strcmp(m.cid, s.leaderCid) == 0;
-        bool hov = assigned && u.Hover(ra, rb);
+        int fi = u.Focus(ra, rb, assigned);
+        bool hov = assigned && u.FHover(fi);
         u.dl->AddRectFilled(ra, rb, isPicker ? kAccentBg : (hov ? kCardHov : kCard), 8 * u.k);
         u.dl->AddRect(ra, rb, (isPicker || hov) ? kAccent : kLine, 8 * u.k, 0, 1.2f);
+        if (hov && s_padMode) u.Ring(ra, rb, 8 * u.k);
         u.dl->AddCircleFilled(ImVec2(ra.x + 18 * u.k, (ra.y + rb.y) * 0.5f), 6 * u.k, MemberDot(m), 16);
         char line[64];
         snprintf(line, sizeof(line), "%s%s", m.name, strcmp(m.cid, s.myCid) == 0 ? " (You)" : "");
@@ -647,13 +836,83 @@ static void DrawRoomConfig(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
             ImVec2 ps = u.Size("PICKER", 1.05f);
             u.Text(ImVec2(rb.x - 14 * u.k - ps.x, (ra.y + rb.y - ps.y) * 0.5f), "PICKER", 1.05f, kAccent);
         }
-        if (hov && u.clicked && !isPicker) {
+        if (assigned && u.FActivated(fi) && !isPicker) {
             sound::PlaySelectSE();
             CmdPickMode("assigned", m.cid);
         }
     }
+    const GuideEnt g[] = {{"A", "OK"}, {"B", "Back"}};
+    float gw = GuideW(u, g, 2);
+    DrawGuide(u, ImVec2(b.x - 30 * u.k - gw, a.y), b, g, 2);
     Footer(u, a, b, assigned ? "Tap a member to make them the song picker"
-                             : "Pick ASSIGNED to choose a fixed song picker");
+                             : "Pick ASSIGNED to choose a fixed song picker",
+           gw + 10 * u.k);
+}
+
+/* ------------------------- pad nav driver ------------------------- */
+static int AxisStep(int axis, int dir, uint64_t now) {
+    if (dir == 0) { s_lastDir[axis] = 0; return 0; }
+    if (dir != s_lastDir[axis]) {
+        s_lastDir[axis] = dir; s_holdStart[axis] = now;
+        s_lastStep[axis] = now; return dir;
+    }
+    if (now - s_holdStart[axis] >= 400 && now - s_lastStep[axis] >= 120) {
+        s_lastStep[axis] = now; return dir;
+    }
+    return 0;
+}
+
+/* dpad held or stick (dominant axis, ~0.5 deadzone) -> -1/0/+1 steps */
+static void NavDirs(uint64_t held, int sx, int sy, uint64_t now,
+                    int& dx, int& dy) {
+    int hx = (held & nn::hid::Right ? 1 : 0) - (held & nn::hid::Left ? 1 : 0);
+    int hy = (held & nn::hid::Down ? 1 : 0) - (held & nn::hid::Up ? 1 : 0);
+    if (hx == 0 && hy == 0 &&
+        (sx > 16384 || sx < -16384 || sy > 16384 || sy < -16384)) {
+        if (std::abs(sx) > std::abs(sy)) hx = sx > 0 ? 1 : -1;
+        else hy = sy > 0 ? 1 : -1;
+    }
+    dx = AxisStep(0, hx, now);
+    dy = AxisStep(1, hy, now);
+}
+
+/* spatial move: nearest item whose centre lies in that direction,
+ * off-axis distance weighted x2; no wrap */
+static void MoveFocus(int dx, int dy) {
+    if (s_itemCount <= 0) return;
+    if (s_focusIdx < 0 || s_focusIdx >= s_itemCount ||
+        !s_items[s_focusIdx].enabled) {
+        /* stale focus (item removed/changed): keep the nearest index */
+        int best = -1, bd = 1 << 30;
+        for (int i = 0; i < s_itemCount; i++)
+            if (s_items[i].enabled) {
+                int d = i - s_focusIdx; if (d < 0) d = -d;
+                if (d < bd) { bd = d; best = i; }
+            }
+        s_focusIdx = best;
+        return;
+    }
+    const FocusItem& cur = s_items[s_focusIdx];
+    float cx = (cur.a.x + cur.b.x) * 0.5f, cy = (cur.a.y + cur.b.y) * 0.5f;
+    int best = -1; float bestScore = 1e30f;
+    for (int i = 0; i < s_itemCount; i++) {
+        if (i == s_focusIdx || !s_items[i].enabled) continue;
+        float ix = (s_items[i].a.x + s_items[i].b.x) * 0.5f;
+        float iy = (s_items[i].a.y + s_items[i].b.y) * 0.5f;
+        float ddx = ix - cx, ddy = iy - cy, on, off;
+        if (dx > 0)      { if (ddx < 4.0f) continue; on = ddx;  off = fabsf(ddy); }
+        else if (dx < 0) { if (ddx > -4.0f) continue; on = -ddx; off = fabsf(ddy); }
+        else if (dy > 0) { if (ddy < 4.0f) continue; on = ddy;  off = fabsf(ddx); }
+        else             { if (ddy > -4.0f) continue; on = -ddy; off = fabsf(ddx); }
+        float score = on + off * 2.0f;
+        if (score < bestScore) { bestScore = score; best = i; }
+    }
+    if (best >= 0) {
+        s_focusIdx = best;
+        s_armCid[0] = 0;                  /* moving focus disarms kick/exit */
+        s_exitArmed = false;
+        sound::PlaySelectSE();
+    }
 }
 
 /* ---------------------------------------------------------------- main */
@@ -663,9 +922,24 @@ void DrawPanel() {
         /* (re)opening: land on the right screen */
         s_screen = InLobby() ? SC_ROOM : SC_HOME;
         s_kbArmed = false;
+        /* drop edges latched before opening (e.g. the ZR that opened us) */
+        input::NavClear();
+        /* opened by a pad (explicit request, or ZR/stick still held) */
+        int osx = 0, osy = 0;
+        input::NavStick(&osx, &osy);
+        s_padMode = s_padModeReq ||
+                    (input::NavHeld() & ~(uint64_t)nn::hid::Minus) != 0 ||
+                    osx > 16384 || osx < -16384 || osy > 16384 || osy < -16384;
+        s_padModeReq = false;
+        s_armCid[0] = 0;
+        s_zrIgnoreUntil = NavNowMs() + 300;
+        s_lastScreen = (Screen)-1;   /* force the default focus on reopen */
     }
-    if (!open && s_prevOpen && VirtualKeyboard::IsOpen() && s_kbArmed)
-        VirtualKeyboard::Close();
+    if (!open && s_prevOpen) {
+        if (VirtualKeyboard::IsOpen() && s_kbArmed) VirtualKeyboard::Close();
+        VirtualKeyboard::SetPadMode(false);
+        s_armCid[0] = 0;
+    }
     s_prevOpen = open;
     if (!open) return;
 
@@ -686,6 +960,73 @@ void DrawPanel() {
     ImVec2 ds = io.DisplaySize;
     float k = ds.y / 720.0f;
     bool textScreen = s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM;
+
+    /* ---------------- pad navigation input ---------------- */
+    s_padA = false;
+    {
+        uint64_t edges = input::NavConsume(~(uint64_t)nn::hid::Minus);
+        uint64_t held  = input::NavHeld();
+        int nsx = 0, nsy = 0;
+        input::NavStick(&nsx, &nsy);
+        uint64_t now = NavNowMs();
+        if (edges || nsx > 16384 || nsx < -16384 || nsy > 16384 || nsy < -16384)
+            s_padMode = true;
+        if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f ||
+            ImGui::IsMouseClicked(0) || ImGui::IsMouseDown(0))
+            s_padMode = false;
+
+        /* screen change -> reset focus + disarm kick */
+        if (s_screen != s_lastScreen) {
+            s_lastScreen = s_screen;
+            s_armCid[0] = 0;
+            if (s_screen == SC_HOME)
+                s_focusIdx = s.connected ? 2 : 1;   /* [X, EDIT, CREATE, JOIN] */
+            else if (s_screen == SC_ROOM)
+                s_focusIdx = (strcmp(s.ownerCid, s.myCid) == 0) ? 2 : 1;
+            else if (s_screen == SC_ROOM_CONFIG)
+                s_focusIdx = strcmp(s.pickMode, "owner") == 0 ? 2
+                           : strcmp(s.pickMode, "assigned") == 0 ? 3 : 1;
+            else
+                s_focusIdx = 0;
+        }
+
+        if (s_padMode) {
+            if ((edges & nn::hid::ZR) && now >= s_zrIgnoreUntil) {
+                /* ZR closes from any screen */
+                sound::PlayCancelSE();
+                SetOverlayOpen(false);
+                s_armCid[0] = 0;
+            } else if (textScreen) {
+                int dx = 0, dy = 0;
+                NavDirs(held, nsx, nsy, now, dx, dy);
+                const char* buf = (s_screen == SC_EDIT_NAME) ? s_nameBuf : s_codeBuf;
+                bool wasEmpty = !buf[0];
+                VirtualKeyboard::PadInput(edges, dx, dy);
+                if ((edges & nn::hid::B) && wasEmpty) {
+                    sound::PlayCancelSE();
+                    GoHomeOrRoom();
+                }
+            } else {
+                if (edges & nn::hid::B) {
+                    s_armCid[0] = 0;
+                    sound::PlayCancelSE();
+                    if (s_screen == SC_ROOM_CONFIG) s_screen = SC_ROOM;
+                    else SetOverlayOpen(false);
+                } else {
+                    int dx = 0, dy = 0;
+                    NavDirs(held, nsx, nsy, now, dx, dy);
+                    if (dx) MoveFocus(dx, 0);
+                    if (dy) MoveFocus(0, dy);
+                    s_padA = (edges & nn::hid::A) != 0;
+                }
+            }
+        }
+        if (s_armCid[0] && NavNowMs() > s_armUntil) s_armCid[0] = 0;
+        if (s_exitArmed && NavNowMs() > s_exitArmUntil) s_exitArmed = false;
+
+        VirtualKeyboard::SetPadMode(s_padMode && textScreen);
+        s_itemCount = 0;                     /* rebuilt by the draw below */
+    }
 
     /* panel rect: 84% of the screen; text screens are a compact dialog
      * sitting above the keyboard */
@@ -732,6 +1073,9 @@ void DrawPanel() {
 
     EndWin();
 }
+
+bool PadModeActive() { return OverlayOpen() && s_padMode; }
+void RequestPadMode() { s_padModeReq = true; }
 
 /* ================================================================
  * Banners (top-center, fading)

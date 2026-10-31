@@ -306,6 +306,10 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
 
     float baseFontSz = font->FontSize;
     const char* title = "Multiplayer";
+    /* ZR glyph top-right: opens the overlay */
+    float gw = 28.0f * s, gh = 18.0f * s;
+    ImVec2 gpos(posX + w - gw - 10.0f * s, posY + 7.0f * s);
+    DrawSwitchTriggerZR(drawList, font, gpos, ImVec2(gw, gh), hovered);
     drawList->AddText(font, baseFontSz, ImVec2(posX + 12.0f * s, posY + 6.0f * s),
                       mpOn ? IM_COL32(255, 255, 255, 255) : IM_COL32(165, 175, 185, 200), title);
 
@@ -511,7 +515,7 @@ void ProcessInput() {
     s_last_l3 = l3_down;
 
     static int s_tap_count = 0;
-    static int s_tap_window = 0;      /* frames left in the 3s window */
+    static uint64_t s_lastPressMs = 0;  /* ms of last ZR (gap-based resolve) */
 
     if ((l3_down && zr_pressed) || (zr_down && l3_tapped)) {
         if (!Config::no3D) {
@@ -519,17 +523,30 @@ void ProcessInput() {
             sound::PlaySelectSE();
         }
         s_tap_count = 0;
-        s_tap_window = 0;
+        s_lastPressMs = 0;
         return;
     }
 
     if (l3_down) return;
 
-    if (zr_pressed) {
+    /* ignore the ZR that just closed the MP overlay (it leaks through the
+     * release-guard release as a fresh press for ~its hold duration) */
+    static int64_t s_ovlClosedAt = -2;
+    int64_t closedAt = mp::lobby::OverlayClosedAt();
+    if (closedAt != s_ovlClosedAt) {
+        s_ovlClosedAt = closedAt;
+        if (closedAt >= 0) { s_tap_count = 0; s_lastPressMs = 0; }
+    }
+    uint64_t nowMs = (uint64_t)nn::os::GetSystemTick().GetInt64Value() * 1000 /
+                     nn::os::GetSystemTickFrequency();
+    bool zrSuppressed = s_ovlClosedAt >= 0 &&
+                        (int64_t)nowMs - s_ovlClosedAt < 500;
+
+    if (zr_pressed && !zrSuppressed) {
         s_tap_count++;
-        if (s_tap_count == 1) s_tap_window = 180;   /* 3s @60fps */
+        s_lastPressMs = nowMs;        /* gap-based resolve: 350ms */
         if (s_tap_count >= 5) {
-            s_tap_count = 0; s_tap_window = 0;
+            s_tap_count = 0; s_lastPressMs = 0;
             AutoPlay::g_enabled = !AutoPlay::g_enabled;
             mp::lobby::ReportAutoPlay(AutoPlay::g_enabled);
             sound::PlaySelectSE();
@@ -537,17 +554,20 @@ void ProcessInput() {
         }
     }
 
-    if (s_tap_window > 0) {
-        s_tap_window--;
-        if (s_tap_window <= 0) {
-            if (s_tap_count == 2) {
+    if (s_tap_count > 0 && s_lastPressMs > 0 &&
+        nowMs - s_lastPressMs >= 350) {
+            if (s_tap_count == 1) {
+                mp::lobby::RequestPadMode();
+                mp::lobby::SetOverlayOpen(true);
+                sound::PlayEnterSE();
+            } else if (s_tap_count == 2) {
                 if (!Config::noMV) {
                     g_noMovie = !g_noMovie;
                     sound::PlaySelectSE();
                 }
             }
+            /* 3-4 presses resolve to nothing */
             s_tap_count = 0;
-        }
     }
 }
 

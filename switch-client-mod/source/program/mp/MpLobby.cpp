@@ -122,6 +122,7 @@ static char  s_voteKind[8] = "";
 static int   s_voteAgreed = 0, s_voteNeed = 0, s_voteEndsIn = 0;
 static bool  s_voteExpired = false;
 static bool  s_overlayOpen = false;
+static int64_t s_ovlClosedAt = -1;   /* ms; suppresses ZR re-open in Hints */
 
 static std::deque<std::string> s_inQ;
 static std::mutex s_inQMtx;
@@ -159,11 +160,44 @@ static void SetPhase(LPhase p, const char* status) {
     s_statusLine[sizeof(s_statusLine) - 1] = 0;
 }
 
-static void SetBlocks(uint64_t mask, bool zeroLs) {
-    input::SetBlocked(mask);
-    input::SetZeroLStick(zeroLs);
+/* Overlay-close release guard: buttons (and a deflected stick) that were
+ * held when the overlay closed stay blocked until released, so the game
+ * never sees a "fresh" press from unblocking mid-hold. */
+static uint64_t s_relGuard = 0;
+static bool     s_relGuardStick = false;
+static uint64_t s_baseMask = 0;
+static bool     s_baseZeroLs = false;
+
+static void PushBlocks() {
+    /* the open overlay owns all input; ApplyBlocks() runs on every lobby
+     * message and must not hand the game input back behind it */
+    if (s_overlayOpen) {
+        input::SetBlocked(~(uint64_t)nn::hid::Minus);
+        input::SetZeroSticks(true);
+        return;
+    }
+    input::SetBlocked(s_baseMask | s_relGuard);
+    input::SetZeroSticks(s_baseZeroLs || s_relGuardStick);
 }
-static void ClearAllInput() { input::ResetAll(); }
+static void SetBlocks(uint64_t mask, bool zeroLs) {
+    s_baseMask = mask;
+    s_baseZeroLs = zeroLs;
+    PushBlocks();
+}
+static void GuardPump() {
+    if (s_overlayOpen || (!s_relGuard && !s_relGuardStick)) return;
+    s_relGuard &= input::NavHeld();
+    if (s_relGuardStick) {
+        int sx = 0, sy = 0;
+        input::NavStick(&sx, &sy);
+        if (sx < 8000 && sx > -8000 && sy < 8000 && sy > -8000)
+            s_relGuardStick = false;
+    }
+    PushBlocks();
+}
+static void ClearAllInput() { input::ResetAll(); s_relGuard = 0;
+                              s_relGuardStick = false; s_baseMask = 0;
+                              s_baseZeroLs = false; }
 
 static const uint64_t MASK_FOLLOWER =
     nn::hid::A | nn::hid::Up | nn::hid::Down | nn::hid::L | nn::hid::R |
@@ -503,7 +537,7 @@ static void ProcessLine(const std::string& l) {
                    nm[0] ? nm : by);
         if (p) {
             /* pause ourselves if not already paused */
-            if (!s_gamePaused) input::Tap(nn::hid::Plus, 60, 100);
+            if (!s_gamePaused) input::Tap(nn::hid::Plus, 60, 100, true);
             ApplyBlocks();
         } else {
             /* resume via the retry-safe mechanism (only taps while paused) */
@@ -658,8 +692,23 @@ void Pump() {
     {   static bool prevOv = false;
         if (s_overlayOpen != prevOv) {
             prevOv = s_overlayOpen;
-            if (s_overlayOpen) SetBlocks(MASK_ALL_NO_MINUS, true);
-            else ApplyBlocks();
+            if (s_overlayOpen) {
+                s_relGuard = 0;
+                s_relGuardStick = false;
+                input::NavClear();   /* drop the edge that opened us */
+                PushBlocks();        /* full block; base mask kept for close */
+            } else {
+                s_ovlClosedAt = NowMs();
+                /* arm the release guard with what is held right now */
+                s_relGuard = input::NavHeld() & ~nn::hid::Minus;
+                int sx = 0, sy = 0;
+                input::NavStick(&sx, &sy);
+                s_relGuardStick = sx >= 8000 || sx <= -8000 ||
+                                  sy >= 8000 || sy <= -8000;
+                ApplyBlocks();
+            }
+        } else {
+            GuardPump();
         }
     }
 
@@ -858,7 +907,7 @@ void OnPvSelFrame(const void* sel) {
                 s_launchBlocking = true;
                 SetBlocks(MASK_ALL_NO_MINUS, true);
                 if (selPv == s_localPv) {
-                    input::Tap(nn::hid::A, 80, 80);
+                    input::Tap(nn::hid::A, 80, 80, true);
                     s_launchStage = 1;
                     s_launchStageAt = now;
                     s_launchTries = 0;
@@ -873,12 +922,12 @@ void OnPvSelFrame(const void* sel) {
             if (state == 8) { s_launchStage = 2; s_launchStageAt = now; }
             else if (now - s_launchStageAt > 2000) {
                 if (++s_launchTries > 3) s_launchStage = 3, s_launchStageAt = 0;
-                else { input::Tap(nn::hid::A, 80, 80); s_launchStageAt = now; }
+                else { input::Tap(nn::hid::A, 80, 80, true); s_launchStageAt = now; }
             }
         } else if (s_launchStage == 2) {
             /* the panel ignores input while it animates in */
             if (now - s_launchStageAt >= 700) {
-                input::Tap(nn::hid::A, 80, 80);
+                input::Tap(nn::hid::A, 80, 80, true);
                 s_launchStage = 3; s_launchStageAt = now; s_launchTries = 0;
             }
         } else if (s_launchStage == 3) {
@@ -886,7 +935,7 @@ void OnPvSelFrame(const void* sel) {
             else if (state == 8 && s_launchStageAt && now - s_launchStageAt > 1500 &&
                      s_launchTries < 3) {
                 s_launchTries++;
-                input::Tap(nn::hid::A, 80, 80);
+                input::Tap(nn::hid::A, 80, 80, true);
                 s_launchStageAt = now;
             }
             else if (!s_launchStageAt || now - s_launchStageAt > 4000) {
@@ -945,7 +994,7 @@ void OnPvGameFrame(PVGameData* pv) {
                     "{\"t\":\"loaded\",\"round\":%d}", s_round);
                 SendLine(m);
             } else if (now - s_apLastTap >= 150) {
-                input::Tap(nn::hid::Plus, 50, 100);
+                input::Tap(nn::hid::Plus, 50, 100, true);
                 s_apLastTap = now;
             }
         }
@@ -972,7 +1021,7 @@ void OnPvGameFrame(PVGameData* pv) {
                 WriteLog("[MP-L] resume FAILED\n");
                 s_resumePending = false;
             } else {
-                input::Tap(nn::hid::Plus, 50, 100);
+                input::Tap(nn::hid::Plus, 50, 100, true);
             }
         }
     }
@@ -1113,7 +1162,12 @@ void CmdLobbyJoin(const char* code) {
 void CmdLobbyLeave() { SendLine("{\"t\":\"lobby_leave\"}"); }
 bool OverlayOpen() { return s_overlayOpen; }
 void ToggleOverlay() { s_overlayOpen = !s_overlayOpen; }
-void SetOverlayOpen(bool open) { s_overlayOpen = open; }
+void SetOverlayOpen(bool open) {
+    s_overlayOpen = open;
+}
+/* ms timestamp of the last overlay close (-1 = none); used by Hints to
+ * ignore the ZR press that closed us for a short window. */
+int64_t OverlayClosedAt() { return s_ovlClosedAt; }
 
 void CmdPickMode(const char* mode, const char* cid) {
     char m[120];

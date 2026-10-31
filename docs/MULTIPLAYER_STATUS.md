@@ -85,6 +85,17 @@ placement, interactive bot session end-to-end.
 - Verified on Ryujinx and on the real Switch (touch): button states, HOME, EDIT NAME, JOIN ROOM (typed code),
   CREATE, ROOM with 3–6 members, kick, ROOM CONFIG assigned picker, minimized room info, Exit Room. Not yet
   re-verified with the new UI: a full round, group pause votes.
+- Controller support (docked, no touchscreen): single **ZR** opens the overlay (gap-based: ZR×2 = No Movie,
+  ZR×5 = AutoPlay, L3+ZR = 2D all preserved); **ZR** closes it. D-pad/left stick moves a cyan focus ring
+  (spatial, no wrap; hold repeats after 400 ms then every 120 ms), **A** activates, **B** backs out / closes,
+  kick and Exit Room need a second **A** within 3 s (touch stays single-tap). On the keyboard: A types,
+  B deletes (empty buffer = cancel), Y = space, X = caps, L/R = caret, Plus = submit. Pad state comes from
+  `mp::input` nav edges (merged state pre-block, so injected admin taps work); a release guard keeps held
+  buttons/sticks blocked until released after close. Admin `tap`s are now masked by blocks like real input;
+  the lobby's own injects use `Tap(..., force=true)`.
+- Fixed: every inbound `lobby` message ran `ApplyBlocks()` and handed input back to the game behind an open
+  overlay (pad A on a menu item also opened/started the song). `PushBlocks()` now forces a full block while the
+  overlay is open. Verified on Ryujinx (docked, pad only); real-Switch pad test still pending (console offline).
 
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if

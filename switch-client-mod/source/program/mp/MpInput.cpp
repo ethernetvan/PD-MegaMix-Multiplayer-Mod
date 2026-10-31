@@ -9,6 +9,7 @@ struct TapEntry {
     uint64_t buttons;
     uint32_t hold_ms;
     uint32_t gap_ms;
+    bool     force;
 };
 
 static TapEntry    s_taps[32];
@@ -16,11 +17,15 @@ static uint32_t    s_tapHead = 0, s_tapCount = 0;
 static uint64_t    s_tapStartTick = 0;
 static std::mutex  s_mtx;
 static uint64_t    s_blocked = 0;
-static bool        s_zeroLStick = false;
+static bool        s_zeroSticks = false;
 static int         s_bypassDepth = 0;   /* set while our own UI polls pad */
 static uint64_t    s_bypassTid = 0;
 static uint64_t    s_prevReal = 0;      /* real (pre-mask) buttons last Apply */
 static uint64_t    s_realEdges = 0;     /* latched rising edges, real input */
+static uint64_t    s_navHeld = 0;       /* nav: real|inject, pre-block */
+static uint64_t    s_navPrev = 0;
+static uint64_t    s_navEdges = 0;      /* latched nav rising edges */
+static int32_t     s_navLx = 0, s_navLy = 0;
 
 /* TPIDRRO_EL0 is unique per thread on Horizon. */
 static inline uint64_t CurTid() {
@@ -44,7 +49,7 @@ static uint64_t MsToTick(uint64_t ms) {
     return ms * nn::os::GetSystemTickFrequency() / 1000;
 }
 
-void Tap(uint64_t buttons, uint32_t hold_ms, uint32_t gap_ms) {
+void Tap(uint64_t buttons, uint32_t hold_ms, uint32_t gap_ms, bool force) {
     if (buttons == 0) return;
     std::lock_guard<std::mutex> lk(s_mtx);
     if (s_tapCount == 32) {                  /* full: drop oldest */
@@ -52,7 +57,7 @@ void Tap(uint64_t buttons, uint32_t hold_ms, uint32_t gap_ms) {
         s_tapCount--;
     }
     uint32_t idx = (s_tapHead + s_tapCount) & 31;
-    s_taps[idx] = {buttons, hold_ms, gap_ms};
+    s_taps[idx] = {buttons, hold_ms, gap_ms, force};
     if (s_tapCount == 0) s_tapStartTick = NowTick();
     s_tapCount++;
 }
@@ -84,9 +89,9 @@ void ClearBlocked() {
     s_blocked = 0;
 }
 
-void SetZeroLStick(bool on) {
+void SetZeroSticks(bool on) {
     std::lock_guard<std::mutex> lk(s_mtx);
-    s_zeroLStick = on;
+    s_zeroSticks = on;
 }
 
 void BeginBypass() {
@@ -107,18 +112,54 @@ uint64_t ConsumeRealPress(uint64_t mask) {
     return r;
 }
 
+/* ---------------- pad navigation (merged path only) ---------------- */
+
+void NavUpdate(const nn::hid::NpadHandheldState& st) {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    s_navEdges |= st.buttons & ~s_navPrev;
+    s_navPrev = st.buttons;
+    s_navHeld = st.buttons;
+    s_navLx = st.analogStickL[0];
+    s_navLy = st.analogStickL[1];
+}
+
+uint64_t NavConsume(uint64_t mask) {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    uint64_t r = s_navEdges & mask;
+    s_navEdges &= ~mask;
+    return r;
+}
+
+uint64_t NavHeld() {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    return s_navHeld;
+}
+
+void NavStick(int* x, int* y) {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    if (x) *x = s_navLx;
+    if (y) *y = s_navLy;
+}
+
+void NavClear() {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    s_navEdges = 0;
+    s_navPrev = s_navHeld;
+}
+
 void ResetAll() {
     std::lock_guard<std::mutex> lk(s_mtx);
     s_blocked = 0;
-    s_zeroLStick = false;
+    s_zeroSticks = false;
     s_tapCount = 0;
     s_spam.active = false;
 }
 
-void Apply(nn::hid::NpadHandheldState* st) {
+void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut) {
     if (st == nullptr) return;
     uint64_t now = NowTick();
     uint64_t inject = 0;
+    uint64_t injectForce = 0;
     uint64_t blocked = 0;
     bool zeroLs = false;
 
@@ -130,7 +171,7 @@ void Apply(nn::hid::NpadHandheldState* st) {
         s_realEdges |= st->buttons & ~s_prevReal;
         s_prevReal = st->buttons;
         blocked = s_blocked;
-        zeroLs = s_zeroLStick;
+        zeroLs = s_zeroSticks;
 
         /* spam: half-period on/off while active */
         if (s_spam.active && s_spam.hz > 0) {
@@ -148,7 +189,8 @@ void Apply(nn::hid::NpadHandheldState* st) {
             const TapEntry& e = s_taps[s_tapHead];
             uint64_t elapsed = now - s_tapStartTick;
             if (elapsed < MsToTick(e.hold_ms)) {
-                inject |= e.buttons;
+                if (e.force) injectForce |= e.buttons;
+                else         inject |= e.buttons;
                 break;
             }
             if (elapsed < MsToTick(e.hold_ms + e.gap_ms))
@@ -157,11 +199,21 @@ void Apply(nn::hid::NpadHandheldState* st) {
             s_tapCount--;
             s_tapStartTick = now;
         }
+
+        /* nav snapshot: real | inject, before blocking / stick zeroing */
+        if (navOut) {
+            *navOut = *st;
+            navOut->buttons |= inject | injectForce;
+        }
     }
 
+    st->buttons |= inject;      /* normal taps are masked like real input */
     st->buttons &= ~blocked;
-    st->buttons |= inject;
-    if (zeroLs) { st->analogStickL[0] = 0; st->analogStickL[1] = 0; }
+    st->buttons |= injectForce; /* the lobby's own injects always get through */
+    if (zeroLs) {
+        st->analogStickL[0] = 0; st->analogStickL[1] = 0;
+        st->analogStickR[0] = 0; st->analogStickR[1] = 0;
+    }
 }
 
 struct BtnName { const char* name; uint64_t bit; };

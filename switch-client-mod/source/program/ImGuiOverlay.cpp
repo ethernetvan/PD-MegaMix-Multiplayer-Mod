@@ -379,7 +379,8 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
             }
         }
 
-        if (!isTouchActive) {
+        bool mpPad = mp::lobby::OverlayOpen() && mp::lobby::PadModeActive();
+        if (!isTouchActive && !mpPad) {
             float lx = (float)npad.analogStickL[0] / 32767.0f;
             float ly = -(float)npad.analogStickL[1] / 32767.0f;
             if (std::abs(lx) > 0.15f || std::abs(ly) > 0.15f) {
@@ -409,7 +410,8 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
                          mp::lobby::OverlayOpen();
 
     bool shouldDrawCursor = false;
-    if (ImGui::g_imguiHasFocus && !isTouchActive) {
+    if (ImGui::g_imguiHasFocus && !isTouchActive &&
+        !(mp::lobby::OverlayOpen() && mp::lobby::PadModeActive())) {
         if (isFullWindowOpen) {
             shouldDrawCursor = true;
         }

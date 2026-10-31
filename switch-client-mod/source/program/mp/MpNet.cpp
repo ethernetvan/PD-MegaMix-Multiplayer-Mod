@@ -894,7 +894,7 @@ void OnPvGameFrame() {
                 (unsigned long long)st);
             Enqueue(m);
         } else if (now - s_ap.lastTap >= 150) {
-            input::Tap(nn::hid::Plus, 50, 100);
+            input::Tap(nn::hid::Plus, 50, 100, true);
             s_ap.lastTap = now;
         }
     }

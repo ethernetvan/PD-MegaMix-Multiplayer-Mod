@@ -19,6 +19,115 @@ static bool s_capsLock          = false;
 static int  s_skipCloseFrames   = 0;
 static int  s_cursorPos         = 0;
 
+static void InsertTextAtCursor(const char* text);
+static void BackspaceAtCursor();
+static void ClearAtCursor();
+
+/* pad navigation state (only MpUi drives this) */
+static bool s_padMode           = false;
+static int  s_focusR            = 1;   /* focused key row (default: 'q') */
+static int  s_focusC            = 0;
+struct KbKey { ImVec2 a, b; const char* label; int act; };
+static KbKey s_keys[5][16];            /* act: 0 insert 1 bs 2 clr 3 caps
+                                        *      4 close 5 < 6 > 7 space 8 ok */
+static const int kCols[5] = {16, 14, 14, 12, 5};
+
+void SetPadMode(bool on) {
+    if (on && !s_padMode) { s_focusR = 1; s_focusC = 0; }
+    s_padMode = on;
+}
+
+static void ActivateFocused() {
+    if (s_focusR < 0 || s_focusR > 4) return;
+    if (s_focusC < 0 || s_focusC >= kCols[s_focusR]) return;
+    const KbKey& k = s_keys[s_focusR][s_focusC];
+    switch (k.act) {
+        case 0: InsertTextAtCursor(k.label); break;
+        case 1: BackspaceAtCursor(); break;
+        case 2: ClearAtCursor(); break;
+        case 3: s_capsLock = !s_capsLock; break;
+        case 4: s_isOpen = false; break;
+        case 5:
+            if (s_cursorPos > 0) {
+                int p = s_cursorPos - 1;
+                while (p > 0 && (static_cast<uint8_t>(s_targetBuf[p]) & 0xC0) == 0x80) p--;
+                s_cursorPos = p;
+            }
+            break;
+        case 6:
+            if (s_targetBuf) {
+                int curLen = static_cast<int>(strlen(s_targetBuf));
+                if (s_cursorPos < curLen) {
+                    int p = s_cursorPos + 1;
+                    while (p < curLen && (static_cast<uint8_t>(s_targetBuf[p]) & 0xC0) == 0x80) p++;
+                    s_cursorPos = p;
+                }
+            }
+            break;
+        case 7: InsertTextAtCursor(" "); break;
+        case 8:
+            if (s_onSubmitCb) s_onSubmitCb();
+            s_isOpen = false;
+            break;
+    }
+}
+
+void PadInput(uint64_t edges, int moveX, int moveY) {
+    if (!s_padMode || !s_isOpen) return;
+    constexpr uint64_t A_ = 1ULL << 0, B_ = 1ULL << 1, X_ = 1ULL << 2,
+                       Y_ = 1ULL << 3, L_ = 1ULL << 6, R_ = 1ULL << 7,
+                       Plus_ = 1ULL << 10;
+    if (moveX) {
+        float cx = (s_keys[s_focusR][s_focusC].a.x + s_keys[s_focusR][s_focusC].b.x) * 0.5f;
+        int best = -1; float bd = 1e30f;
+        for (int i = 0; i < kCols[s_focusR]; i++) {
+            float ix = (s_keys[s_focusR][i].a.x + s_keys[s_focusR][i].b.x) * 0.5f;
+            float d = moveX > 0 ? ix - cx : cx - ix;
+            if (d > 1.0f && d < bd) { bd = d; best = i; }
+        }
+        if (best < 0) best = moveX > 0 ? kCols[s_focusR] - 1 : 0;
+        s_focusC = best;
+    }
+    if (moveY) {
+        int r = s_focusR + moveY;
+        if (r < 0) r = 0;
+        if (r > 4) r = 4;
+        float cx = (s_keys[s_focusR][s_focusC].a.x + s_keys[s_focusR][s_focusC].b.x) * 0.5f;
+        int best = 0; float bd = 1e30f;
+        for (int i = 0; i < kCols[r]; i++) {
+            float ix = (s_keys[r][i].a.x + s_keys[r][i].b.x) * 0.5f;
+            float d = std::fabs(ix - cx);
+            if (d < bd) { bd = d; best = i; }
+        }
+        s_focusR = r; s_focusC = best;
+    }
+    if (edges & A_) ActivateFocused();
+    if (edges & B_) BackspaceAtCursor();
+    if (edges & Y_) InsertTextAtCursor(" ");
+    if (edges & X_) s_capsLock = !s_capsLock;
+    if (edges & L_) {
+        if (s_cursorPos > 0) {
+            int p = s_cursorPos - 1;
+            while (p > 0 && (static_cast<uint8_t>(s_targetBuf[p]) & 0xC0) == 0x80) p--;
+            s_cursorPos = p;
+        }
+    }
+    if (edges & R_) {
+        if (s_targetBuf) {
+            int curLen = static_cast<int>(strlen(s_targetBuf));
+            if (s_cursorPos < curLen) {
+                int p = s_cursorPos + 1;
+                while (p < curLen && (static_cast<uint8_t>(s_targetBuf[p]) & 0xC0) == 0x80) p++;
+                s_cursorPos = p;
+            }
+        }
+    }
+    if (edges & Plus_) {
+        if (s_onSubmitCb) s_onSubmitCb();
+        s_isOpen = false;
+    }
+}
+
 std::string ShowSwitchKeyboard(const char* guideText, const char* initialText) {
     return initialText ? std::string(initialText) : "";
 }
@@ -186,18 +295,27 @@ void Draw() {
         ImU32 txtCol = IM_COL32(235, 240, 245, (int)(250 * s_kbAnim));
         ImU32 txtPrs = IM_COL32(35, 42, 48, (int)(255 * s_kbAnim));
 
+        /* records a key's rect for pad navigation, then draws it */
+        auto Key = [&](int row, int col, int act, const char* label,
+                       float x, float y, float w, float h,
+                       ImU32 c0, ImU32 c1, ImU32 c2, ImU32 ct) -> bool {
+            if (row >= 0 && row < 5 && col >= 0 && col < 16)
+                s_keys[row][col] = {ImVec2(x, y), ImVec2(x + w, y + h), label, act};
+            return DrawPassiveButton(label, x, y, w, h, c0, c1, c2, ct);
+        };
+
         float curY = startY + 8.0f * s;
 
         const char* r0[] = {"1","2","3","4","5","6","7","8","9","0","-","_","!","&","?"};
         float r0_btnW = (kbWidth - 16.0f * s - (15 * gap) - 75.0f * s) / 15.0f;
         float curX = startX + 8.0f * s;
         for (int i = 0; i < 15; i++) {
-            if (DrawPassiveButton(r0[i], curX, curY, r0_btnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+            if (Key(0, i, 0, r0[i], curX, curY, r0_btnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
                 InsertTextAtCursor(r0[i]);
             }
             curX += r0_btnW + gap;
         }
-        if (DrawPassiveButton("<-", curX, curY, 75.0f * s, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+        if (Key(0, 15, 1, "<-", curX, curY, 75.0f * s, btnH, btnBg, btnHov, btnPrs, txtCol)) {
             BackspaceAtCursor();
         }
 
@@ -209,7 +327,7 @@ void Draw() {
         const char** r1 = s_capsLock ? r1_upper : r1_lower;
         float r1_btnW = (kbWidth - 16.0f * s - (13 * gap)) / 14.0f;
         for (int i = 0; i < 14; i++) {
-            if (DrawPassiveButton(r1[i], curX, curY, r1_btnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+            if (Key(1, i, 0, r1[i], curX, curY, r1_btnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
                 InsertTextAtCursor(r1[i]);
             }
             curX += r1_btnW + gap;
@@ -222,7 +340,7 @@ void Draw() {
         float clrBtnW  = 75.0f * s;
         ImU32 capsBg  = s_capsLock ? IM_COL32(0, 204, 166, (int)(245 * s_kbAnim)) : btnBg;
         ImU32 capsTxt = s_capsLock ? IM_COL32(20, 25, 30, (int)(255 * s_kbAnim))  : txtCol;
-        if (DrawPassiveButton("CAPS", curX, curY, capsBtnW, btnH, capsBg, btnHov, btnPrs, capsTxt)) {
+        if (Key(2, 0, 3, "CAPS", curX, curY, capsBtnW, btnH, capsBg, btnHov, btnPrs, capsTxt)) {
             s_capsLock = !s_capsLock;
         }
         curX += capsBtnW + gap;
@@ -232,12 +350,12 @@ void Draw() {
         const char** r2 = s_capsLock ? r2_upper : r2_lower;
         float r2_btnW = (kbWidth - 16.0f * s - (13 * gap) - capsBtnW - clrBtnW) / 12.0f;
         for (int i = 0; i < 12; i++) {
-            if (DrawPassiveButton(r2[i], curX, curY, r2_btnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+            if (Key(2, i + 1, 0, r2[i], curX, curY, r2_btnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
                 InsertTextAtCursor(r2[i]);
             }
             curX += r2_btnW + gap;
         }
-        if (DrawPassiveButton("CLR", curX, curY, clrBtnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+        if (Key(2, 13, 2, "CLR", curX, curY, clrBtnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
             ClearAtCursor();
         }
 
@@ -249,7 +367,7 @@ void Draw() {
         const char** r3 = s_capsLock ? r3_upper : r3_lower;
         float r3_btnW = (kbWidth - 16.0f * s - (11 * gap)) / 12.0f;
         for (int i = 0; i < 12; i++) {
-            if (DrawPassiveButton(r3[i], curX, curY, r3_btnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+            if (Key(3, i, 0, r3[i], curX, curY, r3_btnW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
                 InsertTextAtCursor(r3[i]);
             }
             curX += r3_btnW + gap;
@@ -263,12 +381,12 @@ void Draw() {
         float jumpW   = 200.0f * s;
         float spaceW  = kbWidth - 16.0f * s - (4 * gap) - closeW - (arrowW * 2.0f) - jumpW;
 
-        if (DrawPassiveButton("CLOSE", curX, curY, closeW, btnH, IM_COL32(60, 30, 35, 235), IM_COL32(90, 40, 45, 255), btnPrs, txtCol)) {
+        if (Key(4, 0, 4, "CLOSE", curX, curY, closeW, btnH, IM_COL32(60, 30, 35, 235), IM_COL32(90, 40, 45, 255), btnPrs, txtCol)) {
             s_isOpen = false;
         }
         curX += closeW + gap;
 
-        if (DrawPassiveButton("<", curX, curY, arrowW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+        if (Key(4, 1, 5, "<", curX, curY, arrowW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
             if (s_cursorPos > 0) {
                 int p = s_cursorPos - 1;
                 while (p > 0 && (static_cast<uint8_t>(s_targetBuf[p]) & 0xC0) == 0x80) {
@@ -279,7 +397,7 @@ void Draw() {
         }
         curX += arrowW + gap;
 
-        if (DrawPassiveButton(">", curX, curY, arrowW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+        if (Key(4, 2, 6, ">", curX, curY, arrowW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
             int curLen = s_targetBuf ? static_cast<int>(strlen(s_targetBuf)) : 0;
             if (s_cursorPos < curLen) {
                 int p = s_cursorPos + 1;
@@ -291,16 +409,31 @@ void Draw() {
         }
         curX += arrowW + gap;
 
-        if (DrawPassiveButton("SPACE", curX, curY, spaceW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
+        if (Key(4, 3, 7, "SPACE", curX, curY, spaceW, btnH, btnBg, btnHov, btnPrs, txtCol)) {
             InsertTextAtCursor(" ");
         }
         curX += spaceW + gap;
 
         ImU32 jBg  = IM_COL32(0, 204, 166, (int)(220 * s_kbAnim));
         ImU32 jHov = IM_COL32(25, 242, 204, (int)(255 * s_kbAnim));
-        if (DrawPassiveButton(s_submitLabel.c_str(), curX, curY, jumpW, btnH, jBg, jHov, btnPrs, txtPrs)) {
+        if (Key(4, 4, 8, s_submitLabel.c_str(), curX, curY, jumpW, btnH, jBg, jHov, btnPrs, txtPrs)) {
             if (s_onSubmitCb) s_onSubmitCb();
             s_isOpen = false;
+        }
+
+        /* pad focus ring (pulsing cyan, like MpUi) */
+        if (s_padMode && s_focusR >= 0 && s_focusR < 5 &&
+            s_focusC >= 0 && s_focusC < kCols[s_focusR]) {
+            const KbKey& kk = s_keys[s_focusR][s_focusC];
+            float pulse = 0.85f + 0.15f * sinf((float)ImGui::GetTime() * 6.0f);
+            ImU32 glow = IM_COL32(0, 195, 227, (int)(70 * s_kbAnim));
+            ImU32 ring = IM_COL32(0, 195, 227, (int)(255 * pulse * s_kbAnim));
+            draw->AddRect(ImVec2(kk.a.x - 5.0f * s, kk.a.y - 5.0f * s),
+                          ImVec2(kk.b.x + 5.0f * s, kk.b.y + 5.0f * s),
+                          glow, 9.0f * s, 0, 3.0f * s);
+            draw->AddRect(ImVec2(kk.a.x - 2.0f * s, kk.a.y - 2.0f * s),
+                          ImVec2(kk.b.x + 2.0f * s, kk.b.y + 2.0f * s),
+                          ring, 6.0f * s, 0, 4.0f * s);
         }
 
         draw->PopClipRect();

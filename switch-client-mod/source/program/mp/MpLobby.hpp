@@ -82,6 +82,12 @@ void CmdResumeReq();
 bool OverlayOpen();
 void ToggleOverlay();
 void SetOverlayOpen(bool open);
+int64_t OverlayClosedAt();   /* ms of last close, -1 none */
+/* true while the overlay is open AND driven by pad buttons (focus model);
+ * ImGuiOverlay then leaves the stick/ZL/ZR alone. */
+bool PadModeActive();
+/* call before SetOverlayOpen(true) to start in pad mode (e.g. ZR open) */
+void RequestPadMode();
 void ReportAutoPlay(bool on);
 void GetSnapshot(Snapshot* out);
 
