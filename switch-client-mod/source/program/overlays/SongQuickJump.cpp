@@ -15,6 +15,7 @@
 #include "nc/diva_nc.hpp"
 #include "../nc/ui/customize_sel.hpp"
 #include "../logger.hpp"
+#include "../mp/MpLobby.hpp"
 
 namespace ImGui {
     extern bool g_imguiHasFocus;
@@ -388,7 +389,8 @@ static void ProcessJumpLogic() {
 void Draw() {
     ProcessJumpLogic();
 
-    if (!IsVisible()) return;
+    /* the search bar would sit on top of the multiplayer overlay */
+    if (!IsVisible() || mp::lobby::OverlayOpen()) return;
 
     ImGui::g_imguiHasFocus = true;
 
@@ -522,7 +524,7 @@ void Draw() {
         const char* hint = s_searchById ? "PV ID..." : "Song Name...";
 
         auto InputTextScrollCallback = [](ImGuiInputTextCallbackData* data) -> int {
-            if (VirtualKeyboard::IsOpen()) {
+            if (VirtualKeyboard::IsOpenFor(s_inputBuf)) {
                 if (strcmp(data->Buf, s_inputBuf) != 0) {
                     data->DeleteChars(0, data->BufTextLen);
                     data->InsertChars(0, s_inputBuf);
@@ -539,7 +541,7 @@ void Draw() {
             return 0;
         };
 
-        if (VirtualKeyboard::IsOpen()) {
+        if (VirtualKeyboard::IsOpenFor(s_inputBuf)) {
             ImGui::SetKeyboardFocusHere(0);
         }
 
@@ -563,7 +565,7 @@ void Draw() {
             }
         }
 
-        if (VirtualKeyboard::IsOpen()) {
+        if (VirtualKeyboard::IsOpenFor(s_inputBuf)) {
             ImVec2 itemMin = ImGui::GetItemRectMin();
             ImVec2 itemMax = ImGui::GetItemRectMax();
 

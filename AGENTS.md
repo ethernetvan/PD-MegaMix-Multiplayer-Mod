@@ -33,7 +33,9 @@ Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\
 ## Server (Python 3.13, stdlib only) — `server/`
 - Run: `python server/mp_server.py` (TCP 7777, UDP discovery 7778, admin 127.0.0.1:7790). Windows Firewall must allow Python on private networks for real consoles.
 - Tests: `cd server && python -m unittest test_lobby.py -v`.
-- Bots/sim: `server/bot.py --help`, `server/sim.py`. Admin/debug CLI: `server/admin.py` (tap/spam/block/jump/autopause/list_pvs/lobbies/kick/set_leader).
+- Bots/sim: `server/bot.py --help`, `server/sim.py`. Admin/debug CLI: `server/admin.py` (tap/spam/block/jump/autopause/list_pvs/lobbies/kick/set_leader/overlay open|close/cursor X Y [--click], 720p coords).
+- Admin debug commands without `--cid` are broadcast to EVERY connected client, including the real Switch. When the console is connected, target Ryujinx explicitly: `python admin.py --cid <cid> tap A` (cids are listed by `admin.py lobbies`).
+- Real-Switch UI testing: `nx.py raw "touch X Y"` taps the touchscreen (1280x720), `nx.py shot NAME` captures it.
 - Lobby engine is pure logic in `server/lobby.py` (protocol v1 documented in its docstring).
 
 ## Reverse-engineering artifacts

@@ -76,6 +76,7 @@ struct Snapshot {
 
 /* group pause / pick mode commands */
 void CmdPickMode(const char* mode, const char* cid);
+void CmdKick(const char* cid);       /* owner only */
 void CmdPauseReq();
 void CmdResumeReq();
 bool OverlayOpen();

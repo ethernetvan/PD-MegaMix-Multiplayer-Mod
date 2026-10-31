@@ -7,6 +7,8 @@
 namespace VirtualKeyboard {
     bool IsOpen();
     bool IsVisible();
+    /* true when the keyboard is open AND editing this buffer */
+    bool IsOpenFor(const char* target_buf);
 
     int  GetCursorPos();
 

@@ -35,6 +35,10 @@ bool IsVisible() {
     return s_isOpen || (s_kbAnim > 0.005f);
 }
 
+bool IsOpenFor(const char* target_buf) {
+    return s_isOpen && s_targetBuf == target_buf;
+}
+
 void Open(char* target_buf, size_t buf_size, const char* submit_label, void (*on_submit_cb)()) {
     s_targetBuf       = target_buf;
     s_bufSize         = buf_size;

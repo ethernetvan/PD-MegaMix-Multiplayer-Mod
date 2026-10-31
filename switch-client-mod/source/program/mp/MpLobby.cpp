@@ -328,12 +328,12 @@ static bool CidInArray(const char* line, const jsmntok_t* tok, int ntok,
 }
 
 static void ProcessLine(const std::string& l) {
-    char line[2048];
+    char line[4096];         /* matches MpNet's max line length */
     strncpy(line, l.c_str(), sizeof(line) - 1);
     line[sizeof(line) - 1] = 0;
     jsmn_parser ps; jsmn_init(&ps);
-    jsmntok_t tok[256];
-    int ntok = jsmn_parse(&ps, line, strlen(line), tok, 256);
+    jsmntok_t tok[384];      /* 8 members x ~20 tokens + header */
+    int ntok = jsmn_parse(&ps, line, strlen(line), tok, 384);
     if (ntok < 1 || tok[0].type != JSMN_OBJECT) return;
     int ti = mpjson::Find(line, tok, ntok, "t");
     char t[24] = "";
@@ -721,6 +721,7 @@ void OnPvSelInit() {
 void OnPvSelDest() {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
     s_selActive = false;
+    s_overlayOpen = false;
     s_destCheckAt = NowMs() + 1500;
 }
 
@@ -1123,6 +1124,12 @@ void CmdPickMode(const char* mode, const char* cid) {
     else
         snprintf(m, sizeof(m),
             "{\"t\":\"set_pick_mode\",\"mode\":\"%s\"}", mode);
+    SendLine(m);
+}
+void CmdKick(const char* cid) {
+    if (!cid || !*cid) return;
+    char m[80];
+    snprintf(m, sizeof(m), "{\"t\":\"kick\",\"cid\":\"%.20s\"}", cid);
     SendLine(m);
 }
 void CmdPauseReq() {
