@@ -38,3 +38,6 @@ Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\
 
 ## Reverse-engineering artifacts
 - Kept OUTSIDE the repo in `C:\Users\cl672\Documents\Coding\mm-re\` (extracted exefs, `nso_tool.py`, symbol dumps, screenshots, logs). Never commit game binaries.
+
+## Git
+- Commits must NOT be authored by or attributed to Devin: no Devin author/committer, no `Generated with [Devin](...)` line, no `Co-Authored-By: Devin ...` trailer, no Devin mention anywhere in the message. Commit as the repo's configured identity (Evan Thomas).

@@ -37,7 +37,7 @@ sees final standings, then returns to song select. A web page will later spectat
 - Failing (life 0) ends the song early.
 
 ## NEXT SESSION START HERE
-Items 1–7 below were implemented in commit `eda4eb0` (28/28 server tests pass, client builds, boots to song
+Items 1–7 below were implemented in commit `78ecb4e` (28/28 server tests pass, client builds, boots to song
 select) but have NOT been exercised on a device. First job: verify each on Ryujinx and the real Switch —
 MP button + overlay open/close + minimized room info, create/join from the overlay, owner pick modes across
 rounds, owner pause/resume for everyone, non-owner pause vote (pass + 15s expiry), results stay until the
@@ -62,7 +62,7 @@ Kill stale `mp_server.py` processes before starting a server (port 7778 conflict
 - Bot: `python bot.py` gets `error proto_mismatch` then a SystemExit traceback — hello must send `proto: 1`; handle
   server errors/disconnects without tracebacks (stay running, allow reconnect).
 
-Round-5 status (commit after 333094e): implemented and deployed to the real Switch, NOT verified on device.
+Round-5 status (commit after c14aa8c): implemented and deployed to the real Switch, NOT verified on device.
 Known gap: the "AUTO" tag is tracked by the server but not yet rendered in the client leaderboard/standings/member rows.
 Verify next: overlay 3-button layout + X-only close, results→song-list recipe after owner leaves, "is picking a song"
 placement, interactive bot session end-to-end.
@@ -110,4 +110,4 @@ placement, interactive bot session end-to-end.
 
 ## Known quirks
 - Different subnets (PC 10.169.0.x, Switch 10.167.0.x) → set `server_ip` on the console.
-- Commit `bfd13bc`'s message also lists lobby fixes that actually landed in `3d17cb8`.
+- Commit `8e4dc28`'s message also lists lobby fixes that actually landed in `35c196e`.
