@@ -44,7 +44,7 @@ class Member:
     __slots__ = ("cid", "name", "connected", "role", "loaded", "final",
                  "back_in_sel", "state", "prev_combo_bucket", "low_life_armed",
                  "disconnect_at", "last_activity",
-                 "ready", "ready_reason", "ready_pv")
+                 "ready", "ready_reason", "ready_pv", "autoplay")
 
     def __init__(self, cid, name):
         self.cid = cid
@@ -62,6 +62,7 @@ class Member:
         self.ready = True
         self.ready_reason = ""
         self.ready_pv = -1
+        self.autoplay = False
 
 
 class Round:
@@ -156,7 +157,8 @@ class LobbyManager:
                 "members": [{"cid": m.cid, "name": m.name,
                              "connected": m.connected, "role": m.role,
                              "loaded": m.loaded,
-                             "ready": m.ready, "reason": m.ready_reason}
+                             "ready": m.ready, "reason": m.ready_reason,
+                             "autoplay": m.autoplay}
                             for m in lobby.members]}
 
     def _broadcast_lobby(self, lobby):
@@ -249,6 +251,13 @@ class LobbyManager:
             self._ready(cid, msg, now)
         elif t == "set_pick_mode":
             self._set_pick_mode(cid, msg, now)
+        elif t == "autoplay":
+            m = self._member(self._lobby_of(cid), cid)
+            if m:
+                m.autoplay = bool(msg.get("on"))
+                lobby = self._lobby_of(cid)
+                if lobby:
+                    self._broadcast_lobby(lobby)
         elif t in ("pause_req", "resume_req"):
             self._pause_req(cid, msg, now, t == "pause_req")
 
@@ -718,6 +727,12 @@ class LobbyManager:
             self._send_standings(lobby, now)
 
     def _back_in_sel(self, cid, msg, now):
+        lobby0 = self._lobby_of(cid)
+        if (lobby0 is not None and lobby0.owner_cid == cid and
+                lobby0.phase == "RESULTS"):
+            self.log(f"lobby {lobby0.code}: owner back_in_sel -> round_end")
+            self._round_end(lobby0, now)
+            return
         lobby = self._lobby_of(cid)
         if lobby is None or lobby.round is None:
             return

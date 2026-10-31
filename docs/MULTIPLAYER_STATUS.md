@@ -62,6 +62,11 @@ Kill stale `mp_server.py` processes before starting a server (port 7778 conflict
 - Bot: `python bot.py` gets `error proto_mismatch` then a SystemExit traceback — hello must send `proto: 1`; handle
   server errors/disconnects without tracebacks (stay running, allow reconnect).
 
+Round-5 status (commit after 333094e): implemented and deployed to the real Switch, NOT verified on device.
+Known gap: the "AUTO" tag is tracked by the server but not yet rendered in the client leaderboard/standings/member rows.
+Verify next: overlay 3-button layout + X-only close, results→song-list recipe after owner leaves, "is picking a song"
+placement, interactive bot session end-to-end.
+
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
    they leave) separately from `leader` (current song picker). Owner chooses `pick_mode`:

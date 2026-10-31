@@ -1,3 +1,4 @@
+#include <cstring>
 #include "Hints.hpp"
 #include "imgui/imgui.h"
 #include <cmath>
@@ -277,7 +278,7 @@ static void DrawCustomizeHint(ImDrawList* drawList, ImFont* font, float s) {
     drawList->AddText(font, fontSize, textPos, kDivaLightPink, text);
 }
 
-static void DrawAutoPlayBadge(ImDrawList* drawList, ImFont* font, float s) {
+static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
     if (!s_isPvSelActive || IsInCustomize())
         return;
 
@@ -293,21 +294,56 @@ static void DrawAutoPlayBadge(ImDrawList* drawList, ImFont* font, float s) {
     DrawSwitchTriggerZR(drawList, font, ImVec2(posX + w - 12.0f * s - zrSize.x, posY + 6.0f * s), zrSize, false);
 
     float baseFontSz = font->FontSize;
-    const char* title = "AUTOPLAY";
-    ImVec2 titleSz = font->CalcTextSizeA(baseFontSz, FLT_MAX, 0.0f, title);
+    mp::lobby::Snapshot sn;
+    mp::lobby::GetSnapshot(&sn);
+    bool inLobby = sn.code[0] != 0;
+    const char* title = inLobby ? sn.code : "MP";
+    ImVec2 titleSz(0, baseFontSz);
     drawList->AddText(font, baseFontSz, ImVec2(posX + 14.0f * s, posY + 6.0f * s + (zrSize.y - titleSz.y) * 0.5f), IM_COL32(255, 255, 255, 255), title);
 
     float capW = w - 24.0f * s, capH = 19.0f * s;
     ImVec2 capMin(posX + 12.0f * s, posY + 25.0f * s), capMax(capMin.x + capW, capMin.y + capH);
-    ImU32 stateColor = AutoPlay::g_enabled ? IM_COL32(18, 205, 205, 255) : IM_COL32(165, 175, 185, 255);
-    ImU32 stateBg    = AutoPlay::g_enabled ? IM_COL32(18, 205, 205, 40)  : IM_COL32(165, 175, 185, 40);
+    const char* label = inLobby ? "LOBBY" :
+        (sn.connected ? "MULTIPLAYER" : "MP: offline");
+    ImU32 stateColor = inLobby ? IM_COL32(90, 205, 130, 255)
+                     : IM_COL32(165, 175, 185, 255);
+    ImU32 stateBg    = inLobby ? IM_COL32(90, 205, 130, 40)
+                     : IM_COL32(165, 175, 185, 40);
 
     drawList->AddRectFilled(capMin, capMax, stateBg, 9.5f * s);
-    drawList->AddRect(capMin, capMax, AutoPlay::g_enabled ? IM_COL32(18, 205, 205, 140) : IM_COL32(165, 175, 185, 140), 9.5f * s, 0, 1.2f);
+    drawList->AddRect(capMin, capMax, stateColor, 9.5f * s, 0, 1.2f);
+    drawList->AddText(font, baseFontSz, ImVec2(posX + 14.0f * s, posY + 6.0f * s + (zrSize.y - titleSz.y) * 0.5f), IM_COL32(255, 255, 255, 255), title);
+    ImVec2 lblSz = font->CalcTextSizeA(baseFontSz * 0.8f, FLT_MAX, 0.0f, label);
+    drawList->AddText(font, baseFontSz * 0.8f, ImVec2(capMin.x + (capW - lblSz.x) * 0.5f, capMin.y + (capH - lblSz.y) * 0.5f - 0.5f), stateColor, label);
 
-    const char* label = AutoPlay::g_enabled ? "ON" : "OFF";
-    ImVec2 lblSz = font->CalcTextSizeA(baseFontSz, FLT_MAX, 0.0f, label);
-    drawList->AddText(font, baseFontSz, ImVec2(capMin.x + (capW - lblSz.x) * 0.5f, capMin.y + (capH - lblSz.y) * 0.5f - 0.5f), stateColor, label);
+    /* grow downward when in a lobby: members + picking line */
+    if (inLobby) {
+        float y = posY + h + 6.0f * s;
+        char line[128] = "";
+        const char* lname = "";
+        for (int i = 0; i < sn.memberCount; i++)
+            if (strcmp(sn.members[i].cid, sn.leaderCid) == 0)
+                lname = sn.members[i].name;
+        bool meLeader = strcmp(sn.leaderCid, sn.myCid) == 0;
+        snprintf(line, sizeof(line), "%s picking a song...",
+                 meLeader ? "You're" :
+                 (lname[0] ? lname : "Leader"));
+        snprintf(line + strlen(line), sizeof(line) - strlen(line),
+                 "  (%d)", sn.memberCount);
+        ImVec2 ts2 = font->CalcTextSizeA(baseFontSz * 0.85f, FLT_MAX, 0, line);
+        drawList->AddRectFilled(ImVec2(posX, y),
+            ImVec2(posX + ts2.x + 16 * s, y + ts2.y + 8 * s),
+            IM_COL32(18, 22, 26, 200), 8 * s);
+        drawList->AddText(font, baseFontSz * 0.85f,
+            ImVec2(posX + 8 * s, y + 4 * s),
+            IM_COL32(255, 235, 170, 255), line);
+    }
+
+    /* tap the badge -> open the MP overlay */
+    ImVec2 mpos = ImGui::GetMousePos();
+    if (ImGui::IsMouseClicked(0) && mpos.x >= posX && mpos.x <= posX + w &&
+        mpos.y >= posY && mpos.y <= posY + h)
+        mp::lobby::ToggleOverlay();
 }
 
 static void Draw2DModeBadge(ImDrawList* drawList, ImFont* font, float s) {
@@ -467,20 +503,14 @@ void ProcessInput() {
 
     if (l3_down) return;
 
-    /* AutoPlay is forced off inside a lobby; the toggle is ignored. */
-    bool inLobby = mp::lobby::InLobby();
-    if (inLobby && AutoPlay::g_enabled)
-        AutoPlay::g_enabled = false;
-
     if (zr_pressed) {
         s_tap_count++;
         if (s_tap_count == 1) s_tap_window = 180;   /* 3s @60fps */
         if (s_tap_count >= 5) {
             s_tap_count = 0; s_tap_window = 0;
-            if (!inLobby) {
-                AutoPlay::g_enabled = !AutoPlay::g_enabled;
-                sound::PlaySelectSE();
-            }
+            AutoPlay::g_enabled = !AutoPlay::g_enabled;
+            mp::lobby::ReportAutoPlay(AutoPlay::g_enabled);
+            sound::PlaySelectSE();
             return;
         }
     }
@@ -516,7 +546,7 @@ void Draw() {
 
     DrawMainMenuHelpHint(drawList, font, s);
     DrawCustomizeHint(drawList, font, s);
-    DrawAutoPlayBadge(drawList, font, s);
+    DrawMpBadge(drawList, font, s);
     Draw2DModeBadge(drawList, font, s);
     DrawNoMovieBadge(drawList, font, s);
     DrawRandomizerConfirmHint(drawList, font, s);

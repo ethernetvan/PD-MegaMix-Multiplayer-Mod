@@ -7,6 +7,7 @@
 #include "../overlays/SongQuickJump.hpp"
 #include "../nc/ui/customize_sel.hpp"
 #include "../hid.hpp"
+#include "../AutoPlay.hpp"
 #include <nn.hpp>
 #include <mutex>
 #include <cstring>
@@ -344,16 +345,19 @@ static void ProcessLine(const std::string& l) {
         s_connected = true;
         if (s_code[0]) { s_expectLobby = true; s_expectLobbyAt = NowMs() + 3000; }
         if (s_inLobbyDirty()) s_readyDirty = true;
+        ReportAutoPlay(AutoPlay::g_enabled);
         return;
     }
     if (strcmp(t, "lobby") == 0) {
         HandleLobby(line, tok, ntok);
         s_expectLobby = false;
-        if (s_phase == L_NONE || s_phase == L_DROPPED)
+        if (s_phase == L_NONE || s_phase == L_DROPPED) {
+            ReportAutoPlay(AutoPlay::g_enabled);
             SetPhase(strcmp(s_serverPhase, "SELECT") == 0
                      ? L_SELECT : L_SPECTATING,
                      s_amLeader ? "You're the leader - pick a song"
                                 : "In lobby - waiting for the leader");
+        }
         ApplyBlocks();
         return;
     }
@@ -550,8 +554,16 @@ static void ProcessLine(const std::string& l) {
         s_jumpFailedDiff = false; s_standingsComplete = false;
         s_backInSelSent = false; s_resultInitAt = 0;
         s_amLeader = strcmp(nl, s_myCid) == 0;
-        SetPhase(L_SELECT, s_amLeader ? "You're the leader - pick a song"
-                                      : "Back in lobby - next round");
+        if (s_phase == L_RESULTS) {
+            /* still on results: run the results->song-list recipe
+               A -> 1.5s -> A -> 1.5s -> Down -> 0.4s -> A */
+            s_retStage = 0; s_retStageAt = NowMs();
+            s_phase = L_RESULTS;   /* keep phase for the driver below */
+            s_resultInitAt = 1;    /* re-arm the driver */
+        } else {
+            SetPhase(L_SELECT, s_amLeader ? "You're the leader - pick a song"
+                                          : "Back in lobby - next round");
+        }
         ApplyBlocks();
         if (s_amLeader) PushBanner("You're the leader - pick a song");
         else PushBanner("Round over - back in song select");
@@ -1121,6 +1133,14 @@ void CmdPauseReq() {
 void CmdResumeReq() {
     char m[64];
     snprintf(m, sizeof(m), "{\"t\":\"resume_req\",\"round\":%d}", s_round);
+    SendLine(m);
+}
+
+void ReportAutoPlay(bool on) {
+    if (!s_code[0] && s_phase == L_NONE) return;
+    char m[64];
+    snprintf(m, sizeof(m), "{\"t\":\"autoplay\",\"on\":%s}",
+             on ? "true" : "false");
     SendLine(m);
 }
 

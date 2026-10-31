@@ -54,11 +54,33 @@ class Bot:
     def send(self, m):
         self.w.write((json.dumps(m) + "\n").encode())
 
-    async def run(self):
-        r, self.w = await asyncio.open_connection(self.a.host, self.a.port)
+    async def _reconnect(self):
+        try:
+            r, self.w = await asyncio.open_connection(self.a.host,
+                                                      self.a.port)
+        except OSError as e:
+            print(f"!! reconnect failed: {e} - retrying in 3s")
+            await asyncio.sleep(3)
+            asyncio.ensure_future(self._reconnect())
+            return
         asyncio.ensure_future(self.reader(r))
         self.send({"t": "hello", "cid": self.cid, "name": self.name,
-                   "mod": "bot/1", "game": "1.0.6"})
+                   "proto": 1, "mod": "bot-1", "game": "1.0.6"})
+        print("-- reconnected")
+
+    async def run(self):
+        try:
+            r, self.w = await asyncio.open_connection(self.a.host,
+                                                      self.a.port)
+        except OSError as e:
+            print(f"!! connect failed: {e} - retrying in 3s")
+            await asyncio.sleep(3)
+            asyncio.ensure_future(self._reconnect())
+            await asyncio.Event().wait()
+            return
+        asyncio.ensure_future(self.reader(r))
+        self.send({"t": "hello", "cid": self.cid, "name": self.name,
+                   "proto": 1, "mod": "bot-1", "game": "1.0.6"})
         await asyncio.sleep(0.3)
         if self.a.create:
             self.send({"t": "lobby_create"})
@@ -68,14 +90,19 @@ class Bot:
 
     # ---------------------------------------------------- incoming
     async def reader(self, r):
-        async for raw in r:
-            try:
-                m = json.loads(raw)
-            except ValueError:
-                continue
-            asyncio.ensure_future(self.on_msg(m))
-        print("!! disconnected")
-        os._exit(1) if False else sys.exit(1)
+        try:
+            async for raw in r:
+                try:
+                    m = json.loads(raw)
+                except ValueError:
+                    continue
+                asyncio.ensure_future(self.on_msg(m))
+        except (ConnectionError, asyncio.IncompleteReadError) as e:
+            print(f"!! conn error: {e}")
+        print("!! disconnected - reconnecting in 3s "
+              "(type 'reconnect' to retry now)")
+        await asyncio.sleep(3)
+        asyncio.ensure_future(self._reconnect())
 
     def members_line(self, m):
         return ", ".join(
@@ -154,6 +181,8 @@ class Bot:
             self.playing = False
             if self.auto and m.get("next_leader") == self.cid:
                 await self._leader_pick()
+        elif t == "error":
+            print(f"!! server error: {m}")
         elif t == "dbg_cmd":
             pass
         else:
@@ -265,6 +294,8 @@ class Bot:
                 print(f">> sel {pv} '{name}'")
             else:
                 print("no match")
+        elif c == "reconnect":
+            asyncio.ensure_future(self._reconnect())
         elif c == "start":
             pv, name = self.pvs[self.pv_idx % len(self.pvs)]
             self.send({"t": "start_req", "pv": pv, "name": name})

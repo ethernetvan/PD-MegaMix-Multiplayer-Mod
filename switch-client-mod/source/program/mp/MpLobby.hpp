@@ -81,6 +81,7 @@ void CmdResumeReq();
 bool OverlayOpen();
 void ToggleOverlay();
 void SetOverlayOpen(bool open);
+void ReportAutoPlay(bool on);
 void GetSnapshot(Snapshot* out);
 
 } // namespace mp::lobby

@@ -83,8 +83,9 @@ void DrawPanel() {
         if (!open) { SetOverlayOpen(false); EndWin(); return; }
 
         ImGui::Text("Multiplayer");
-        ImGui::SameLine(ImGui::GetWindowWidth() - 40 * k);
-        if (ImGui::SmallButton("X##close")) { SetOverlayOpen(false); }
+        ImGui::SameLine(ImGui::GetWindowWidth() - 76 * k);
+        if (ImGui::Button("X##close", ImVec2(64 * k, 40 * k)))
+            SetOverlayOpen(false);
         ImGui::Separator();
 
         ImGui::Text("Name: %s", Config::mpPlayerName.c_str());
@@ -95,12 +96,15 @@ void DrawPanel() {
             ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "MP: offline");
 
         if (!InLobby()) {
-            if (ImGui::Button("Create Lobby")) CmdLobbyCreate();
+            ImVec2 big(sz.x / 3.1f, 96 * k);
+            if (ImGui::Button("EDIT NAME", big)) OpenNameKb();
+            ImGui::SameLine();
+            if (ImGui::Button("CREATE LOBBY", big)) CmdLobbyCreate();
+            ImGui::SameLine();
+            if (ImGui::Button("JOIN LOBBY", big)) OpenCodeKb();
             ImGui::Text("Code: %s", s_codeBuf);
             ImGui::SameLine();
-            if (ImGui::SmallButton("Edit##code")) OpenCodeKb();
-            ImGui::SameLine();
-            if (ImGui::Button("Join") && s_codeBuf[0])
+            if (ImGui::Button("Join##do") && s_codeBuf[0])
                 CmdLobbyJoin(s_codeBuf);
         } else {
             ImGui::Text("Lobby %s  (you: %.*s)", s.code, 10, s.myCid);
@@ -171,41 +175,10 @@ void DrawPanel() {
                             s.voteAgreed, s.voteNeed, s.voteEndsIn);
         }
 
-        /* click outside to close */
-        if (ImGui::IsMouseClicked(0) &&
-            !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows |
-                                    ImGuiHoveredFlags_AnyWindow))
-            SetOverlayOpen(false);
         EndWin();
         return;
     }
 
-    /* ---- collapsed: button or compact chip ---- */
-    ImGui::SetNextWindowPos(p, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.55f);
-    if (!BeginWin("##mpbtn", nullptr,
-                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
-                  ImGuiWindowFlags_NoSavedSettings)) {
-        EndWin();
-        return;
-    }
-    if (InLobby()) {
-        if (ImGui::Button("MP", ImVec2(40 * k, 26 * k)))
-            SetOverlayOpen(true);
-        ImGui::SameLine();
-        ImGui::BeginGroup();
-        ImGui::Text("%s - %d player%s", s.code, s.memberCount,
-                    s.memberCount == 1 ? "" : "s");
-        ImGui::TextDisabled("%.64s", s.memberCount
-            ? s.members[0].name : "");
-        ImGui::EndGroup();
-    } else {
-        if (ImGui::Button(s.connected ? "Multiplayer" : "MP: offline",
-                          ImVec2(140 * k, 30 * k)))
-            SetOverlayOpen(true);
-    }
-    EndWin();
 }
 
 /* ================================================================
