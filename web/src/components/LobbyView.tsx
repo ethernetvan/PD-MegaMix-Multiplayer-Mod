@@ -21,13 +21,16 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
   if (l.phase === "SELECT") {
     const notReady = l.members.filter((m) => m.connected && !m.ready);
     return (
-      <section className="panel">
-        <p>
+      <section className="panel status">
+        <h3>Song select</h3>
+        <p className="status-line">
           <b>{memberName(l, l.leader)}</b> is picking a song…
         </p>
         {l.sel && (
-          <p>
-            Selected: <b>{l.sel.name}</b> (PV {l.sel.pv})
+          <p className="sel-song">
+            <span className="dim">Selected</span>
+            <span className="sel-name">♪ {l.sel.name}</span>
+            <span className="pv-chip">PV {l.sel.pv}</span>
           </p>
         )}
         {notReady.length > 0 && (
@@ -389,7 +392,8 @@ export default function LobbyView({ code }: { code: string }) {
         </div>
         {songInfo && (
           <div className="hud-song">
-            ♪ {songInfo.name} · PV {songInfo.pv}
+            ♪ <b>{songInfo.name}</b>{" "}
+            <span className="pv-chip">PV {songInfo.pv}</span>
           </div>
         )}
         <div className="meta">

@@ -6,8 +6,14 @@ export default function Header({ onLogin }: { onLogin: () => void }) {
   const snap = state.snapshot;
   return (
     <header className="hdr">
-      <a className="title" href="#/">
-        MegaMix Multiplayer
+      <a className="title logo" href="#/" aria-label="MegaMix Multiplayer">
+        <span className="logo-word" aria-hidden>
+          <span className="logo-mega">MEGA</span>
+          <span className="logo-mix">MIX</span>
+        </span>
+        <span className="logo-sub" aria-hidden>
+          Multiplayer
+        </span>
       </a>
       {snap && <span className="srv">{snap.server.name}</span>}
       <span className={`pill ${state.status}`}>
