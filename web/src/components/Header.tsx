@@ -11,10 +11,11 @@ export default function Header({ onLogin }: { onLogin: () => void }) {
       </a>
       {snap && <span className="srv">{snap.server.name}</span>}
       <span className={`pill ${state.status}`}>
+        <i className="pill-dot" aria-hidden />
         {state.status === "live" ? "live" : state.status}
       </span>
       {state.status === "live" && (
-        <span className="dim">
+        <span className="dim hdr-consoles">
           {snap ? snap.server.clients_online : 0} console
           {snap && snap.server.clients_online === 1 ? "" : "s"} online
         </span>
@@ -27,12 +28,12 @@ export default function Header({ onLogin }: { onLogin: () => void }) {
             {you.name ?? "server admin"}
           </button>
           {you.admin && <span className="badge admin">Admin</span>}
-          <button className="btn" onClick={logout}>
+          <button className="btn ghost" onClick={logout}>
             Logout
           </button>
         </span>
       ) : (
-        <button className="btn" onClick={onLogin}>
+        <button className="btn chev" onClick={onLogin}>
           Login
         </button>
       )}

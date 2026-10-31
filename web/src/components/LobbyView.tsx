@@ -4,6 +4,7 @@ import { fmtElapsed, fmtPct, fmtRel, fmtScore } from "../format";
 import { canAdmin, serverNow } from "../state";
 import { useStore } from "../store";
 import type { LobbySnap, MemberSnap, PickMode } from "../types";
+import HexAvatar from "./HexAvatar";
 import { memberName, PhaseBadge } from "./Overview";
 
 const PICK_LABEL: Record<PickMode, string> = {
@@ -51,7 +52,9 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
             if (!m) return null;
             return (
               <li key={mid} className={m.loaded ? "ok" : ""}>
-                {m.loaded ? "✓" : "…"} {m.name}
+                <HexAvatar name={m.name} size={30} />
+                <span className="chk-name">{m.name}</span>
+                <span className="chk-mark">{m.loaded ? "✓" : "…"}</span>
               </li>
             );
           })}
@@ -73,43 +76,62 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
           </span>
         </h3>
         <div className="board-wrap">
-        <table className="board">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Player</th>
-              <th>Score</th>
-              <th>%</th>
-              <th>Combo</th>
-              <th>Life</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((m, i) => (
-              <tr key={m.mid} className={m.connected ? "" : "off"}>
-                <td>{i + 1}</td>
-                <td>
-                  {m.name}
-                  {m.autoplay && <span className="badge auto">AUTO</span>}
-                  {m.final && <span className="badge done">✓ finished</span>}
-                </td>
-                <td className="num">{fmtScore(m.score)}</td>
-                <td className="pct">
-                  <div className="bar">
-                    <i style={{ width: `${Math.min(100, m.pct)}%` }} />
-                  </div>
-                  {fmtPct(m.pct)}
-                </td>
-                <td className="num">{m.combo}x</td>
-                <td className="life-cell">
-                  <div className="bar life">
-                    <i style={{ width: `${(m.life / 255) * 100}%` }} />
-                  </div>
-                </td>
+          <table className="board">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Player</th>
+                <th>Score</th>
+                <th>%</th>
+                <th>Combo</th>
+                <th>Life</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((m, i) => (
+                <tr key={m.mid} className={m.connected ? "" : "off"}>
+                  <td className="rank">{i + 1}</td>
+                  <td>
+                    <span className="p-cell">
+                      <HexAvatar
+                        name={m.name}
+                        size={32}
+                        status={m.connected ? "online" : "offline"}
+                      />
+                      <span>
+                        {m.name}
+                        {m.autoplay && (
+                          <span className="badge auto">AUTO</span>
+                        )}
+                        {m.final && (
+                          <span className="badge done">✓ finished</span>
+                        )}
+                      </span>
+                    </span>
+                  </td>
+                  <td className="num score">{fmtScore(m.score)}</td>
+                  <td className="pct">
+                    <div className="bar gauge">
+                      <i
+                        style={{
+                          width: `${100 - Math.min(100, m.pct)}%`,
+                        }}
+                      />
+                      <span className="gauge-clear" aria-hidden />
+                      <span className="gauge-border" aria-hidden />
+                    </div>
+                    <span className="pct-num">{fmtPct(m.pct)}</span>
+                  </td>
+                  <td className="num">{m.combo}x</td>
+                  <td className="life-cell">
+                    <div className="bar life">
+                      <i style={{ width: `${(m.life / 255) * 100}%` }} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </section>
     );
@@ -123,55 +145,86 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
         {!st.complete && <span className="dim">(waiting for players…)</span>}
       </h3>
       <div className="board-wrap">
-      <table className="board">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Player</th>
-            <th>Score</th>
-            <th>%</th>
-            <th>Max combo</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {st.e.map((r) => (
-            <tr key={r.mid} className={r.connected ? "" : "off"}>
-              <td>{r.rank}</td>
-              <td>
-                {r.name}
-                {r.autoplay && <span className="badge auto">AUTO</span>}
-              </td>
-              <td className="num">{fmtScore(r.score)}</td>
-              <td className="num">{fmtPct(r.pct)}</td>
-              <td className="num">{r.max_combo}x</td>
-              <td>{r.final ? "final" : "pending"}</td>
+        <table className="board results">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Player</th>
+              <th>Score</th>
+              <th>%</th>
+              <th>Max combo</th>
+              <th>Status</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {st.e.map((r) => (
+              <tr key={r.mid} className={r.connected ? "" : "off"}>
+                <td>
+                  <span className={`rank-num r${r.rank}`}>{r.rank}</span>
+                </td>
+                <td>
+                  <span className="p-cell">
+                    <HexAvatar
+                      name={r.name}
+                      size={32}
+                      status={r.connected ? "online" : "offline"}
+                    />
+                    <span>
+                      {r.name}
+                      {r.autoplay && <span className="badge auto">AUTO</span>}
+                    </span>
+                  </span>
+                </td>
+                <td className="num score">{fmtScore(r.score)}</td>
+                <td className="num">{fmtPct(r.pct)}</td>
+                <td className="num">{r.max_combo}x</td>
+                <td>
+                  <span className={`badge ${r.final ? "done" : "warn"}`}>
+                    {r.final ? "final" : "pending"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </section>
   );
 }
 
 function Members({ l }: { l: LobbySnap }) {
+  const { state } = useStore();
   return (
     <section className="panel">
       <h3>Members</h3>
       <ul className="members">
-        {l.members.map((m) => (
+        {l.members.map((m, i) => (
           <li key={m.mid} className={m.connected ? "" : "off"}>
-            <b>{m.name}</b>
-            {m.mid === l.owner && <span className="badge">Owner</span>}
-            {m.mid === l.leader && <span className="badge pick">Picker</span>}
-            {m.role !== "player" && <span className="badge">{m.role}</span>}
-            {m.autoplay && <span className="badge auto">AUTO</span>}
-            {!m.connected && <span className="badge off">offline</span>}
-            {m.connected && !m.ready && (
-              <span className="badge warn">{m.reason || "not ready"}</span>
-            )}
-            {m.back_in_sel && <span className="badge">back in select</span>}
+            <span className="mem-hex">
+              <HexAvatar
+                name={m.name}
+                size={56}
+                status={m.connected ? "online" : "offline"}
+                ring={
+                  m.mid === l.leader ||
+                  m.mid === l.owner ||
+                  (state.you.name !== null && m.name === state.you.name)
+                }
+              />
+              <span className="mem-num">{i + 1}</span>
+            </span>
+            <span className="mem-name">{m.name}</span>
+            <span className="mem-badges">
+              {m.mid === l.owner && <span className="badge">Owner</span>}
+              {m.mid === l.leader && <span className="badge pick">Picker</span>}
+              {m.role !== "player" && <span className="badge">{m.role}</span>}
+              {m.autoplay && <span className="badge auto">AUTO</span>}
+              {!m.connected && <span className="badge off">offline</span>}
+              {m.connected && !m.ready && (
+                <span className="badge warn">{m.reason || "not ready"}</span>
+              )}
+              {m.back_in_sel && <span className="badge">back in select</span>}
+            </span>
           </li>
         ))}
       </ul>
@@ -249,6 +302,11 @@ function AdminPanel({ l }: { l: LobbySnap }) {
       <ul className="member-admin">
         {l.members.map((m) => (
           <li key={m.mid}>
+            <HexAvatar
+              name={m.name}
+              size={30}
+              status={m.connected ? "online" : "offline"}
+            />
             <span className={m.connected ? "" : "dim"}>{m.name}</span>
             <span className="spacer" />
             {((l.pick_mode === "assigned" && m.mid !== l.assigned) ||
@@ -283,7 +341,10 @@ function AdminPanel({ l }: { l: LobbySnap }) {
                   Sure?
                 </button>
               ) : (
-                <button className="btn sm" onClick={() => setConfirm(m.mid)}>
+                <button
+                  className="btn sm kick"
+                  onClick={() => setConfirm(m.mid)}
+                >
                   Kick
                 </button>
               ))}
@@ -313,24 +374,34 @@ export default function LobbyView({ code }: { code: string }) {
     );
   const now = serverNow(state);
   const voteLeft = l.vote ? Math.max(0, Math.ceil(l.vote.ends_at - now)) : 0;
+  const songInfo = l.round ?? l.sel;
   return (
     <main className="lobby">
       <div className="lobby-head">
-        <a href="#/" className="dim">
-          ← lobbies
-        </a>
-        <h1>
-          <span className="code">{l.code}</span> <PhaseBadge phase={l.phase} />
-        </h1>
+        <div className="lobby-head-top">
+          <h1>
+            <span className="code">{l.code}</span>{" "}
+            <PhaseBadge phase={l.phase} />
+          </h1>
+          <a href="#/" className="btn-back">
+            ← lobbies
+          </a>
+        </div>
+        {songInfo && (
+          <div className="hud-song">
+            ♪ {songInfo.name} · PV {songInfo.pv}
+          </div>
+        )}
         <div className="meta">
           {l.round && <span>round {l.round.id}</span>}
-          {(l.round ?? l.sel) && (
-            <span className="song">
-              {(l.round ?? l.sel)!.name} · PV {(l.round ?? l.sel)!.pv}
-            </span>
-          )}
-          <span>owner {memberName(l, l.owner)}</span>
-          <span>picker {memberName(l, l.leader)}</span>
+          <span className="mi">
+            owner <HexAvatar name={memberName(l, l.owner)} size={20} />{" "}
+            {memberName(l, l.owner)}
+          </span>
+          <span className="mi">
+            picker <HexAvatar name={memberName(l, l.leader)} size={20} />{" "}
+            {memberName(l, l.leader)}
+          </span>
           <span>{PICK_LABEL[l.pick_mode]}</span>
         </div>
       </div>
