@@ -125,6 +125,7 @@ class LobbyManager:
         self.by_cid = {}            # cid -> Lobby
         self.outbox = []            # (cid, msg)
         self.log = log or (lambda s: None)
+        self.max_members = 8        # real consoles cap at 8; raise for demos
         self._rng = random.Random()
         self._client_names = {}     # cid -> display name (all clients)
 
@@ -297,7 +298,7 @@ class LobbyManager:
         if lobby is None:
             self._error(cid, "not_found", "no such lobby")
             return
-        if len(lobby.members) >= 8:
+        if len(lobby.members) >= self.max_members:
             self._error(cid, "full", "lobby is full")
             return
         m = Member(cid, self._name_of(cid))

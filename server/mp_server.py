@@ -308,12 +308,15 @@ def main():
     ap.add_argument("--web-host", default="0.0.0.0")
     ap.add_argument("--web-token", default=None,
                     help="admin token (default: random each start)")
+    ap.add_argument("--lobby-max", type=int, default=8,
+                    help="max members per lobby (consoles support 8)")
     args = ap.parse_args()
 
     global MOD_VERSION_EXPECTED
     MOD_VERSION_EXPECTED = args.mod_version_expected
 
     srv = Server(args.port, args.discovery_port, args.admin_port)
+    srv.lobby.max_members = args.lobby_max
     if args.web_port:
         srv.web = WebBridge(srv, args.web_host, args.web_port,
                             args.web_token or secrets.token_urlsafe(9))
