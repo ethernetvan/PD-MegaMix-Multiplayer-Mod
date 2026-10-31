@@ -21,7 +21,8 @@ sees final standings, then returns to song select. A web page will later spectat
     blocked; holding Minus 3s = emergency exit. ImGui's own pad poll bypasses blocks (per-thread via TPIDRRO_EL0).
   - `MpUi` / `MpOverlay` — ImGui panels (windows must push a full-screen clip rect or text is invisible).
 - Server (`server/`): `mp_server.py` transport + discovery + admin; `lobby.py` pure engine (protocol v1 in its
-  docstring); `test_lobby.py`; `bot.py`/`sim.py` test clients.
+  docstring); `test_lobby.py`; `bot.py`/`sim.py` test clients; `web_bridge.py` HTTP/WebSocket bridge for the
+  `web/` spectator/admin SPA (`test_web_bridge.py`).
 
 ## Verified
 - Ryujinx: two full rounds vs a bot (follower and leader roles), mirroring, launch piggyback, auto-pause gate,
@@ -105,8 +106,9 @@ placement, interactive bot session end-to-end.
    during songs).
 10. Percent markers for other players on the bottom % gauge (calibrate pointer x vs pct from screenshots).
 11. Make MP independent of `new_classics = true` (pv_sel/results hooks are only installed when NC is on).
-12. Milestone 5: web spectator client (HTTP/WebSocket bridge in the server; view any lobby; kick / reassign
-    leader from the web).
+12. Milestone 5: web spectator client — **implemented on branch `web-frontend`** (`server/web_bridge.py`, `web/`;
+    see AGENTS.md "Web spectator/admin UI"). Verified with bots/fake consoles only, not with real consoles yet.
+    Follow-ups: real accounts (`docs/ACCOUNTS_DESIGN.md`), web pause/resume-all, ownership transfer.
 
 ## Known quirks
 - Different subnets (PC 10.169.0.x, Switch 10.167.0.x) → set `server_ip` on the console.

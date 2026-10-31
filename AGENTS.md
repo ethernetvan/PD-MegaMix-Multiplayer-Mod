@@ -31,8 +31,16 @@ Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\
 - The exefs folder must contain only `main.npdm` + `subsdk9`. A stale `subsdk8` from older mod versions crashes at boot (moved to `atmosphere/contents/01001CC00FA1A000/subsdk8.disabled.bak`).
 
 ## Server (Python 3.13, stdlib only) — `server/`
-- Run: `python server/mp_server.py` (TCP 7777, UDP discovery 7778, admin 127.0.0.1:7790). Windows Firewall must allow Python on private networks for real consoles.
-- Tests: `cd server && python -m unittest test_lobby.py -v`.
+- Run: `python server/mp_server.py` (TCP 7777, UDP discovery 7778, admin 127.0.0.1:7790, web UI 0.0.0.0:8080). Windows Firewall must allow Python on private networks for real consoles.
+- Tests: `cd server && python -B -m unittest test_lobby.py test_web_bridge.py -v` (`-B`: `server/__pycache__/*.pyc` are tracked, don't churn them).
+- When another server may be running, test on alternate ports: `--port 17777 --discovery-port 17778 --admin-port 17790 --web-port 18080`.
+
+## Web spectator/admin UI — `server/web_bridge.py` + `web/`
+- Bridge (stdlib, same process as `mp_server.py`): serves `web/dist`, `GET /api/state`, `GET /api/health`, WebSocket `/ws` (snapshot push every 200 ms on change, activity feed, `auth`/`action` messages; schema mirrored in `web/src/types.ts`). Flags: `--web-port` (0 disables; a busy port only disables the web UI), `--web-host`, `--web-token` (default random, printed at startup with a `?token=` link).
+- Access: anyone on the LAN spectates. Interim login: typing the lobby owner's in-game name unlocks that lobby's host controls (kick, pick mode, assign/make picker); the admin token unlocks every lobby. Real accounts are designed in `docs/ACCOUNTS_DESIGN.md`.
+- Browsers never see raw console cids (a cid is enough to hijack a console's session): members are `mid = HMAC(per-process secret, cid)[:12]`.
+- Frontend: React 19 + Vite + TypeScript (strict), no other runtime deps. `cd web && npm ci && npm run build` (the server shows a "not built" page until `web/dist` exists). Checks: `npm run typecheck && npm test`.
+- Dev: `cd web && npm run dev` proxies `/api` + `/ws` to `MP_WEB_BACKEND` (default `http://127.0.0.1:8080`). Install new deps with exact pins and versions at least 7 days old (`npm install --save-exact --before=<date>`).
 - Bots/sim: `server/bot.py --help`, `server/sim.py`. Admin/debug CLI: `server/admin.py` (tap/spam/block/jump/autopause/list_pvs/lobbies/kick/set_leader).
 - Lobby engine is pure logic in `server/lobby.py` (protocol v1 documented in its docstring).
 

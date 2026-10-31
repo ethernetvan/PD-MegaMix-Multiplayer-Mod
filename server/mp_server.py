@@ -9,11 +9,13 @@ UDP discovery on --discovery-port: {"t":"discover"} -> unicast {"t":"server",...
 import argparse
 import asyncio
 import json
+import secrets
 import socket
 import sys
 import time
 
 from lobby import LobbyManager
+from web_bridge import WebBridge
 
 sys.stdout.reconfigure(errors="replace")
 
@@ -72,6 +74,7 @@ class Server:
         self.clients = {}          # cid -> Client
         self.known_cids = set()    # ever seen
         self.first_mod_version = None
+        self.web = None
         self.lobby = LobbyManager(log=lambda m: log(f"LOBBY {m}"))
 
     def table(self):
@@ -236,6 +239,8 @@ class Server:
             pass
 
     async def drain_outbox(self):
+        if self.web:
+            self.web.observe(self.lobby.outbox)
         for cid, m in self.lobby.outbox:
             c = self.clients.get(cid)
             if c is not None:
@@ -260,6 +265,8 @@ class Server:
         srv = await asyncio.start_server(self.handle, "0.0.0.0", self.port)
         adm = await asyncio.start_server(self.admin_handle, "127.0.0.1",
                                          self.admin_port)
+        if self.web:
+            await self.web.start()
         log(f"mp_server listening TCP :{self.port} UDP-discovery :{self.disc_port} admin 127.0.0.1:{self.admin_port}")
         try:
             await srv.serve_forever()
@@ -296,12 +303,20 @@ def main():
     ap.add_argument("--discovery-port", type=int, default=7778)
     ap.add_argument("--admin-port", type=int, default=7790)
     ap.add_argument("--mod-version-expected", default=None)
+    ap.add_argument("--web-port", type=int, default=8080,
+                    help="web UI port (0 disables)")
+    ap.add_argument("--web-host", default="0.0.0.0")
+    ap.add_argument("--web-token", default=None,
+                    help="admin token (default: random each start)")
     args = ap.parse_args()
 
     global MOD_VERSION_EXPECTED
     MOD_VERSION_EXPECTED = args.mod_version_expected
 
     srv = Server(args.port, args.discovery_port, args.admin_port)
+    if args.web_port:
+        srv.web = WebBridge(srv, args.web_host, args.web_port,
+                            args.web_token or secrets.token_urlsafe(9))
     try:
         asyncio.run(srv.run())
     except KeyboardInterrupt:
