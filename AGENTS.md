@@ -38,6 +38,11 @@ Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\
 - Real-Switch UI testing: `nx.py raw "touch X Y"` taps the touchscreen (1280x720), `nx.py shot NAME` captures it.
 - Lobby engine is pure logic in `server/lobby.py` (protocol v1 documented in its docstring).
 
+## Demo recording
+- `python tools/record_demo.py [--skip-tour]` records a captioned, chaptered MP4 to `C:\Users\cl672\Documents\daniel-gdrive\pdmm\megamix-mod-demo_<date>.mp4`: boots the NSP in Ryujinx fullscreen on monitor 0 (don't use that display during the run), runs its own server on 37777/37778/37790 (`--port-base`) plus bots, tours song select + every multiplayer screen, then plays one AutoPlay round. Work files/logs: `%TEMP%\megamix_demo\<timestamp>\`.
+- It patches `[multiplayer]` in `sdcard\MikuMikuSwitchPlugin\config.toml` for the run and restores it byte-identical afterwards; boot watchdog relaunches Ryujinx once on a stalled log / no connection. Capture = ffmpeg `ddagrab` + NVENC; audio from Stereo Mix is dropped automatically if it is silent.
+- The full tour path has not completed an end-to-end run yet (only `--skip-tour`); the default song (pv 700) and `--song-secs 120` are unverified.
+
 ## Reverse-engineering artifacts
 - Kept OUTSIDE the repo in `C:\Users\cl672\Documents\Coding\mm-re\` (extracted exefs, `nso_tool.py`, symbol dumps, screenshots, logs). Never commit game binaries.
 
