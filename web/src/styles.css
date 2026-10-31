@@ -1562,6 +1562,259 @@ tr.off td {
   }
 }
 
+/* ---------- animated results ---------- */
+.res-panel {
+  position: relative;
+}
+
+/* make room for the RESULT ribbon like the game's mode banner sits
+   right of it */
+.res-panel > h3 {
+  padding-left: 118px;
+}
+
+/* giant hollow "RESULT" slicing across the corner, like the game */
+.res-ribbon {
+  position: absolute;
+  top: 4px;
+  left: -8px;
+  font-family: var(--font-disp);
+  font-weight: 700;
+  font-style: italic;
+  font-size: 46px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.06);
+  -webkit-text-stroke: 1.6px rgba(255, 255, 255, 0.9);
+  text-shadow: 0 0 24px rgba(101, 255, 255, 0.4);
+  transform: rotate(-7deg);
+  pointer-events: none;
+  animation: ribbonIn 0.6s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes ribbonIn {
+  from {
+    opacity: 0;
+    transform: rotate(-7deg) translateX(-60px);
+  }
+}
+
+.res-card {
+  position: relative;
+  overflow: hidden;
+  margin: 12px 0;
+  padding: 12px 14px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(101, 255, 255, 0.22);
+  animation: resCardIn 0.5s cubic-bezier(0.2, 0.85, 0.3, 1.12) both;
+  animation-delay: var(--d, 0ms);
+}
+
+@keyframes resCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(26px) scale(0.96);
+  }
+}
+
+.res-card.win {
+  border-color: var(--yellow);
+  box-shadow:
+    0 0 18px rgba(255, 201, 51, 0.3),
+    inset 0 0 26px rgba(255, 201, 51, 0.07);
+}
+
+/* one-shot sheen sweep across the winner card after it lands */
+.res-card.win::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.32) 48%,
+    transparent 62%
+  );
+  transform: translateX(-130%);
+  animation: resSheen 0.9s ease-out both;
+  animation-delay: calc(var(--d, 0ms) + 550ms);
+  pointer-events: none;
+}
+
+@keyframes resSheen {
+  to {
+    transform: translateX(130%);
+  }
+}
+
+.res-card.dnf {
+  opacity: 0.75;
+}
+
+.res-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.res-top .rank-num {
+  font-size: 32px;
+  animation: rankPop 0.45s cubic-bezier(0.3, 1.5, 0.4, 1) both;
+  animation-delay: calc(var(--d, 0ms) + 140ms);
+}
+
+@keyframes rankPop {
+  from {
+    opacity: 0;
+    transform: scale(1.7);
+  }
+}
+
+.res-name {
+  font-family: var(--font-disp);
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: 0.03em;
+}
+
+.res-clear {
+  font-family: var(--font-disp);
+  font-weight: 700;
+  font-style: italic;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.res-clear.clear {
+  color: var(--miku);
+  text-shadow:
+    0 0 10px rgba(13, 208, 215, 0.7),
+    0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.res-clear.fail {
+  color: rgba(255, 255, 255, 0.1);
+  -webkit-text-stroke: 1.1px rgba(255, 255, 255, 0.8);
+}
+
+.res-clear.dnf {
+  color: var(--magenta);
+  text-shadow: 0 0 12px rgba(241, 80, 175, 0.7);
+}
+
+.res-score {
+  font-family: var(--font-disp);
+  font-weight: 700;
+  font-style: italic;
+  font-size: 26px;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 12px rgba(101, 255, 255, 0.45);
+}
+
+/* judgment segment bar — MegaMix result-screen colors */
+.jcbar {
+  display: flex;
+  height: 14px;
+  margin: 10px 0 7px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.jseg {
+  display: block;
+  height: 100%;
+  transform-origin: left;
+  animation: segGrow 0.45s cubic-bezier(0.25, 0.8, 0.3, 1) both;
+  animation-delay: calc(var(--d, 0ms) + 350ms + var(--k, 0ms));
+}
+
+@keyframes segGrow {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+.jseg.j-cool {
+  background: linear-gradient(#ffe08a, #ffc933);
+}
+.jseg.j-good {
+  background: linear-gradient(#9be7ff, #43c1ea);
+}
+.jseg.j-safe {
+  background: linear-gradient(#8df09a, #43c455);
+}
+.jseg.j-bad {
+  background: linear-gradient(#8fb7ff, #3f7fe8);
+}
+.jseg.j-miss {
+  background: linear-gradient(#e29bff, #b23cf0);
+}
+
+.res-nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: baseline;
+}
+
+.jnum {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  white-space: nowrap;
+  animation: jnumIn 0.35s ease-out both;
+  animation-delay: calc(var(--d, 0ms) + var(--k, 0ms));
+}
+
+.jnum b {
+  font-family: var(--font-disp);
+  font-style: italic;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  margin-right: 3px;
+}
+
+@keyframes jnumIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.jnum.j-cool b {
+  color: #ffd54a;
+}
+.jnum.j-good b {
+  color: #6fd7f5;
+}
+.jnum.j-safe b {
+  color: #6fdc7a;
+}
+.jnum.j-bad b {
+  color: #7fa9ff;
+}
+.jnum.j-miss b {
+  color: #cf6ff2;
+}
+.jnum.j-misc b {
+  color: var(--dim);
+}
+.jnum.dim-note {
+  color: var(--dim);
+}
+
+.badge.star {
+  background: rgba(255, 201, 51, 0.16);
+  border: 1px solid rgba(255, 201, 51, 0.55);
+  color: var(--yellow);
+}
+
 /* results rank numerals — outlined blocky italic like the results screen */
 .rank-num {
   font-family: var(--font-disp);

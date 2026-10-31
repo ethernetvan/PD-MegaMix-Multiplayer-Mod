@@ -109,6 +109,10 @@ placement, interactive bot session end-to-end.
 12. Milestone 5: web spectator client — **implemented on branch `web-frontend`** (`server/web_bridge.py`, `web/`;
     see AGENTS.md "Web spectator/admin UI"). Verified with bots/fake consoles only, not with real consoles yet.
     Follow-ups: real accounts (`docs/ACCOUNTS_DESIGN.md`), web pause/resume-all, ownership transfer.
+13. **Beat-by-beat judgment timeline.** Clients already send aggregate `jc:[5]` counts (COOL/GOOD/SAFE/BAD/
+    MISS) in `final`, which the web results screen renders as per-player breakdowns. A real per-note or
+    per-second judgment timeline (for richer analysis — e.g. where in the chart each player missed) is not
+    reported today and would need a new field in the client `final`/`state` message plus server forwarding.
 
 ## Known quirks
 - Different subnets (PC 10.169.0.x, Switch 10.167.0.x) → set `server_ip` on the console.

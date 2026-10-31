@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { feedText } from "../feedText";
 import { fmtElapsed, fmtPct, fmtRel, fmtScore } from "../format";
 import { canAdmin, serverNow } from "../state";
 import { useStore } from "../store";
-import type { LobbySnap, MemberSnap, PickMode } from "../types";
+import type { LobbySnap, MemberSnap, PickMode, StandingRow } from "../types";
 import HexAvatar from "./HexAvatar";
 import { memberName, PhaseBadge } from "./Overview";
 
@@ -177,6 +178,187 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
   );
 }
 
+/* Judgment slots sent by the client as judge_count[5], in the order the
+ * MegaMix EN results screen lists them. NOTE: only aggregate counts are
+ * reported — a true beat-by-beat judgment timeline would need a new
+ * protocol field from the client (left for a future iteration). */
+const JUDGE = [
+  { label: "COOL", cls: "j-cool" },
+  { label: "GOOD", cls: "j-good" },
+  { label: "SAFE", cls: "j-safe" },
+  { label: "BAD", cls: "j-bad" },
+  { label: "MISS", cls: "j-miss" },
+];
+
+/* eased count-up for the results score reveal */
+function useCountUp(target: number, delayMs: number, dur = 900) {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const t0 = performance.now() + delayMs;
+    const step = (t: number) => {
+      const k = Math.min(1, Math.max(0, (t - t0) / dur));
+      setV(Math.round(target * (1 - Math.pow(1 - k, 3))));
+      if (k < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, delayMs, dur]);
+  return v;
+}
+
+function ResCard({
+  r,
+  m,
+  delay,
+  tags,
+}: {
+  r: StandingRow;
+  m: MemberSnap | undefined;
+  delay: number;
+  tags: string[];
+}) {
+  const score = useCountUp(r.score, delay + 150);
+  const jc = m?.final?.jc;
+  const tot = (jc ?? []).reduce((a, b) => a + (b || 0), 0);
+  const clear = !m?.final ? "dnf" : r.pct >= 80 ? "clear" : "fail";
+  const d = { "--d": `${delay}ms` } as CSSProperties;
+  return (
+    <div
+      className={`res-card${r.rank === 1 ? " win" : ""}${clear === "dnf" ? " dnf" : ""}`}
+      style={d}
+    >
+      <div className="res-top">
+        <span className={`rank-num r${r.rank}`}>{r.rank}</span>
+        <HexAvatar
+          name={r.name}
+          size={38}
+          status={r.connected ? "online" : "offline"}
+          ring={r.rank === 1}
+        />
+        <span className="res-name">
+          {r.name}
+          {r.autoplay && <span className="badge auto">AUTO</span>}
+          {r.rank === 1 && <span className="badge star">★ WINNER</span>}
+          {tags.map((t) => (
+            <span key={t} className="badge star">
+              ★ {t}
+            </span>
+          ))}
+        </span>
+        <span className={`res-clear ${clear}`}>
+          {clear === "clear"
+            ? "STAGE CLEAR"
+            : clear === "fail"
+              ? "NOT CLEAR…"
+              : "DROP×OUT"}
+        </span>
+        <span className="res-score">{fmtScore(score)}</span>
+      </div>
+      {jc && tot > 0 && (
+        <div className="jcbar">
+          {JUDGE.map((j, k) => (
+            <i
+              key={j.label}
+              className={`jseg ${j.cls}`}
+              style={
+                {
+                  width: `${((jc[k] ?? 0) / tot) * 100}%`,
+                  "--k": `${k * 90}ms`,
+                } as CSSProperties
+              }
+            />
+          ))}
+        </div>
+      )}
+      <div className="res-nums">
+        {jc && tot > 0 ? (
+          JUDGE.map((j, k) => (
+            <span
+              key={j.label}
+              className={`jnum ${j.cls}`}
+              style={{ "--k": `${520 + k * 65}ms` } as CSSProperties}
+            >
+              <b>{j.label}</b> {jc[k] ?? 0}
+            </span>
+          ))
+        ) : (
+          <span
+            className="jnum dim-note"
+            style={{ "--k": "520ms" } as CSSProperties}
+          >
+            no note data
+          </span>
+        )}
+        <span
+          className="jnum j-misc"
+          style={{ "--k": "880ms" } as CSSProperties}
+        >
+          <b>MAX COMBO</b> {r.max_combo}x
+        </span>
+        <span
+          className="jnum j-misc"
+          style={{ "--k": "950ms" } as CSSProperties}
+        >
+          <b>%</b> {fmtPct(r.pct)}
+        </span>
+        {jc && tot > 0 && (
+          <span
+            className="jnum j-misc"
+            style={{ "--k": "1020ms" } as CSSProperties}
+          >
+            <b>COOL RATE</b> {(((jc[0] ?? 0) / tot) * 100).toFixed(0)}%
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* Animated results: cards reveal last-place-first so the winner lands
+ * last with the flourish, scores count up, and each player's judgment
+ * breakdown cascades across a MegaMix-colored segment bar. */
+function ResultsBoard({ l }: { l: LobbySnap }) {
+  const st = l.standings;
+  if (!st) return null;
+  const n = st.e.length;
+  const jcOf = (mid: string) => memberOf(l, mid)?.final?.jc;
+  // superlatives among human players who actually reported notes
+  const done = st.e.filter(
+    (r) => !r.autoplay && (jcOf(r.mid) ?? []).some((v) => v > 0),
+  );
+  const tags = new Map<string, string[]>();
+  const push = (mid: string, t: string) =>
+    tags.set(mid, [...(tags.get(mid) ?? []), t]);
+  if (done.length > 1) {
+    const topCool = done.reduce((a, b) =>
+      (jcOf(b.mid)?.[0] ?? 0) > (jcOf(a.mid)?.[0] ?? 0) ? b : a,
+    );
+    push(topCool.mid, "MOST COOLS");
+    const topCombo = done.reduce((a, b) =>
+      b.max_combo > a.max_combo ? b : a,
+    );
+    if (topCombo.max_combo > 0) push(topCombo.mid, "COMBO KING");
+  }
+  return (
+    <section className="panel res-panel">
+      <span className="res-ribbon" aria-hidden>
+        RESULT
+      </span>
+      <h3>Results</h3>
+      {st.e.map((r, i) => (
+        <ResCard
+          key={r.mid}
+          r={r}
+          m={memberOf(l, r.mid)}
+          delay={(n - 1 - i) * 170}
+          tags={tags.get(r.mid) ?? []}
+        />
+      ))}
+    </section>
+  );
+}
+
 function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
   if (l.phase === "SELECT") {
     const notReady = l.members.filter((m) => m.connected && !m.ready);
@@ -230,11 +412,11 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
   }
   const st = l.standings;
   if (!st) return null;
+  if (st.complete) return <ResultsBoard l={l} />;
   return (
     <section className="panel">
       <h3>
-        Results{" "}
-        {!st.complete && <span className="dim">(waiting for players…)</span>}
+        Results <span className="dim">(waiting for players…)</span>
       </h3>
       <div className="board-wrap">
         <table className="board results">
