@@ -112,6 +112,16 @@ static char  s_readyReason[24] = "";
 static int32_t s_readyPv = -1;
 static bool  s_readyDirty = false;
 
+static char  s_ownerCid[24] = "";
+static char  s_pickMode[12] = "rotate";
+static char  s_assignedCid[24] = "";
+static bool  s_groupPaused = false;
+static bool  s_gamePaused = false;
+static char  s_voteKind[8] = "";
+static int   s_voteAgreed = 0, s_voteNeed = 0, s_voteEndsIn = 0;
+static bool  s_voteExpired = false;
+static bool  s_overlayOpen = false;
+
 static std::deque<std::string> s_inQ;
 static std::mutex s_inQMtx;
 
@@ -201,6 +211,11 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
     gs("code", s_code, sizeof(s_code));
     gs("phase", s_serverPhase, sizeof(s_serverPhase));
     gs("leader", s_leaderCid, sizeof(s_leaderCid));
+    gs("owner", s_ownerCid, sizeof(s_ownerCid));
+    gs("pick_mode", s_pickMode, sizeof(s_pickMode));
+    gs("assigned", s_assignedCid, sizeof(s_assignedCid));
+    {   int gi2 = mpjson::Find(line, tok, ntok, "group_paused");
+        if (gi2 >= 0) s_groupPaused = line[tok[gi2].start] == 't'; }
     int32_t rd = 0; gi("round", &rd); s_round = rd;
     int32_t spv = -1; if (gi("sel_pv", &spv)) s_selPv = spv;
     s_amLeader = strcmp(s_leaderCid, s_myCid) == 0;
@@ -470,6 +485,57 @@ static void ProcessLine(const std::string& l) {
         }
         return;
     }
+    if (strcmp(t, "pause") == 0 || strcmp(t, "resume") == 0) {
+        bool p = (t[0] == 'p');
+        s_groupPaused = p;
+        char by[24] = "";
+        int i = mpjson::Find(line, tok, ntok, "by");
+        if (i >= 0) mpjson::Copy(line, tok[i], by, sizeof(by));
+        char nm[40] = "";
+        for (int q = 0; q < s_memberCount; q++)
+            if (strcmp(s_members[q].cid, by) == 0) {
+                strncpy(nm, s_members[q].name, sizeof(nm) - 1); break; }
+        PushBanner("%s by %s", p ? "Paused" : "Resumed",
+                   nm[0] ? nm : by);
+        if (p) {
+            /* pause ourselves if not already paused */
+            if (!s_gamePaused) input::Tap(nn::hid::Plus, 60, 100);
+            ApplyBlocks();
+        } else {
+            /* resume via the retry-safe mechanism (only taps while paused) */
+            s_resumePending = true;
+            s_resumeTries = 0;
+            s_resumeLastMs = 0;
+            ApplyBlocks();
+        }
+        return;
+    }
+    if (strcmp(t, "pause_vote") == 0) {
+        int i;
+        int k = mpjson::Find(line, tok, ntok, "kind");
+        if (k >= 0) mpjson::Copy(line, tok[k], s_voteKind, sizeof(s_voteKind));
+        i = mpjson::Find(line, tok, ntok, "need");
+        int v; if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) s_voteNeed = v;
+        s_voteEndsIn = 0;
+        i = mpjson::Find(line, tok, ntok, "ends_in");
+        if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) s_voteEndsIn = v;
+        s_voteExpired = false;
+        i = mpjson::Find(line, tok, ntok, "expired");
+        if (i >= 0 && line[tok[i].start] == 't') s_voteExpired = true;
+        int ai = mpjson::Find(line, tok, ntok, "agreed");
+        s_voteAgreed = 0;
+        if (ai >= 0 && tok[ai].type == JSMN_ARRAY)
+            s_voteAgreed = tok[ai].size;
+        if (s_voteExpired) {
+            s_voteKind[0] = 0;
+            PushBanner("%s vote expired", "Pause/resume");
+        } else {
+            PushBanner("%s vote: %d/%d agreed - press + to agree (%ds)",
+                       strcmp(s_voteKind, "pause") == 0 ? "Pause" : "Resume",
+                       s_voteAgreed, s_voteNeed, s_voteEndsIn);
+        }
+        return;
+    }
     if (strcmp(t, "board") == 0) { HandleBoard(line, tok, ntok); return; }
     if (strcmp(t, "standings") == 0) {
         HandleStandings(line, tok, ntok);
@@ -521,9 +587,15 @@ static void ApplyBlocks() {
              (s_phase == L_LAUNCHING && s_launchBlocking))
         SetBlocks(MASK_ALL_NO_MINUS, false);
     else if (s_phase == L_RESULTS)
-        SetBlocks(MASK_ALL_NO_MINUS, false);
-    else if (s_phase == L_PLAYING)
-        SetBlocks(nn::hid::Plus, false);
+        SetBlocks(0, false);                  /* results: user navigates */
+    else if (s_phase == L_PLAYING) {
+        if (s_groupPaused)
+            SetBlocks(nn::hid::Plus | nn::hid::A | nn::hid::B | nn::hid::X |
+                      nn::hid::Y | nn::hid::Up | nn::hid::Down |
+                      nn::hid::Left | nn::hid::Right, false);
+        else
+            SetBlocks(nn::hid::Plus, false);
+    }
     else
         SetBlocks(0, false);
 }
@@ -571,6 +643,14 @@ void Pump() {
         }
     }
 
+    {   static bool prevOv = false;
+        if (s_overlayOpen != prevOv) {
+            prevOv = s_overlayOpen;
+            if (s_overlayOpen) SetBlocks(MASK_ALL_NO_MINUS, true);
+            else ApplyBlocks();
+        }
+    }
+
     if (s_expectLobby && s_code[0] && now > s_expectLobbyAt) {
         s_expectLobby = false;
         ResetLobbyState();
@@ -600,25 +680,6 @@ void Pump() {
         s_lastSentPct = s_curPct; s_lastSentLife = s_curLife;
     }
 
-    /* RESULTS auto-return: [Down 80ms -> 0.4s -> A 80ms -> 1.5s] x6 */
-    if (s_phase == L_RESULTS && s_resultInitAt > 0 &&
-        s_standingsComplete && now - s_resultInitAt >= 6000 &&
-        s_retStage >= 0 && !s_selActive) {
-        int iter = s_retStage / 3, step = s_retStage % 3;
-        if (s_retStageAt == 0) s_retStageAt = now;
-        uint64_t el = now - s_retStageAt;
-        if (step == 0 && (iter == 0 || el >= 1500)) {
-            input::Tap(nn::hid::Down, 80, 80);
-            s_retStage++;
-        } else if (step == 1 && el >= 400) {
-            input::Tap(nn::hid::A, 80, 80);
-            s_retStage++;
-        } else if (step == 2 && el >= 1500) {
-            s_retStage++;
-            s_retStageAt = 0;
-        }
-        if (s_retStage >= 18) s_retStage = -1;
-    }
 
     if (s_phase == L_RESULTS && s_selActive && !s_backInSelSent &&
         s_code[0]) {
@@ -837,6 +898,17 @@ void OnPvGameFrame(PVGameData* pv) {
     s_curCombo = pv->combo;
     s_curPct = pv->percentage;
     s_curLife = pv->life;
+    s_gamePaused = pv->paused != 0;
+
+    /* real Plus press while Plus is blocked -> group pause/resume req */
+    if (s_phase == L_PLAYING &&
+        input::ConsumeRealPress(nn::hid::Plus)) {
+        char m[64];
+        snprintf(m, sizeof(m),
+            "{\"t\":\"%s\",\"round\":%d}",
+            s_groupPaused ? "resume_req" : "pause_req", s_round);
+        SendLine(m);
+    }
 
     if (s_phase == L_LOADING || s_phase == L_LAUNCHING) {
         if (pv->loaded && !s_apActive && !s_loadedSent) {
@@ -936,8 +1008,8 @@ void OnStageResult(bool init) {
 bool InLobby() { return s_code[0] != 0; }
 bool PanelWanted() {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
-    return s_connected && s_selActive &&
-           (s_lastSelState == 6 || s_lastSelState == 8);
+    return s_overlayOpen ||
+           (s_selActive && (s_lastSelState == 6 || s_lastSelState == 8));
 }
 
 void GetSnapshot(Snapshot* out) {
@@ -997,6 +1069,17 @@ void GetSnapshot(Snapshot* out) {
         d.me = strstr(r.name, s_myName) != nullptr && s_myName[0];
     }
     out->round = s_round;
+    strncpy(out->ownerCid, s_ownerCid, sizeof(out->ownerCid) - 1);
+    strncpy(out->pickMode, s_pickMode, sizeof(out->pickMode) - 1);
+    strncpy(out->assignedCid, s_assignedCid, sizeof(out->assignedCid) - 1);
+    out->groupPaused = s_groupPaused;
+    out->voteAgreed = s_voteAgreed; out->voteNeed = s_voteNeed;
+    out->voteEndsIn = s_voteEndsIn;
+    strncpy(out->voteKind, s_voteKind, sizeof(out->voteKind) - 1);
+    out->minusHeld = s_minusHeldAt >= 0 && s_code[0] &&
+                     s_phase != L_NONE;
+    out->minusHeldMs = s_minusHeldAt >= 0
+        ? (int)(NowMs() - s_minusHeldAt) : 0;
 }
 
 void Init() {
@@ -1015,6 +1098,32 @@ void CmdLobbyJoin(const char* code) {
     SendLine(m);
 }
 void CmdLobbyLeave() { SendLine("{\"t\":\"lobby_leave\"}"); }
+bool OverlayOpen() { return s_overlayOpen; }
+void ToggleOverlay() { s_overlayOpen = !s_overlayOpen; }
+void SetOverlayOpen(bool open) { s_overlayOpen = open; }
+
+void CmdPickMode(const char* mode, const char* cid) {
+    char m[120];
+    if (cid && *cid)
+        snprintf(m, sizeof(m),
+            "{\"t\":\"set_pick_mode\",\"mode\":\"%s\",\"cid\":\"%s\"}",
+            mode, cid);
+    else
+        snprintf(m, sizeof(m),
+            "{\"t\":\"set_pick_mode\",\"mode\":\"%s\"}", mode);
+    SendLine(m);
+}
+void CmdPauseReq() {
+    char m[64];
+    snprintf(m, sizeof(m), "{\"t\":\"pause_req\",\"round\":%d}", s_round);
+    SendLine(m);
+}
+void CmdResumeReq() {
+    char m[64];
+    snprintf(m, sizeof(m), "{\"t\":\"resume_req\",\"round\":%d}", s_round);
+    SendLine(m);
+}
+
 void CmdSetName(const char* name) {
     if (!name || !*name) return;
     Config::mpPlayerName = name;

@@ -6,6 +6,7 @@
 #include "../nc/diva_nc.hpp"
 #include "../nc/ui/customize_sel.hpp"
 #include "../AutoPlay.hpp"
+#include "../mp/MpLobby.hpp"
 #include "../Mode2DNoMV.hpp"
 #include "../ChartRandomizer.hpp"
 #include "Config.hpp"
@@ -452,7 +453,7 @@ void ProcessInput() {
     s_last_l3 = l3_down;
 
     static int s_tap_count = 0;
-    static int s_tap_timer = 0;
+    static int s_tap_window = 0;      /* frames left in the 3s window */
 
     if ((l3_down && zr_pressed) || (zr_down && l3_tapped)) {
         if (!Config::no3D) {
@@ -460,35 +461,40 @@ void ProcessInput() {
             sound::PlaySelectSE();
         }
         s_tap_count = 0;
-        s_tap_timer = 0;
+        s_tap_window = 0;
         return;
     }
 
     if (l3_down) return;
 
+    /* AutoPlay is forced off inside a lobby; the toggle is ignored. */
+    bool inLobby = mp::lobby::InLobby();
+    if (inLobby && AutoPlay::g_enabled)
+        AutoPlay::g_enabled = false;
+
     if (zr_pressed) {
-        if (s_tap_count == 0) s_tap_count = 1;
-        else if (s_tap_count == 1) {
-            s_tap_count = 2;
-            s_tap_timer = 0;
-            if (!Config::noMV) {
-                g_noMovie = !g_noMovie;
+        s_tap_count++;
+        if (s_tap_count == 1) s_tap_window = 180;   /* 3s @60fps */
+        if (s_tap_count >= 5) {
+            s_tap_count = 0; s_tap_window = 0;
+            if (!inLobby) {
+                AutoPlay::g_enabled = !AutoPlay::g_enabled;
                 sound::PlaySelectSE();
             }
+            return;
         }
     }
 
-    if (zr_released) {
-        if (s_tap_count == 1) s_tap_timer = 18;
-        else if (s_tap_count == 2) s_tap_count = 0;
-    }
-
-    if (s_tap_timer > 0) {
-        s_tap_timer--;
-        if (s_tap_timer <= 0 && s_tap_count == 1) {
+    if (s_tap_window > 0) {
+        s_tap_window--;
+        if (s_tap_window <= 0) {
+            if (s_tap_count == 2) {
+                if (!Config::noMV) {
+                    g_noMovie = !g_noMovie;
+                    sound::PlaySelectSE();
+                }
+            }
             s_tap_count = 0;
-            AutoPlay::g_enabled = !AutoPlay::g_enabled;
-            sound::PlaySelectSE();
         }
     }
 }

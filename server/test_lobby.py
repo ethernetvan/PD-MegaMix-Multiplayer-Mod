@@ -238,7 +238,7 @@ class T(unittest.TestCase):
         self.assertEqual(self.lm.lobbies[code].phase, "SELECT")
         self.assertIsNone(self.lm.lobbies[code].sel_pv)
 
-    def test_results_25s_fallback(self):
+    def test_results_90s_fallback(self):
         self.mk("a"); self.mk("b")
         self.create("a"); code = self.code_of("a"); self.join("b", code)
         self.lm.on_message("a", {"t": "start_req", "pv": 1, "name": "s"}, 100.0)
@@ -249,7 +249,7 @@ class T(unittest.TestCase):
                                      "pct": 1, "max_combo": 1, "jc": [0]*5,
                                      "life": 1}, 110.0)
         self.lm.tick(111.0)   # completes
-        self.lm.tick(111.0 + 26.0)
+        self.lm.tick(111.0 + 91.0)
         self.assertTrue(self.msgs(t="round_end"))
 
     # ----- select disconnects -----
@@ -473,3 +473,81 @@ class T3(unittest.TestCase):
                                  "reason": ""}, 104.0)
         st = self.msgs("a", "sel_status")
         self.assertEqual(st[0][1]["not_ready"], [])
+
+class T4(unittest.TestCase):
+    def setUp(self):
+        self.lm = LobbyManager()
+        for c in "ab": self.lm.on_hello(c, c, "v1", 100.0)
+
+    def msgs(self, cid=None, t=None):
+        out = self.lm.outbox; self.lm.outbox = []
+        return [(c, m) for c, m in out
+                if (cid is None or c == cid) and (t is None or m.get("t") == t)]
+
+    def _mk(self):
+        self.lm.on_message("a", {"t": "lobby_create"}, 100.0)
+        code = next(iter(self.lm.lobbies))
+        self.lm.on_message("b", {"t": "lobby_join", "code": code}, 100.0)
+        return self.lm.lobbies[code]
+
+    def test_owner_and_pick_modes(self):
+        lb = self._mk(); self.msgs()
+        self.assertEqual(lb.owner_cid, "a")
+        self.assertEqual(lb.pick_mode, "rotate")
+        # non-owner rejected
+        self.lm.on_message("b", {"t": "set_pick_mode", "mode": "owner"}, 101.0)
+        self.assertEqual(self.msgs("b", "lobby_error")[0][1]["code"],
+                         "not_owner")
+        # owner sets assigned to b
+        self.lm.on_message("a", {"t": "set_pick_mode", "mode": "assigned",
+                                 "cid": "b"}, 102.0)
+        lm_ = [m for c, m in self.msgs(t="lobby")][-1]
+        self.assertEqual(lm_["pick_mode"], "assigned")
+        self.assertEqual(lm_["leader"], "b")
+        # owner leave -> b becomes owner
+        self.lm.on_message("a", {"t": "lobby_leave"}, 103.0)
+        self.assertEqual(self.lm.lobbies[lb.code].owner_cid, "b")
+        # owner mode keeps owner as leader
+        self.lm.on_message("b", {"t": "set_pick_mode", "mode": "owner"}, 104.0)
+        lm_ = [m for c, m in self.msgs(t="lobby")][-1]
+        self.assertEqual(lm_["leader"], "b")
+
+    def test_pause_owner_immediate(self):
+        lb = self._mk()
+        self.lm.on_message("a", {"t": "start_req", "pv": 1, "name": "s"}, 101.0)
+        for c in "ab":
+            self.lm.on_message(c, {"t": "loaded", "round": 1}, 102.0)
+        self.lm.tick(103.0); self.msgs()
+        self.lm.on_message("a", {"t": "pause_req", "round": 1}, 104.0)
+        p = self.msgs(t="pause")
+        self.assertEqual(len(p), 2)  # broadcast to both
+        self.lm.on_message("a", {"t": "resume_req", "round": 1}, 105.0)
+        self.assertEqual(len(self.msgs(t="resume")), 2)
+
+    def test_pause_vote_pass_and_expire(self):
+        lb = self._mk()
+        self.lm.on_message("a", {"t": "start_req", "pv": 1, "name": "s"}, 101.0)
+        for c in "ab":
+            self.lm.on_message(c, {"t": "loaded", "round": 1}, 102.0)
+        self.lm.tick(103.0); self.msgs()
+        # non-owner requests pause -> vote opens (a is owner, need both players)
+        self.lm.on_message("b", {"t": "pause_req", "round": 1}, 104.0)
+        v = self.msgs(t="pause_vote")
+        self.assertEqual(v[0][1]["kind"], "pause")
+        self.assertEqual(v[0][1]["need"], 2)
+        self.assertFalse(self.msgs(t="pause"))
+        # second requester (owner via vote path? no - owner triggers immediate)
+        # make a non-owner: transfer owner to a third? simplest: a is owner so
+        # a's req is immediate. To test a full vote use 2 non-owners:
+        lb2 = self.lm.lobbies[lb.code]
+        lb2.owner_cid = "zzz"   # pretend owner gone; both members vote
+        self.lm.on_message("b", {"t": "pause_req", "round": 1}, 104.5)
+        self.msgs()
+        self.lm.on_message("a", {"t": "pause_req", "round": 1}, 105.0)
+        self.assertEqual(len(self.msgs(t="pause")), 2)   # passed
+        # expire path
+        self.lm.on_message("b", {"t": "resume_req", "round": 1}, 106.0)
+        self.msgs()
+        self.lm.tick(122.0)
+        v = self.msgs(t="pause_vote")
+        self.assertTrue(v[0][1].get("expired"))

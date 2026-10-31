@@ -29,6 +29,7 @@ void DrawBanners();
 void DrawLeaderboard();
 void DrawWaiting();
 void DrawStandings();
+void DrawEmergency();
 
 /* Commands from panel buttons / dbg_cmd. */
 void CmdLobbyCreate();
@@ -63,7 +64,23 @@ struct Snapshot {
     struct { char text[128]; float ttl; } banners[4];
     int      bannerCount;
     int      round;
+    char     ownerCid[20];
+    char     pickMode[12];
+    char     assignedCid[20];
+    bool     groupPaused;
+    char     voteKind[8];
+    int      voteAgreed, voteNeed, voteEndsIn;
+    bool     minusHeld;
+    int      minusHeldMs;
 };
+
+/* group pause / pick mode commands */
+void CmdPickMode(const char* mode, const char* cid);
+void CmdPauseReq();
+void CmdResumeReq();
+bool OverlayOpen();
+void ToggleOverlay();
+void SetOverlayOpen(bool open);
 void GetSnapshot(Snapshot* out);
 
 } // namespace mp::lobby

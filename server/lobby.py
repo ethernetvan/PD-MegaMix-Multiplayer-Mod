@@ -35,7 +35,8 @@ SELECT_LEADER_HANDOFF_S = 10.0
 LEADER_LOADED_START_S = 30.0
 NO_LEADER_LOAD_S = 90.0
 BOARD_MIN_INTERVAL_S = 0.1
-ROUND_END_ALL_BACK_S = 25.0
+ROUND_END_ALL_BACK_S = 90.0
+PAUSE_VOTE_S = 15.0
 PLAYING_ALL_DC_ABORT_S = 60.0
 
 
@@ -90,6 +91,12 @@ class Lobby:
         self.phase = "SELECT"       # SELECT | LOADING | PLAYING | RESULTS
         self.members = []           # join order
         self.leader_cid = None
+        self.owner_cid = None
+        self.pick_mode = "rotate"   # owner | assigned | rotate
+        self.assigned_cid = None
+        self.pending_pick_mode = None   # (mode, cid) applied at round_end
+        self.group_paused = False
+        self.vote = None   # {"kind","agreed":set,"ends_at":float}
         self.sel_pv = None
         self.sel_name = None
         self.acks = {}              # cid -> ack dict for current sel_pv
@@ -100,8 +107,15 @@ class Lobby:
         self.last_board_at = 0.0
         self.board_dirty = False
 
-    def leader(self):
+    def effective_leader(self):
+        if self.pick_mode == "owner":
+            return self.owner_cid
+        if self.pick_mode == "assigned" and self.assigned_cid in                 {m.cid for m in self.members}:
+            return self.assigned_cid
         return self.leader_cid
+
+    def leader(self):
+        return self.effective_leader()
 
 
 class LobbyManager:
@@ -134,6 +148,9 @@ class LobbyManager:
     def _lobby_msg(self, lobby, you_cid):
         return {"t": "lobby", "code": lobby.code, "phase": lobby.phase,
                 "leader": lobby.leader(), "you": you_cid,
+                "owner": lobby.owner_cid, "pick_mode": lobby.pick_mode,
+                "assigned": lobby.assigned_cid,
+                "group_paused": lobby.group_paused,
                 "round": lobby.round.id if lobby.round else 0,
                 "sel_pv": lobby.sel_pv,
                 "members": [{"cid": m.cid, "name": m.name,
@@ -230,6 +247,10 @@ class LobbyManager:
             self._back_in_sel(cid, msg, now)
         elif t == "ready":
             self._ready(cid, msg, now)
+        elif t == "set_pick_mode":
+            self._set_pick_mode(cid, msg, now)
+        elif t in ("pause_req", "resume_req"):
+            self._pause_req(cid, msg, now, t == "pause_req")
 
     def _set_name(self, cid, name, now):
         if name:
@@ -249,6 +270,7 @@ class LobbyManager:
             return
         lobby = Lobby(self._new_code())
         lobby.leader_cid = cid
+        lobby.owner_cid = cid
         lobby.members.append(Member(cid, self._name_of(cid)))
         self.lobbies[lobby.code] = lobby
         self.by_cid[cid] = lobby
@@ -299,6 +321,10 @@ class LobbyManager:
             del self.lobbies[lobby.code]
             self.log(f"lobby {lobby.code} closed (empty)")
             return
+        if lobby.owner_cid == cid:
+            lobby.owner_cid = lobby.members[0].cid
+            self._event(lobby, "leader", lobby.owner_cid,
+                        lobby.members[0].name)
         if was_leader:
             new_leader = lobby.members[idx % len(lobby.members)]
             lobby.leader_cid = new_leader.cid
@@ -373,6 +399,96 @@ class LobbyManager:
         self._send(lobby.leader(), {"t": "sel_status", "pv": lobby.sel_pv,
                                     "missing": missing, "cant": cant,
                                     "not_ready": not_ready})
+
+    def _apply_pick_mode(self, lobby, mode, cid):
+        lobby.pick_mode = mode
+        lobby.assigned_cid = cid if mode == "assigned" else None
+        if mode != "assigned":
+            lobby.assigned_cid = None
+        if mode == "owner":
+            lobby.leader_cid = lobby.owner_cid
+        elif mode == "assigned" and lobby.assigned_cid:
+            lobby.leader_cid = lobby.assigned_cid
+        elif mode == "rotate":
+            pass   # keep current leader; rotation applies at round_end
+        lobby.pending_pick_mode = None
+        self._broadcast_lobby(lobby)
+        self._send_sel_status(lobby) if lobby.sel_pv is not None else None
+        cur = lobby.leader()
+        if cur:
+            self._event(lobby, "leader", cur,
+                        self._member(lobby, cur).name
+                        if self._member(lobby, cur) else cur)
+
+    def _set_pick_mode(self, cid, msg, now):
+        lobby = self._lobby_of(cid)
+        if lobby is None:
+            self._error(cid, "not_in_lobby", "not in a lobby")
+            return
+        if lobby.owner_cid != cid:
+            self._error(cid, "not_owner", "only the owner can set pick mode")
+            return
+        mode = msg.get("mode")
+        if mode not in ("owner", "assigned", "rotate"):
+            self._error(cid, "bad_mode", "mode must be owner|assigned|rotate")
+            return
+        assignee = msg.get("cid")
+        if mode == "assigned" and (assignee is None or
+                                   self._member(lobby, assignee) is None):
+            self._error(cid, "bad_member", "assigned cid must be a member")
+            return
+        if lobby.phase == "SELECT":
+            self._apply_pick_mode(lobby, mode, assignee)
+        else:
+            lobby.pending_pick_mode = (mode, assignee)
+            self._broadcast_lobby(lobby)
+
+    def _pause_req(self, cid, msg, now, pause):
+        lobby = self._lobby_of(cid)
+        if lobby is None or lobby.round is None:
+            return
+        if msg.get("round") != lobby.round.id:
+            return
+        if cid not in lobby.round.players:
+            return
+        kind = "pause" if pause else "resume"
+        if lobby.owner_cid == cid:
+            # owner: immediate
+            lobby.vote = None
+            lobby.group_paused = pause
+            self._broadcast(lobby, {"t": kind, "by": cid})
+            self.log(f"lobby {lobby.code}: {kind} by owner {cid}")
+            return
+        # vote: single open vote; a req while open counts as agreeing
+        v = lobby.vote
+        if v is None or v["kind"] != kind or now >= v["ends_at"]:
+            v = {"kind": kind, "agreed": {cid}, "ends_at": now + PAUSE_VOTE_S}
+            lobby.vote = v
+        else:
+            v["agreed"].add(cid)
+        self._send_pause_vote(lobby, now)
+        need = {c for c in lobby.round.players
+                if self._member(lobby, c) is not None and
+                self._member(lobby, c).connected}
+        if v["agreed"] >= need and len(need) > 0:
+            lobby.vote = None
+            lobby.group_paused = pause
+            self._broadcast(lobby, {"t": kind, "by": cid})
+            self.log(f"lobby {lobby.code}: {kind} vote passed")
+
+    def _send_pause_vote(self, lobby, now, expired=False):
+        v = lobby.vote
+        if v is None:
+            return
+        need = sum(1 for c in lobby.round.players
+                   if self._member(lobby, c) is not None and
+                   self._member(lobby, c).connected)
+        msg = {"t": "pause_vote", "kind": v["kind"],
+               "agreed": sorted(v["agreed"]), "need": need,
+               "ends_in": max(0, int(v["ends_at"] - now))}
+        if expired:
+            msg["expired"] = True
+        self._broadcast(lobby, msg)
 
     def _ready(self, cid, msg, now):
         lobby = self._lobby_of(cid)
@@ -613,8 +729,18 @@ class LobbyManager:
 
     def _round_end(self, lobby, now, rotate=True):
         r = lobby.round
+        if lobby.pending_pick_mode:
+            mode, assignee = lobby.pending_pick_mode
+            self._apply_pick_mode(lobby, mode, assignee)
         if lobby.pending_leader and self._member(lobby, lobby.pending_leader):
             next_leader = lobby.pending_leader
+        elif lobby.pick_mode == "owner":
+            next_leader = lobby.owner_cid
+        elif (lobby.pick_mode == "assigned" and lobby.assigned_cid in
+              {m.cid for m in lobby.members}):
+            next_leader = lobby.assigned_cid
+        elif lobby.pick_mode == "assigned":
+            next_leader = lobby.owner_cid
         elif not rotate:
             next_leader = r.leader if self._member(lobby, r.leader) else (
                 lobby.members[0].cid if lobby.members else None)
@@ -630,6 +756,8 @@ class LobbyManager:
             if next_leader is None and lobby.members:
                 next_leader = lobby.members[0].cid
         lobby.phase = "SELECT"
+        lobby.group_paused = False
+        lobby.vote = None
         lobby.sel_pv = None
         lobby.sel_name = None
         lobby.acks = {}
@@ -655,6 +783,9 @@ class LobbyManager:
             self._tick_lobby(lobby, now)
 
     def _tick_lobby(self, lobby, now):
+        if lobby.vote is not None and now >= lobby.vote["ends_at"]:
+            self._send_pause_vote(lobby, now, expired=True)
+            lobby.vote = None
         if lobby.phase == "SELECT":
             # disconnected leader handoff at 10s
             for m in list(lobby.members):

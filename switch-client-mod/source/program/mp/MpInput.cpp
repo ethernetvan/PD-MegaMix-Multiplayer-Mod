@@ -19,6 +19,8 @@ static uint64_t    s_blocked = 0;
 static bool        s_zeroLStick = false;
 static int         s_bypassDepth = 0;   /* set while our own UI polls pad */
 static uint64_t    s_bypassTid = 0;
+static uint64_t    s_prevReal = 0;      /* real (pre-mask) buttons last Apply */
+static uint64_t    s_realEdges = 0;     /* latched rising edges, real input */
 
 /* TPIDRRO_EL0 is unique per thread on Horizon. */
 static inline uint64_t CurTid() {
@@ -97,6 +99,14 @@ void EndBypass() {
     if (s_bypassDepth > 0) s_bypassDepth--;
 }
 
+/* Consume latched real-input rising edges matching mask. */
+uint64_t ConsumeRealPress(uint64_t mask) {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    uint64_t r = s_realEdges & mask;
+    s_realEdges &= ~mask;
+    return r;
+}
+
 void ResetAll() {
     std::lock_guard<std::mutex> lk(s_mtx);
     s_blocked = 0;
@@ -116,6 +126,9 @@ void Apply(nn::hid::NpadHandheldState* st) {
         std::lock_guard<std::mutex> lk(s_mtx);
         if (s_bypassDepth > 0 && s_bypassTid == CurTid())
             return;                        /* our own UI poll sees real input */
+        /* latch real-input rising edges before masking */
+        s_realEdges |= st->buttons & ~s_prevReal;
+        s_prevReal = st->buttons;
         blocked = s_blocked;
         zeroLs = s_zeroLStick;
 

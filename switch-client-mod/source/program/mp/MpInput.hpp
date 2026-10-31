@@ -27,6 +27,10 @@ void EndBypass();
 /* Clear every block/injection (emergency exit). */
 void ResetAll();
 
+/* Rising edges of REAL input (pre-block) — lets the lobby see a real
+ * press even while the button is blocked for the game. */
+uint64_t ConsumeRealPress(uint64_t mask);
+
 /* Call from keyboard.cpp ApplyInjections (end), all GetNpadState hooks. */
 void Apply(nn::hid::NpadHandheldState* st);
 

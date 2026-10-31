@@ -110,11 +110,12 @@ class Server:
         client.name = hello.get("name", "?")
         client.mod = hello.get("mod", "?")
 
-        if self.first_mod_version is None:
+        if (self.first_mod_version is None and
+                not client.mod.startswith("bot")):
             self.first_mod_version = client.mod
         expected = MOD_VERSION_EXPECTED or self.first_mod_version
         warn = None
-        if client.mod != expected:
+        if expected and client.mod != expected and                 not client.mod.startswith("bot"):
             warn = f"mod version mismatch: you={client.mod} expected={expected}"
 
         rejoin = client.cid in self.known_cids

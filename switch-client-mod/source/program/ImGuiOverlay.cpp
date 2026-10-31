@@ -482,6 +482,7 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
         if (ph == 3) mp::lobby::DrawWaiting();
         if (ph == 6 || ph == 5) mp::lobby::DrawStandings();
         mp::lobby::DrawBanners();
+        mp::lobby::DrawEmergency();
     }
 
     VirtualKeyboard::Draw();
