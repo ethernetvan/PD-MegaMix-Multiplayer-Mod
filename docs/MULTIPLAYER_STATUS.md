@@ -36,6 +36,15 @@ sees final standings, then returns to song select. A web page will later spectat
 - Results: Clear/Not Clear → ~2s → results; A → rank/points; A → menu (RETRY default, Return to Song List below).
 - Failing (life 0) ends the song early.
 
+## NEXT SESSION START HERE
+Items 1–7 below were implemented in commit `eda4eb0` (28/28 server tests pass, client builds, boots to song
+select) but have NOT been exercised on a device. First job: verify each on Ryujinx and the real Switch —
+MP button + overlay open/close + minimized room info, create/join from the overlay, owner pick modes across
+rounds, owner pause/resume for everyone, non-owner pause vote (pass + 15s expiry), results stay until the
+player leaves, emergency-exit ring, ZR×5 AutoPlay (single/double ZR side effects: confirm the old double-ZR
+2D-mode / L3+ZR no-movie toggles still behave as the README describes), and the interactive bot CLI.
+Kill stale `mp_server.py` processes before starting a server (port 7778 conflicts).
+
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
    they leave) separately from `leader` (current song picker). Owner chooses `pick_mode`:
