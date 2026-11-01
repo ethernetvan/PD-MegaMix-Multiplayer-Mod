@@ -68,6 +68,36 @@ Known gap: the "AUTO" tag is tracked by the server but not yet rendered in the c
 Verify next: overlay 3-button layout + X-only close, results→song-list recipe after owner leaves, "is picking a song"
 placement, interactive bot session end-to-end.
 
+## Round 6: multi-screen Switch-style lobby UI (6.2" handheld)
+- Bottom-left status chip is off by default; config key renamed `show_status` -> `debug_status_chip` (old
+  saved `true` values are ignored).
+- Song-select Multiplayer button (`Hints.cpp`, AutoPlay badge spot) shows OFF / DISCONNECTED / CONNECTED /
+  `ROOM: CODE`, plus a right-aligned "<name> picking a song (N)" line in a room. It opens the overlay in every
+  state (OFF shows how to enable it).
+- Overlay (`MpUi.cpp`) is split into screens: HOME (Edit Name / Create Room / Join Room cards + state pill),
+  EDIT NAME and JOIN ROOM (compact dialog above the virtual keyboard), ROOM (top-3 podium, ordered member list,
+  owner-only kick, Room Config, Exit Room), ROOM CONFIG (owner: rotate / owner / assigned + picker). Opens on
+  ROOM while in a lobby. Only the X closes it. Text sizes were raised for the handheld screen (base font 11 px).
+- Server: owner-only `kick {cid}` (unit tested); transport now forwards `set_pick_mode`, `autoplay`,
+  `pause_req`, `resume_req`, `kick` (they were silently dropped before).
+- Fixes found while testing: `lobby` messages with 2+ members overflowed the client JSON token budget; the song
+  search bar drew over the overlay; banners overlapped the overlay header; ROOM footer showed a stale "You're the
+  leader" after the picker changed; the virtual keyboard was hijacked by SongQuickJump (`IsOpenFor`).
+- Verified on Ryujinx and on the real Switch (touch): button states, HOME, EDIT NAME, JOIN ROOM (typed code),
+  CREATE, ROOM with 3–6 members, kick, ROOM CONFIG assigned picker, minimized room info, Exit Room. Not yet
+  re-verified with the new UI: a full round, group pause votes.
+- Controller support (docked, no touchscreen): single **ZR** opens the overlay (gap-based: ZR×2 = No Movie,
+  ZR×5 = AutoPlay, L3+ZR = 2D all preserved); **ZR** closes it. D-pad/left stick moves a cyan focus ring
+  (spatial, no wrap; hold repeats after 400 ms then every 120 ms), **A** activates, **B** backs out / closes,
+  kick and Exit Room need a second **A** within 3 s (touch stays single-tap). On the keyboard: A types,
+  B deletes (empty buffer = cancel), Y = space, X = caps, L/R = caret, Plus = submit. Pad state comes from
+  `mp::input` nav edges (merged state pre-block, so injected admin taps work); a release guard keeps held
+  buttons/sticks blocked until released after close. Admin `tap`s are now masked by blocks like real input;
+  the lobby's own injects use `Tap(..., force=true)`.
+- Fixed: every inbound `lobby` message ran `ApplyBlocks()` and handed input back to the game behind an open
+  overlay (pad A on a menu item also opened/started the song). `PushBlocks()` now forces a full block while the
+  overlay is open. Verified on Ryujinx (docked, pad only); real-Switch pad test still pending (console offline).
+
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
    they leave) separately from `leader` (current song picker). Owner chooses `pick_mode`:
@@ -102,8 +132,8 @@ placement, interactive bot session end-to-end.
    `load`, `fail`, `final`, `pause`, `resume`, `status`, `help`. Runs while commands are typed.
 8. Still unverified paths: module-picker readiness, missing-song fallback, straggler drop, auto-leave on exiting
    song select, full round on real hardware.
-9. UI polish: lobby panel overlapped the song list; status chip overlaps the % gauge in-song (hide or move it
-   during songs).
+9. UI polish: in-song leaderboard / waiting / standings windows still use small default ImGui text (the lobby
+   screens were enlarged in round 6; the status chip is now debug-only).
 10. Percent markers for other players on the bottom % gauge (calibrate pointer x vs pct from screenshots).
 11. Make MP independent of `new_classics = true` (pv_sel/results hooks are only installed when NC is on).
 12. Milestone 5: web spectator client — **implemented on branch `web-frontend`** (`server/web_bridge.py`, `web/`;

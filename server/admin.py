@@ -25,6 +25,8 @@ def main():
     sub.add_parser("lobbies")
     sub.add_parser("kick").add_argument("kick_cid")
     p = sub.add_parser("set_leader"); p.add_argument("code"); p.add_argument("leader_cid")
+    sub.add_parser("overlay").add_argument("state", choices=["open", "close"])
+    p = sub.add_parser("cursor"); p.add_argument("x", type=int); p.add_argument("y", type=int); p.add_argument("--click", action="store_true")
     ap.add_argument("--cid", default=None)
     ap.add_argument("--port", type=int, default=7790)
     args = ap.parse_args()
@@ -55,6 +57,10 @@ def main():
         pl = {"cmd": "kick", "cid": args.kick_cid}
     elif args.cmd == "set_leader":
         pl = {"cmd": "set_leader", "code": args.code, "cid": args.leader_cid}
+    elif args.cmd == "overlay":
+        pl = {"cmd": "overlay", "open": args.state == "open"}
+    elif args.cmd == "cursor":
+        pl = {"cmd": "cursor", "x": args.x, "y": args.y, "click": args.click}
     if args.cid:
         pl["cid"] = args.cid
     send(pl, args.port)

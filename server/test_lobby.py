@@ -67,6 +67,22 @@ class T(unittest.TestCase):
         ev = [m for _, m in self.msgs(t="event") if m["kind"] == "leader"]
         self.assertEqual(ev[0]["cid"], "b")
 
+    def test_owner_kick(self):
+        self.mk("a"); self.mk("b"); self.mk("c")
+        self.create("a"); code = self.code_of("a")
+        self.join("b", code); self.join("c", code)
+        l = self.lm.lobbies[code]
+        self.msgs()
+        self.lm.on_message("b", {"t": "kick", "cid": "c"}, 101.0)
+        self.assertEqual(self.msgs("b", "lobby_error")[0][1]["code"], "not_owner")
+        self.lm.on_message("a", {"t": "kick", "cid": "a"}, 101.0)
+        self.assertEqual(self.msgs("a", "lobby_error")[0][1]["code"], "bad_member")
+        self.lm.on_message("a", {"t": "kick", "cid": "c"}, 102.0)
+        self.assertEqual([m.cid for m in l.members], ["a", "b"])
+        left = self.msgs("c", "lobby_left")
+        self.assertEqual(left[0][1]["reason"], "kicked")
+        self.assertIsNone(self.code_of("c"))
+
     # ----- sel -----
     def test_sel_leader_only_and_fanout(self):
         self.mk("a"); self.mk("b")

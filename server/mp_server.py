@@ -173,9 +173,10 @@ class Server:
                 elif t == "dbg_result":
                     log(f"RESULT '{client.name}' {compact_result(msg)}")
                 elif t in ("set_name", "lobby_create", "lobby_join",
-                           "lobby_leave", "sel", "sel_ack", "start_req",
+                           "lobby_leave", "kick", "sel", "sel_ack", "start_req",
                            "launch_fail", "loaded", "state", "final",
-                           "back_in_sel", "ready"):
+                           "back_in_sel", "ready", "set_pick_mode", "autoplay",
+                           "pause_req", "resume_req"):
                     self.lobby.on_message(client.cid, msg, time.time())
                     await self.drain_outbox()
                 elif t == "dbg_pvs":

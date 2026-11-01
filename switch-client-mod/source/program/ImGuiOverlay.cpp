@@ -46,6 +46,14 @@ namespace ImGui {
 
     static float g_cursorX = 640.0f;
     static float g_cursorY = 360.0f;
+    static int   g_dbgClickFrames = 0;   /* MP admin "cursor" debug command */
+
+    void DbgSetCursor(float x, float y, bool click) {
+        float k = GetIO().DisplaySize.y > 0 ? GetIO().DisplaySize.y / 720.0f : 1.0f;
+        g_cursorX = x * k;
+        g_cursorY = y * k;
+        if (click) g_dbgClickFrames = 3;
+    }
 
     static ImGuiStyle s_baseStyle;
     static bool s_baseStyleCached = false;
@@ -371,7 +379,8 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
             }
         }
 
-        if (!isTouchActive) {
+        bool mpPad = mp::lobby::OverlayOpen() && mp::lobby::PadModeActive();
+        if (!isTouchActive && !mpPad) {
             float lx = (float)npad.analogStickL[0] / 32767.0f;
             float ly = -(float)npad.analogStickL[1] / 32767.0f;
             if (std::abs(lx) > 0.15f || std::abs(ly) > 0.15f) {
@@ -387,15 +396,22 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
             }
         }
 
+        if (ImGui::g_dbgClickFrames > 0) {
+            ImGui::g_dbgClickFrames--;
+            isLeftClick = true;
+        }
+
         ImGui::g_cursorX = std::clamp(ImGui::g_cursorX, 0.0f, screenW);
         ImGui::g_cursorY = std::clamp(ImGui::g_cursorY, 0.0f, screenH);
     }
 
     bool isFullWindowOpen = ImGui::g_isMenuOpen || MotionPlayerUi::g_showUltimatePlayer ||
-                         MotionPlayerUi::g_showMotionControlWindow || WindControl::g_showWindow;
+                         MotionPlayerUi::g_showMotionControlWindow || WindControl::g_showWindow ||
+                         mp::lobby::OverlayOpen();
 
     bool shouldDrawCursor = false;
-    if (ImGui::g_imguiHasFocus && !isTouchActive) {
+    if (ImGui::g_imguiHasFocus && !isTouchActive &&
+        !(mp::lobby::OverlayOpen() && mp::lobby::PadModeActive())) {
         if (isFullWindowOpen) {
             shouldDrawCursor = true;
         }
@@ -506,12 +522,8 @@ void MyOnPresent(NVNqueue *queue, NVNwindow *window, int texture_index) {
         s_context_ready = true;
     }
 
-    ImDrawData* drawData = nvnImguiCalc();
-
-    if (!drawData || drawData->CmdListsCount == 0 || drawData->TotalVtxCount == 0) {
-        return;
-    }
-
+    // Initialize the backend on the very first present (boot), before the game
+    // is busy: doing it lazily on the first real draw stalls the GPU queue.
     static bool s_backend_ready = false;
     if (!s_backend_ready) {
         nvn_hooks::LoadCppProcsOnce();
@@ -522,6 +534,12 @@ void MyOnPresent(NVNqueue *queue, NVNwindow *window, int texture_index) {
 
         ImguiNvnBackend::InitBackend(init_info);
         s_backend_ready = true;
+    }
+
+    ImDrawData* drawData = nvnImguiCalc();
+
+    if (!drawData || drawData->CmdListsCount == 0 || drawData->TotalVtxCount == 0) {
+        return;
     }
 
     const auto* rt = nvn_hooks::GetSwapchainTextureForBackend(texture_index);

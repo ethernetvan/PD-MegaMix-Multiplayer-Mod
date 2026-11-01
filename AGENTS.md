@@ -34,6 +34,11 @@ Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\
 - Run: `python server/mp_server.py` (TCP 7777, UDP discovery 7778, admin 127.0.0.1:7790, web UI 0.0.0.0:8080). Windows Firewall must allow Python on private networks for real consoles.
 - Tests: `cd server && python -B -m unittest test_lobby.py test_web_bridge.py -v` (`-B`: `server/__pycache__/*.pyc` are tracked, don't churn them).
 - When another server may be running, test on alternate ports: `--port 17777 --discovery-port 17778 --admin-port 17790 --web-port 18080`.
+- `--lobby-max N` raises the per-lobby member cap (default 8, which is what consoles support) for stress demos.
+- Bots/sim: `server/bot.py --help`, `server/sim.py`. Admin/debug CLI: `server/admin.py` (tap/spam/block/jump/autopause/list_pvs/lobbies/kick/set_leader/overlay open|close/cursor X Y [--click], 720p coords).
+- Admin debug commands without `--cid` are broadcast to EVERY connected client, including the real Switch. When the console is connected, target Ryujinx explicitly: `python admin.py --cid <cid> tap A` (cids are listed by `admin.py lobbies`).
+- Real-Switch UI testing: `nx.py raw "touch X Y"` taps the touchscreen (1280x720), `nx.py shot NAME` captures it.
+- Lobby engine is pure logic in `server/lobby.py` (protocol v1 documented in its docstring).
 
 ## Web spectator/admin UI — `server/web_bridge.py` + `web/`
 - Bridge (stdlib, same process as `mp_server.py`): serves `web/dist`, `GET /api/state`, `GET /api/health`, WebSocket `/ws` (snapshot push every 200 ms on change, activity feed, `auth`/`action` messages; schema mirrored in `web/src/types.ts`). Flags: `--web-port` (0 disables; a busy port only disables the web UI), `--web-host`, `--web-token` (default random, printed at startup with a `?token=` link).
@@ -42,8 +47,12 @@ Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\
 - Frontend: React 19 + Vite + TypeScript (strict), no other runtime deps. `cd web && npm ci && npm run build` (the server shows a "not built" page until `web/dist` exists). Checks: `npm run typecheck && npm test`.
 - Styling follows the game's own visual language (see `mm-re/screens/m1b_menu1.png`, `v1c_sel2.png`, `ui_room.png`): design tokens in `styles.css` `:root`, chevron-tag bars, parallelogram chips, dark translucent data panels on a bright teal confetti backdrop. Player icons are hexagons via `components/HexAvatar.tsx` — currently gradient placeholders; pass `src` to show a real icon once the server sends one.
 - Dev: `cd web && npm run dev` proxies `/api` + `/ws` to `MP_WEB_BACKEND` (default `http://127.0.0.1:8080`). Install new deps with exact pins and versions at least 7 days old (`npm install --save-exact --before=<date>`).
-- Bots/sim: `server/bot.py --help`, `server/sim.py`. Admin/debug CLI: `server/admin.py` (tap/spam/block/jump/autopause/list_pvs/lobbies/kick/set_leader).
-- Lobby engine is pure logic in `server/lobby.py` (protocol v1 documented in its docstring).
+- Web UI demo recordings (headless Edge, nothing on any monitor): `mm-re/tools/web_demo_round.py` (3 players) and `web_demo_chaos.py` (23 players, 1080p60 screencast capture); both run their own server on 27777/27778/27790/28080.
+
+## Demo recording
+- `python tools/record_demo.py [--skip-tour]` records a captioned, chaptered MP4 to `C:\Users\cl672\Documents\daniel-gdrive\pdmm\megamix-mod-demo_<date>.mp4`: boots the NSP in Ryujinx fullscreen on monitor 0 (don't use that display during the run), runs its own server on 37777/37778/37790 (`--port-base`) plus bots, tours song select + every multiplayer screen, then plays one AutoPlay round. Work files/logs: `%TEMP%\megamix_demo\<timestamp>\`.
+- It patches `[multiplayer]` in `sdcard\MikuMikuSwitchPlugin\config.toml` for the run and restores it byte-identical afterwards; boot watchdog relaunches Ryujinx once on a stalled log / no connection. Capture = ffmpeg `ddagrab` + NVENC; audio from Stereo Mix is dropped automatically if it is silent.
+- The full tour path has not completed an end-to-end run yet (only `--skip-tour`); the default song (pv 700) and `--song-secs 120` are unverified.
 
 ## Reverse-engineering artifacts
 - Kept OUTSIDE the repo in `C:\Users\cl672\Documents\Coding\mm-re\` (extracted exefs, `nso_tool.py`, symbol dumps, screenshots, logs). Never commit game binaries.

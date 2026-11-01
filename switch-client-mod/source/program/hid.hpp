@@ -11,7 +11,9 @@ namespace nn::hid { struct NpadHandheldState; }
 namespace mp::input {
     void BeginBypass();
     void EndBypass();
-    void Apply(::nn::hid::NpadHandheldState* st);
+    void Apply(::nn::hid::NpadHandheldState* st,
+               ::nn::hid::NpadHandheldState* navOut = nullptr);
+    void NavUpdate(const ::nn::hid::NpadHandheldState& st);
 }
 
 namespace nn::hid {
@@ -133,7 +135,9 @@ namespace nn::hid {
             if ((merged.attributes & 1) != 0) {
                 mp::input::EndBypass();
                 keyboard::Inject(&merged);
-                mp::input::Apply(&merged);
+                NpadHandheldState navPre;
+                mp::input::Apply(&merged, &navPre);
+                mp::input::NavUpdate(navPre);
                 cached_state = merged;
                 return merged;
             }
@@ -154,7 +158,11 @@ namespace nn::hid {
         merge_sticks(sFK); merge_sticks(sJD);
 
         keyboard::Inject(&merged);
-        mp::input::Apply(&merged);
+        {
+            NpadHandheldState navPre;
+            mp::input::Apply(&merged, &navPre);
+            mp::input::NavUpdate(navPre);
+        }
 
         cached_state = merged;
         return merged;

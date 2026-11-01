@@ -43,7 +43,7 @@ std::string Config::mpServerIp = "";
 int Config::mpServerPort = 7777;
 int Config::mpDiscoveryPort = 7778;
 std::string Config::mpPlayerName = "Player";
-bool Config::mpShowStatus = true;
+bool Config::mpShowStatus = false;
 std::string Config::mpClientId = "";
 
 // Graphics
@@ -312,7 +312,8 @@ static void SaveConfig(const std::string& path) {
     tomlContent += "server_port = " + std::to_string(Config::mpServerPort) + "\n";
     tomlContent += "discovery_port = " + std::to_string(Config::mpDiscoveryPort) + "\n";
     tomlContent += "player_name = \"" + EscapeTomlString(Config::mpPlayerName) + "\"\n";
-    tomlContent += "show_status = " + std::string(Config::mpShowStatus ? "true" : "false") + "\n";
+    tomlContent += "# Debug only: tiny connection-state chip in the bottom-left corner\n";
+    tomlContent += "debug_status_chip = " + std::string(Config::mpShowStatus ? "true" : "false") + "\n";
     tomlContent += "# Auto-generated stable client id; do not edit\n";
     tomlContent += "client_id = \"" + Config::mpClientId + "\"\n\n";
 
@@ -446,7 +447,7 @@ bool Config::init() {
             mpServerPort = config["multiplayer"]["server_port"].value_or(7777);
             mpDiscoveryPort = config["multiplayer"]["discovery_port"].value_or(7778);
             mpPlayerName = config["multiplayer"]["player_name"].value_or("Player");
-            mpShowStatus = config["multiplayer"]["show_status"].value_or(true);
+            mpShowStatus = config["multiplayer"]["debug_status_chip"].value_or(false);
             mpClientId = config["multiplayer"]["client_id"].value_or("");
 
             enableFtUi = config["leftover"]["ft_ui"].value_or(false);

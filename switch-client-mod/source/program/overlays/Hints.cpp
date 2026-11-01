@@ -282,68 +282,94 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
     if (!s_isPvSelActive || IsInCustomize())
         return;
 
+    /* the whole overlay covers this spot while it is open */
+    if (mp::lobby::OverlayOpen())
+        return;
+
     ImGuiIO& io = ImGui::GetIO();
-    float w = 122.0f * s, h = 50.0f * s;
+    float w = 150.0f * s, h = 58.0f * s;
     float posX = io.DisplaySize.x - w - (24.0f * s);
     float posY = 64.0f * s;
 
-    drawList->AddRectFilled(ImVec2(posX, posY), ImVec2(posX + w, posY + h), IM_COL32(18, 22, 26, 230), 10.0f * s);
-    drawList->AddRect(ImVec2(posX, posY), ImVec2(posX + w, posY + h), IM_COL32(255, 255, 255, 35), 10.0f * s, 0, 1.2f);
-
-    ImVec2 zrSize(28.0f * s, 15.0f * s);
-    DrawSwitchTriggerZR(drawList, font, ImVec2(posX + w - 12.0f * s - zrSize.x, posY + 6.0f * s), zrSize, false);
-
-    float baseFontSz = font->FontSize;
     mp::lobby::Snapshot sn;
     mp::lobby::GetSnapshot(&sn);
+    bool mpOn    = Config::mpEnabled;
     bool inLobby = sn.code[0] != 0;
-    const char* title = inLobby ? sn.code : "MP";
-    ImVec2 titleSz(0, baseFontSz);
-    drawList->AddText(font, baseFontSz, ImVec2(posX + 14.0f * s, posY + 6.0f * s + (zrSize.y - titleSz.y) * 0.5f), IM_COL32(255, 255, 255, 255), title);
 
-    float capW = w - 24.0f * s, capH = 19.0f * s;
-    ImVec2 capMin(posX + 12.0f * s, posY + 25.0f * s), capMax(capMin.x + capW, capMin.y + capH);
-    const char* label = inLobby ? "LOBBY" :
-        (sn.connected ? "MULTIPLAYER" : "MP: offline");
-    ImU32 stateColor = inLobby ? IM_COL32(90, 205, 130, 255)
-                     : IM_COL32(165, 175, 185, 255);
-    ImU32 stateBg    = inLobby ? IM_COL32(90, 205, 130, 40)
-                     : IM_COL32(165, 175, 185, 40);
+    ImVec2 mpos = ImGui::GetMousePos();
+    bool hovered = mpos.x >= posX && mpos.x <= posX + w &&
+                   mpos.y >= posY && mpos.y <= posY + h;
 
-    drawList->AddRectFilled(capMin, capMax, stateBg, 9.5f * s);
-    drawList->AddRect(capMin, capMax, stateColor, 9.5f * s, 0, 1.2f);
-    drawList->AddText(font, baseFontSz, ImVec2(posX + 14.0f * s, posY + 6.0f * s + (zrSize.y - titleSz.y) * 0.5f), IM_COL32(255, 255, 255, 255), title);
-    ImVec2 lblSz = font->CalcTextSizeA(baseFontSz * 0.8f, FLT_MAX, 0.0f, label);
-    drawList->AddText(font, baseFontSz * 0.8f, ImVec2(capMin.x + (capW - lblSz.x) * 0.5f, capMin.y + (capH - lblSz.y) * 0.5f - 0.5f), stateColor, label);
+    drawList->AddRectFilled(ImVec2(posX, posY), ImVec2(posX + w, posY + h), IM_COL32(18, 22, 26, 230), 10.0f * s);
+    drawList->AddRect(ImVec2(posX, posY), ImVec2(posX + w, posY + h),
+                      hovered ? IM_COL32(0, 195, 227, 255) : IM_COL32(255, 255, 255, 35), 10.0f * s, 0, hovered ? 2.0f : 1.2f);
 
-    /* grow downward when in a lobby: members + picking line */
+    float baseFontSz = font->FontSize;
+    const char* title = "Multiplayer";
+    /* ZR glyph top-right: opens the overlay */
+    float gw = 28.0f * s, gh = 18.0f * s;
+    ImVec2 gpos(posX + w - gw - 10.0f * s, posY + 7.0f * s);
+    DrawSwitchTriggerZR(drawList, font, gpos, ImVec2(gw, gh), hovered);
+    drawList->AddText(font, baseFontSz, ImVec2(posX + 12.0f * s, posY + 6.0f * s),
+                      mpOn ? IM_COL32(255, 255, 255, 255) : IM_COL32(165, 175, 185, 200), title);
+
+    /* state pill: OFF / DISCONNECTED / ROOM: CODE */
+    char label[24];
+    ImU32 stateColor;
+    if (!mpOn) {
+        snprintf(label, sizeof(label), "OFF");
+        stateColor = IM_COL32(150, 158, 166, 255);
+    } else if (inLobby) {
+        snprintf(label, sizeof(label), "ROOM: %s", sn.code);
+        stateColor = IM_COL32(90, 205, 130, 255);
+    } else if (sn.connected) {
+        snprintf(label, sizeof(label), "CONNECTED");
+        stateColor = IM_COL32(0, 195, 227, 255);
+    } else {
+        snprintf(label, sizeof(label), "DISCONNECTED");
+        stateColor = IM_COL32(230, 120, 90, 255);
+    }
+    ImU32 stateBg = (stateColor & 0x00FFFFFF) | (40u << 24);
+
+    float capW = w - 24.0f * s, capH = 24.0f * s;
+    ImVec2 capMin(posX + 12.0f * s, posY + 27.0f * s), capMax(capMin.x + capW, capMin.y + capH);
+    drawList->AddRectFilled(capMin, capMax, stateBg, 12.0f * s);
+    drawList->AddRect(capMin, capMax, stateColor, 12.0f * s, 0, 1.2f);
+    ImVec2 lblSz = font->CalcTextSizeA(baseFontSz * 1.05f, FLT_MAX, 0.0f, label);
+    drawList->AddText(font, baseFontSz * 1.05f, ImVec2(capMin.x + (capW - lblSz.x) * 0.5f, capMin.y + (capH - lblSz.y) * 0.5f - 0.5f), stateColor, label);
+
+    /* in a lobby: who is picking, right-aligned under the badge */
     if (inLobby) {
         float y = posY + h + 6.0f * s;
-        char line[128] = "";
         const char* lname = "";
         for (int i = 0; i < sn.memberCount; i++)
             if (strcmp(sn.members[i].cid, sn.leaderCid) == 0)
                 lname = sn.members[i].name;
         bool meLeader = strcmp(sn.leaderCid, sn.myCid) == 0;
-        snprintf(line, sizeof(line), "%s picking a song...",
-                 meLeader ? "You're" :
-                 (lname[0] ? lname : "Leader"));
-        snprintf(line + strlen(line), sizeof(line) - strlen(line),
-                 "  (%d)", sn.memberCount);
-        ImVec2 ts2 = font->CalcTextSizeA(baseFontSz * 0.85f, FLT_MAX, 0, line);
-        drawList->AddRectFilled(ImVec2(posX, y),
-            ImVec2(posX + ts2.x + 16 * s, y + ts2.y + 8 * s),
-            IM_COL32(18, 22, 26, 200), 8 * s);
-        drawList->AddText(font, baseFontSz * 0.85f,
-            ImVec2(posX + 8 * s, y + 4 * s),
+        char who[48];
+        snprintf(who, sizeof(who), "%s", meLeader ? "You're" : (lname[0] ? lname : "Leader"));
+        float maxW = 300.0f * s, fsz = baseFontSz * 1.0f;
+        char line[128];
+        int len = (int)strlen(who);
+        for (;;) {
+            snprintf(line, sizeof(line), "%.*s%s picking a song  (%d)", len, who,
+                     len < (int)strlen(who) ? ".." : "", sn.memberCount);
+            if (len == 0 || font->CalcTextSizeA(fsz, FLT_MAX, 0, line).x <= maxW) break;
+            do { len--; } while (len > 0 && ((unsigned char)who[len] & 0xC0) == 0x80);
+        }
+        ImVec2 ts2 = font->CalcTextSizeA(fsz, FLT_MAX, 0, line);
+        float rx = posX + w;
+        drawList->AddRectFilled(ImVec2(rx - ts2.x - 16 * s, y),
+            ImVec2(rx, y + ts2.y + 8 * s), IM_COL32(18, 22, 26, 210), 8 * s);
+        drawList->AddText(font, fsz, ImVec2(rx - ts2.x - 8 * s, y + 4 * s),
             IM_COL32(255, 235, 170, 255), line);
     }
 
     /* tap the badge -> open the MP overlay */
-    ImVec2 mpos = ImGui::GetMousePos();
-    if (ImGui::IsMouseClicked(0) && mpos.x >= posX && mpos.x <= posX + w &&
-        mpos.y >= posY && mpos.y <= posY + h)
-        mp::lobby::ToggleOverlay();
+    if (hovered && ImGui::IsMouseClicked(0)) {
+        mp::lobby::SetOverlayOpen(true);
+        sound::PlayEnterSE();
+    }
 }
 
 static void Draw2DModeBadge(ImDrawList* drawList, ImFont* font, float s) {
@@ -489,7 +515,7 @@ void ProcessInput() {
     s_last_l3 = l3_down;
 
     static int s_tap_count = 0;
-    static int s_tap_window = 0;      /* frames left in the 3s window */
+    static uint64_t s_lastPressMs = 0;  /* ms of last ZR (gap-based resolve) */
 
     if ((l3_down && zr_pressed) || (zr_down && l3_tapped)) {
         if (!Config::no3D) {
@@ -497,17 +523,30 @@ void ProcessInput() {
             sound::PlaySelectSE();
         }
         s_tap_count = 0;
-        s_tap_window = 0;
+        s_lastPressMs = 0;
         return;
     }
 
     if (l3_down) return;
 
-    if (zr_pressed) {
+    /* ignore the ZR that just closed the MP overlay (it leaks through the
+     * release-guard release as a fresh press for ~its hold duration) */
+    static int64_t s_ovlClosedAt = -2;
+    int64_t closedAt = mp::lobby::OverlayClosedAt();
+    if (closedAt != s_ovlClosedAt) {
+        s_ovlClosedAt = closedAt;
+        if (closedAt >= 0) { s_tap_count = 0; s_lastPressMs = 0; }
+    }
+    uint64_t nowMs = (uint64_t)nn::os::GetSystemTick().GetInt64Value() * 1000 /
+                     nn::os::GetSystemTickFrequency();
+    bool zrSuppressed = s_ovlClosedAt >= 0 &&
+                        (int64_t)nowMs - s_ovlClosedAt < 500;
+
+    if (zr_pressed && !zrSuppressed) {
         s_tap_count++;
-        if (s_tap_count == 1) s_tap_window = 180;   /* 3s @60fps */
+        s_lastPressMs = nowMs;        /* gap-based resolve: 350ms */
         if (s_tap_count >= 5) {
-            s_tap_count = 0; s_tap_window = 0;
+            s_tap_count = 0; s_lastPressMs = 0;
             AutoPlay::g_enabled = !AutoPlay::g_enabled;
             mp::lobby::ReportAutoPlay(AutoPlay::g_enabled);
             sound::PlaySelectSE();
@@ -515,17 +554,20 @@ void ProcessInput() {
         }
     }
 
-    if (s_tap_window > 0) {
-        s_tap_window--;
-        if (s_tap_window <= 0) {
-            if (s_tap_count == 2) {
+    if (s_tap_count > 0 && s_lastPressMs > 0 &&
+        nowMs - s_lastPressMs >= 350) {
+            if (s_tap_count == 1) {
+                mp::lobby::RequestPadMode();
+                mp::lobby::SetOverlayOpen(true);
+                sound::PlayEnterSE();
+            } else if (s_tap_count == 2) {
                 if (!Config::noMV) {
                     g_noMovie = !g_noMovie;
                     sound::PlaySelectSE();
                 }
             }
+            /* 3-4 presses resolve to nothing */
             s_tap_count = 0;
-        }
     }
 }
 

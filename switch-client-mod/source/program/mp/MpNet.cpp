@@ -15,6 +15,8 @@
 #include <cstring>
 #include <cstdint>
 
+namespace ImGui { void DbgSetCursor(float x, float y, bool click); }
+
 namespace mp {
 
 /* ------------------------------------------------------------------ */
@@ -209,6 +211,12 @@ static void HandleLine(const char* line, int len) {
     if (len <= 0) return;
     jsmntok_t tok[48];
     int ntok = mpjson::Parse(line, len, tok, 48);
+    if (ntok == JSMN_ERROR_NOMEM) {
+        /* big lobby messages (member lists) exceed the small token budget we
+         * need here only to read "t"; hand them to the lobby parser as-is */
+        lobby::PushLine(line, len);
+        return;
+    }
     if (ntok <= 0) {
         WriteLog("[MP] bad json: %.80s\n", line);
         return;
@@ -238,7 +246,7 @@ static void HandleLine(const char* line, int len) {
 
 enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
-    LobbyCreate, LobbyJoin, LobbyLeave, SetName
+    LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor
 };
 struct MpCmd {
     MpCmdType type;
@@ -333,6 +341,17 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         c.type = MpCmdType::SetName;
         int i = mpjson::Find(line, tok, ntok, "name");
         if (i >= 0) mpjson::Copy(line, tok[i], c.str, sizeof(c.str));
+    } else if (strcmp(cmd, "overlay") == 0) {
+        /* {cmd:overlay, open:bool} - open/close the MP overlay */
+        c.type = MpCmdType::Overlay;
+        int o = mpjson::Find(line, tok, ntok, "open");
+        c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
+    } else if (strcmp(cmd, "cursor") == 0) {
+        /* {cmd:cursor, x, y, click:bool} - move the ImGui cursor (720p coords) */
+        c.type = MpCmdType::Cursor;
+        getInt("x", &c.a); getInt("y", &c.b);
+        int cl = mpjson::Find(line, tok, ntok, "click");
+        c.count = (cl >= 0 && line[tok[cl].start] == 't') ? 1 : 0;
     } else {
         return;
     }
@@ -387,6 +406,8 @@ void OnFrame() {
             case MpCmdType::LobbyJoin:   lobby::CmdLobbyJoin(c.str); break;
             case MpCmdType::LobbyLeave:  lobby::CmdLobbyLeave(); break;
             case MpCmdType::SetName:     lobby::CmdSetName(c.str); break;
+            case MpCmdType::Overlay:     lobby::SetOverlayOpen(c.a != 0); break;
+            case MpCmdType::Cursor:      ImGui::DbgSetCursor((float)c.a, (float)c.b, c.count != 0); break;
             default: break;
         }
     }
@@ -873,7 +894,7 @@ void OnPvGameFrame() {
                 (unsigned long long)st);
             Enqueue(m);
         } else if (now - s_ap.lastTap >= 150) {
-            input::Tap(nn::hid::Plus, 50, 100);
+            input::Tap(nn::hid::Plus, 50, 100, true);
             s_ap.lastTap = now;
         }
     }

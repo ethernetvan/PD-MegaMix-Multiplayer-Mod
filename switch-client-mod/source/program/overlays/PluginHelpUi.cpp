@@ -163,6 +163,7 @@ namespace PluginHelpUi {
 
             { "Song Search (ID)",        "Direct jump by numerical PV ID" },
             { "Song Search (Name)",      "Direct jump by name (fuzzy search)" },
+            { "ZR",                      "Multiplayer menu (in song select)" },
 
             { "", "", true },
 
