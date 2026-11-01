@@ -27,6 +27,9 @@ def main():
     p = sub.add_parser("set_leader"); p.add_argument("code"); p.add_argument("leader_cid")
     sub.add_parser("overlay").add_argument("state", choices=["open", "close"])
     p = sub.add_parser("cursor"); p.add_argument("x", type=int); p.add_argument("y", type=int); p.add_argument("--click", action="store_true")
+    sub.add_parser("avatar_peek")
+    sub.add_parser("avatar_poke").add_argument("module", type=int)
+    sub.add_parser("avatar_dump").add_argument("module", type=int)
     ap.add_argument("--cid", default=None)
     ap.add_argument("--port", type=int, default=7790)
     args = ap.parse_args()
@@ -61,6 +64,12 @@ def main():
         pl = {"cmd": "overlay", "open": args.state == "open"}
     elif args.cmd == "cursor":
         pl = {"cmd": "cursor", "x": args.x, "y": args.y, "click": args.click}
+    elif args.cmd == "avatar_peek":
+        pl = {"cmd": "peek_avatar"}
+    elif args.cmd == "avatar_poke":
+        pl = {"cmd": "poke_avatar", "module": args.module}
+    elif args.cmd == "avatar_dump":
+        pl = {"cmd": "dump_avatar", "module": args.module}
     if args.cid:
         pl["cid"] = args.cid
     send(pl, args.port)

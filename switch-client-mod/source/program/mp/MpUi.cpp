@@ -1,4 +1,5 @@
 #include "MpLobby.hpp"
+#include "MpAvatar.hpp"
 #include "MpInput.hpp"
 #include "../Config.hpp"
 #include "../keyboard.hpp"
@@ -255,6 +256,104 @@ static void IconPerson(const Ui& u, ImVec2 c, float r, ImU32 fill, ImU32 outline
     u.dl->PathStroke(outline, 0, 1.6f * u.k);
 }
 
+/* ---- lobby avatar: Project DIVA style hexagon ----
+ * Pointy-top hexagon with a pink->orange diagonal gradient frame, glossy
+ * upper-left bevel, white keyline and a pale plate holding the member's
+ * Shared Set A module portrait, clipped to the inner hexagon. */
+static const ImU32 kDivaPink   = IM_COL32(255, 64, 150, 255);
+static const ImU32 kDivaOrange = IM_COL32(255, 154, 46, 255);
+
+static ImU32 LerpCol(ImU32 a, ImU32 b, float t) {
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    ImU32 o = 0;
+    for (int s = 0; s < 32; s += 8) {
+        float ca = (float)((a >> s) & 0xFF), cb = (float)((b >> s) & 0xFF);
+        o |= (ImU32)(ca + (cb - ca) * t + 0.5f) << s;
+    }
+    return o;
+}
+
+static void HexPts(ImVec2 c, float r, ImVec2 out[6]) {
+    for (int i = 0; i < 6; i++) {
+        float ang = (-90.0f + 60.0f * i) * 3.14159265f / 180.0f;
+        out[i] = ImVec2(c.x + cosf(ang) * r, c.y + sinf(ang) * r);
+    }
+}
+
+/* filled hexagon, c0 at the top-left -> c1 at the bottom-right; with a
+ * texture, the square [c-r, c+r] maps to uv0..uv1 (tint = vertex colour) */
+static void HexFill(ImDrawList* dl, ImVec2 c, float r, ImU32 c0, ImU32 c1,
+                    ImTextureID tex = nullptr, ImVec2 uv0 = ImVec2(0, 0), ImVec2 uv1 = ImVec2(1, 1)) {
+    ImVec2 p[7];
+    p[0] = c;
+    HexPts(c, r, p + 1);
+    if (tex) dl->PushTextureID(tex);
+    const ImVec2 white = ImGui::GetFontTexUvWhitePixel();
+    dl->PrimReserve(18, 7);
+    const ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
+    for (int i = 0; i < 7; i++) {
+        float t = ((p[i].x - c.x) + (p[i].y - c.y)) / (2.0f * 1.366f * r) + 0.5f;
+        ImVec2 uv = tex ? ImVec2(uv0.x + (p[i].x - c.x + r) / (2.0f * r) * (uv1.x - uv0.x),
+                                 uv0.y + (p[i].y - c.y + r) / (2.0f * r) * (uv1.y - uv0.y))
+                        : white;
+        dl->PrimWriteVtx(p[i], uv, LerpCol(c0, c1, t));
+    }
+    for (int i = 0; i < 6; i++) {
+        dl->PrimWriteIdx(base);
+        dl->PrimWriteIdx((ImDrawIdx)(base + 1 + i));
+        dl->PrimWriteIdx((ImDrawIdx)(base + 1 + (i + 1) % 6));
+    }
+    if (tex) dl->PopTextureID();
+}
+
+static void Sparkle(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    ImVec2 v[4] = { ImVec2(c.x, c.y - s), ImVec2(c.x + s * 0.22f, c.y),
+                    ImVec2(c.x, c.y + s), ImVec2(c.x - s * 0.22f, c.y) };
+    ImVec2 h[4] = { ImVec2(c.x - s, c.y), ImVec2(c.x, c.y - s * 0.22f),
+                    ImVec2(c.x + s, c.y), ImVec2(c.x, c.y + s * 0.22f) };
+    dl->AddConvexPolyFilled(v, 4, col);
+    dl->AddConvexPolyFilled(h, 4, col);
+}
+
+static void DrawAvatar(const Ui& u, ImVec2 c, float r, int32_t module, bool you, bool connected,
+                       bool sparkle) {
+    ImDrawList* dl = u.dl;
+    ImVec2 p[6];
+    if (you) {
+        HexPts(c, r + 4.5f * u.k, p);
+        dl->AddPolyline(p, 6, kAccent, ImDrawFlags_Closed, 3.0f * u.k);
+    } else {
+        HexFill(dl, ImVec2(c.x, c.y + 3.0f * u.k), r + 1.0f * u.k,
+                IM_COL32(0, 0, 0, 90), IM_COL32(0, 0, 0, 90));
+    }
+    HexFill(dl, c, r, connected ? kDivaPink : IM_COL32(150, 150, 150, 255),
+            connected ? kDivaOrange : IM_COL32(105, 105, 105, 255));
+    HexPts(c, r - 1.6f * u.k, p);
+    ImVec2 bevel[3] = { p[4], p[5], p[0] };
+    dl->AddPolyline(bevel, 3, IM_COL32(255, 255, 255, 120), 0, 2.2f * u.k);
+
+    float ri = r * 0.80f;
+    HexFill(dl, c, ri + 2.2f * u.k, IM_COL32(255, 255, 255, 240), IM_COL32(255, 255, 255, 240));
+    HexFill(dl, c, ri, connected ? IM_COL32(255, 230, 241, 255) : IM_COL32(200, 200, 200, 255),
+            connected ? IM_COL32(255, 219, 196, 255) : IM_COL32(170, 170, 170, 255));
+
+    void* tex = nullptr;
+    float uv0[2], uv1[2];
+    if (mp::avatar::Get(module, &tex, uv0, uv1) == 1) {
+        HexFill(dl, c, ri, connected ? IM_COL32_WHITE : IM_COL32(140, 140, 140, 255),
+                connected ? IM_COL32_WHITE : IM_COL32(140, 140, 140, 255),
+                (ImTextureID)tex, ImVec2(uv0[0], uv0[1]), ImVec2(uv1[0], uv1[1]));
+    } else {
+        ImU32 sil = connected ? IM_COL32(255, 170, 200, 255) : IM_COL32(150, 150, 150, 255);
+        IconPerson(u, ImVec2(c.x, c.y - ri * 0.08f), ri * 0.58f, sil, sil);
+    }
+    if (sparkle && connected) {
+        HexPts(c, r, p);
+        Sparkle(dl, ImVec2(p[1].x - r * 0.02f, p[1].y - r * 0.10f), r * 0.17f, IM_COL32(255, 255, 255, 235));
+        Sparkle(dl, ImVec2(p[1].x + r * 0.12f, p[1].y + r * 0.16f), r * 0.08f, IM_COL32(255, 240, 200, 220));
+    }
+}
+
 static void IconPeople(const Ui& u, ImVec2 c, float sz) {
     IconPerson(u, ImVec2(c.x + sz * 0.22f, c.y - sz * 0.12f), sz * 0.36f,
                IM_COL32(190, 190, 190, 255), kInk);
@@ -288,6 +387,12 @@ static const char* MemberStatus(const MemberInfo& m) {
 
 static ImU32 MemberDot(const MemberInfo& m) {
     return !m.connected ? kDim : (m.ready ? kGreen : kYellow);
+}
+
+/* your own avatar follows the save immediately; others come from the server */
+static int32_t MemberModule(const Snapshot& s, const MemberInfo& m) {
+    int32_t local = mp::avatar::LocalModule();
+    return (local >= 0 && strcmp(m.cid, s.myCid) == 0) ? local : m.module;
 }
 
 static void GoHomeOrRoom() {
@@ -601,16 +706,13 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         float cx = a.x + 30 * u.k + colW * (i + 0.5f);
         float r = rads[i];
         ImVec2 ac(cx, baseY - r);
-        ImU32 fill = m.connected ? IM_COL32(230, 230, 230, 255) : IM_COL32(140, 140, 140, 255);
         bool you = strcmp(m.cid, s.myCid) == 0;
-        /* avatar placeholder (silhouette sized to stay inside the disc) */
-        u.dl->AddCircleFilled(ac, r, kCard, 48);
-        u.dl->AddCircle(ac, r, you ? kAccent : kLine, 48, you ? 3.0f * u.k : 1.6f);
-        IconPerson(u, ImVec2(ac.x, ac.y - r * 0.12f), r * 0.55f, fill, kInk);
-        /* status dot */
+        DrawAvatar(u, ac, r, MemberModule(s, m), you, m.connected, true);
+        /* status dot on the lower-right edge */
         float dr = 9 * u.k;
-        u.dl->AddCircleFilled(ImVec2(ac.x + r * 0.72f, ac.y + r * 0.72f), dr, MemberDot(m), 20);
-        u.dl->AddCircle(ImVec2(ac.x + r * 0.72f, ac.y + r * 0.72f), dr, kBg, 20, 2.5f * u.k);
+        ImVec2 dc(ac.x + r * 0.64f, ac.y + r * 0.68f);
+        u.dl->AddCircleFilled(dc, dr, MemberDot(m), 20);
+        u.dl->AddCircle(dc, dr, kBg, 20, 2.5f * u.k);
         /* numbered plate */
         float pw = plateW[i], ph = pw * 0.9f;
         ImVec2 pa(cx - pw * 0.5f, baseY + 12 * u.k), pb(pa.x + pw, pa.y + ph);
@@ -657,15 +759,22 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         if (rowHov && s_padMode)
             u.Ring(ra, rb, 8 * u.k);
         char idx[6]; snprintf(idx, sizeof(idx), "%d.", i + 1);
-        u.TextLeft(ImVec2(ra.x + 12 * u.k, ra.y), ImVec2(ra.x + 44 * u.k, rb.y), idx, 1.5f, kMuted);
-        u.dl->AddCircleFilled(ImVec2(ra.x + 56 * u.k, (ra.y + rb.y) * 0.5f), 7 * u.k, MemberDot(m), 16);
+        u.TextLeft(ImVec2(ra.x + 12 * u.k, ra.y), ImVec2(ra.x + 40 * u.k, rb.y), idx, 1.5f, kMuted);
+        /* small hex avatar, status dot on its lower-right edge */
+        ImVec2 hc(ra.x + 62 * u.k, (ra.y + rb.y) * 0.5f);
+        float hr = 21 * u.k;
+        DrawAvatar(u, hc, hr, MemberModule(s, m), false, m.connected, false);
+        ImVec2 dc(hc.x + hr * 0.66f, hc.y + hr * 0.66f);
+        u.dl->AddCircleFilled(dc, 6 * u.k, MemberDot(m), 16);
+        u.dl->AddCircle(dc, 6 * u.k, kBg, 16, 2.0f * u.k);
+        float nameX = ra.x + 94 * u.k;
         float nameR = rb.x - (owner && !you ? 64 * u.k : 8 * u.k);
-        u.TextLeft(ImVec2(ra.x + 74 * u.k, ra.y), ImVec2(nameR, rb.y), m.name, 1.6f,
+        u.TextLeft(ImVec2(nameX, ra.y), ImVec2(nameR, rb.y), m.name, 1.6f,
                    m.connected ? kText : kDim);
         if (lead) {
             /* leader tag right after the name */
             ImVec2 nsz = u.Size(m.name, 1.6f);
-            float tx = ra.x + 74 * u.k + nsz.x + 12 * u.k;
+            float tx = nameX + nsz.x + 12 * u.k;
             float tw = u.Size("LEADER", 0.95f).x + 16 * u.k;
             if (tx + tw + 4 * u.k < nameR) {
                 float my = (ra.y + rb.y) * 0.5f;

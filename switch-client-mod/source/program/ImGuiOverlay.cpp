@@ -25,6 +25,7 @@
 #include "overlays/SaveBackup.hpp"
 #include "mp/MpOverlay.hpp"
 #include "mp/MpNet.hpp"
+#include "mp/MpAvatar.hpp"
 #include "mp/MpUi.hpp"
 #include "overlays/Hints.hpp"
 #include "overlays/VirtualKeyboard.hpp"
@@ -134,6 +135,7 @@ extern "C" IMNVNFUNC void nvnImguiInitialize() {
 
 extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
     mp::OnFrame();
+    mp::avatar::RenderPump();
 
     static uint64_t lastTick = 0;
     uint64_t currentTick = nn::os::GetSystemTick().GetInt64Value();

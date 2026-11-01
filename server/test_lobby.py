@@ -83,6 +83,24 @@ class T(unittest.TestCase):
         self.assertEqual(left[0][1]["reason"], "kicked")
         self.assertIsNone(self.code_of("c"))
 
+    def test_avatar_carries_and_rebroadcasts(self):
+        self.mk("a"); self.mk("b")
+        self.lm.on_message("a", {"t": "avatar", "module": 40}, 100.0)
+        self.create("a"); code = self.code_of("a")
+        self.join("b", code)
+        lob = self.msgs("b", "lobby")[-1][1]
+        self.assertEqual({m["cid"]: m["module"] for m in lob["members"]},
+                         {"a": 40, "b": -1})
+        self.msgs()
+        self.lm.on_message("b", {"t": "avatar", "module": 7}, 101.0)
+        lob = self.msgs("a", "lobby")[-1][1]
+        self.assertEqual({m["cid"]: m["module"] for m in lob["members"]}["b"], 7)
+        self.lm.on_message("b", {"t": "avatar", "module": 7}, 102.0)
+        self.assertEqual(self.msgs(t="lobby"), [])
+        for bad in ("x", True, -2, 100000, None):
+            self.lm.on_message("b", {"t": "avatar", "module": bad}, 103.0)
+            self.assertEqual(self.msgs("b", "lobby_error")[0][1]["code"], "bad_avatar")
+
     # ----- sel -----
     def test_sel_leader_only_and_fanout(self):
         self.mk("a"); self.mk("b")

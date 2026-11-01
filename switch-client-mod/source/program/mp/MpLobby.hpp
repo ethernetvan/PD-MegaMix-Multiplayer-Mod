@@ -39,7 +39,8 @@ void CmdSetName(const char* name);
 
 /* For MpUi: snapshot getters (copies; safe to call on UI thread). */
 struct MemberInfo { char cid[20]; char name[40]; bool connected, is_leader,
-                    ready; char reason[24]; char role[12]; int32_t score; float pct; };
+                    ready; char reason[24]; char role[12]; int32_t score; float pct;
+                    int32_t module; /* avatar: Shared Set A slot 1, -1 unknown */ };
 struct Snapshot {
     int      phase;           /* LPhase */
     bool     connected;

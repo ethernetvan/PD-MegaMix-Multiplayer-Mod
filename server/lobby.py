@@ -7,10 +7,11 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       sel_ack {pv, has:bool, ok:bool, fb_pv:int (-1 none), fb_name:str};
       start_req {pv, name} (leader, SELECT only); launch_fail {round};
       loaded {round}; state {round, score, combo, pct, life};
-      final {round, score, pct, max_combo, jc:[5], life}; back_in_sel {round}.
+      final {round, score, pct, max_combo, jc:[5], life}; back_in_sel {round};
+      avatar {module} (Shared Set A slot-1 module id, -1 unknown; any time).
 S->C: welcome/error/pong (existing);
       lobby {code, phase, leader, you, round, sel_pv,
-             members:[{cid,name,connected,role,loaded}]}
+             members:[{cid,name,connected,role,loaded,module}]}
       (phase in SELECT/LOADING/PLAYING/RESULTS; role in player/spectator/dropped)
       lobby_left {reason: left|kicked|closed};
       lobby_error {code: not_found|already_in_lobby|not_in_lobby|not_leader|bad_phase, msg};
@@ -127,6 +128,7 @@ class LobbyManager:
         self.log = log or (lambda s: None)
         self._rng = random.Random()
         self._client_names = {}     # cid -> display name (all clients)
+        self._client_modules = {}   # cid -> avatar module id (all clients)
 
     # ------------------------------------------------- helpers
     def _lobby_of(self, cid):
@@ -158,7 +160,8 @@ class LobbyManager:
                              "connected": m.connected, "role": m.role,
                              "loaded": m.loaded,
                              "ready": m.ready, "reason": m.ready_reason,
-                             "autoplay": m.autoplay}
+                             "autoplay": m.autoplay,
+                             "module": self._client_modules.get(m.cid, -1)}
                             for m in lobby.members]}
 
     def _broadcast_lobby(self, lobby):
@@ -262,6 +265,20 @@ class LobbyManager:
                     self._broadcast_lobby(lobby)
         elif t in ("pause_req", "resume_req"):
             self._pause_req(cid, msg, now, t == "pause_req")
+        elif t == "avatar":
+            self._set_avatar(cid, msg.get("module"))
+
+    def _set_avatar(self, cid, module):
+        if (not isinstance(module, int) or isinstance(module, bool)
+                or not -1 <= module <= 99999):
+            self._error(cid, "bad_avatar", "module must be an int in -1..99999")
+            return
+        if self._client_modules.get(cid, -1) == module:
+            return
+        self._client_modules[cid] = module
+        lobby = self._lobby_of(cid)
+        if lobby:
+            self._broadcast_lobby(lobby)
 
     def _set_name(self, cid, name, now):
         if name:
@@ -907,7 +924,8 @@ class LobbyManager:
                     "sel_pv": l.sel_pv,
                     "members": [{"cid": m.cid, "name": m.name,
                                  "connected": m.connected, "role": m.role,
-                                 "loaded": m.loaded}
+                                 "loaded": m.loaded,
+                                 "module": self._client_modules.get(m.cid, -1)}
                                 for m in l.members],
                 }
             return out

@@ -53,6 +53,132 @@ namespace ImguiNvnBackend {
         const nvn::Texture *g_frame_color_target = nullptr;
     }
 
+    namespace {
+        struct UserTexture { nvn::Texture tex; nvn::MemoryPool pool; bool used = false; };
+        UserTexture g_userTex[16];
+    }
+
+    ImTextureID CreateRgbaTexture(int w, int h, const void *rgba, int *outSlot) {
+        NvnBackendData *bd = getBackendData();
+        if (!bd || !bd->isInitialized || !rgba || w <= 0 || h <= 0) return (ImTextureID)0;
+        int slot = -1;
+        for (int i = 2; i < 16 && slot < 0; i++)
+            if (!g_userTex[i].used) slot = i;
+        if (slot < 0) return (ImTextureID)0;
+        UserTexture &u = g_userTex[slot];
+
+        nvn::TextureBuilder tb;
+        tb.SetDefaults().SetDevice(bd->device).SetTarget(nvn::TextureTarget::TARGET_2D)
+            .SetFormat(nvn::Format::RGBA8).SetSize2D(w, h);
+        if (!MemoryPoolMaker::createPoolAligned(&u.pool, tb.GetStorageSize(), tb.GetStorageAlignment(),
+                                                nvn::MemoryPoolFlags::CPU_UNCACHED | nvn::MemoryPoolFlags::GPU_CACHED))
+            return (ImTextureID)0;
+        tb.SetStorage(&u.pool, 0);
+        if (!u.tex.Initialize(&tb)) {
+            MemoryPoolMaker::destroyPool(&u.pool);
+            return (ImTextureID)0;
+        }
+        nvn::CopyRegion region = {0, 0, 0, w, h, 1};
+        u.tex.WriteTexelsStrided(nullptr, &region, rgba, w * 4, 0);
+        u.tex.FlushTexels(nullptr, &region);
+        bd->texPool.RegisterTexture(slot, &u.tex, nullptr);
+        u.used = true;
+        if (outSlot) *outSlot = slot;
+        return (ImTextureID)(uintptr_t)bd->device->GetTextureHandle(slot, 1);
+    }
+
+    void DestroyRgbaTexture(int slot) {
+        if (slot < 2 || slot >= 16 || !g_userTex[slot].used) return;
+        g_userTex[slot].tex.Finalize();
+        MemoryPoolMaker::destroyPool(&g_userTex[slot].pool);
+        g_userTex[slot].used = false;
+    }
+
+    namespace {
+        struct Readback {
+            bool ready = false, active = false, dead = false;
+            nvn::CommandBuffer cb;
+            nvn::MemoryPool cmdPool;
+            void *ctrl = nullptr;
+            nvn::Sync sync;
+            MemoryBuffer *staging = nullptr;
+            size_t size = 0;
+            int polls = 0;
+        };
+        Readback g_rb;
+        constexpr size_t kCopyCmdSize = 0x10000, kCopyCtrlSize = 0x1000;
+    }
+
+    bool BeginTextureReadback(const nvn::Texture *src, int count, const int *w, const int *h,
+                              const size_t *sizes) {
+        NvnBackendData *bd = getBackendData();
+        if (!bd || !bd->isInitialized || !src || count <= 0 || g_rb.active || g_rb.dead) return false;
+        if (!g_rb.ready) {
+            if (!MemoryPoolMaker::createPool(&g_rb.cmdPool, kCopyCmdSize)) return false;
+            g_rb.ctrl = std::malloc(kCopyCtrlSize);
+            if (!g_rb.ctrl || !g_rb.cb.Initialize(bd->device) || !g_rb.sync.Initialize(bd->device)) return false;
+            g_rb.ready = true;
+        }
+        size_t total = 0;
+        for (int i = 0; i < count; i++) total += sizes[i];
+        g_rb.staging = IM_NEW(MemoryBuffer)(total);
+        if (!g_rb.staging->IsBufferReady()) {
+            g_rb.staging->Finalize();
+            IM_DELETE(g_rb.staging);
+            g_rb.staging = nullptr;
+            return false;
+        }
+        g_rb.cb.AddCommandMemory(&g_rb.cmdPool, 0, kCopyCmdSize);
+        g_rb.cb.AddControlMemory(g_rb.ctrl, kCopyCtrlSize);
+        g_rb.cb.BeginRecording();
+        g_rb.cb.SetCopyRowStride(0);
+        size_t off = 0;
+        for (int i = 0; i < count; i++) {
+            nvn::TextureView view;
+            view.SetDefaults().SetLevels(i, 1);
+            nvn::CopyRegion region = {0, 0, 0, w[i], h[i], 1};
+            g_rb.cb.CopyTextureToBuffer(src, &view, &region, g_rb.staging->GetBufferAddress() + off,
+                                        nvn::CopyFlags::NONE);
+            off += sizes[i];
+        }
+        g_rb.cb.FenceSync(&g_rb.sync, nvn::SyncCondition::ALL_GPU_COMMANDS_COMPLETE,
+                          nvn::SyncFlagBits::FLUSH_FOR_CPU);
+        nvn::CommandHandle handle = g_rb.cb.EndRecording();
+        if (handle == 0) {
+            g_rb.staging->Finalize();
+            IM_DELETE(g_rb.staging);
+            g_rb.staging = nullptr;
+            return false;
+        }
+        bd->queue->SubmitCommands(1, &handle);
+        bd->queue->Flush();
+        g_rb.size = total;
+        g_rb.polls = 0;
+        g_rb.active = true;
+        return true;
+    }
+
+    int PollTextureReadback(void *dst, size_t size) {
+        if (!g_rb.active || g_rb.dead) return -1;
+        nvn::SyncWaitResult r = g_rb.sync.Wait(0);
+        if (r == nvn::SyncWaitResult::ALREADY_SIGNALED || r == nvn::SyncWaitResult::CONDITION_SATISFIED) {
+            g_rb.staging->InvalidateRange(0, g_rb.size);
+            memcpy(dst, g_rb.staging->GetMemPtr(), size < g_rb.size ? size : g_rb.size);
+            g_rb.staging->Finalize();
+            IM_DELETE(g_rb.staging);
+            g_rb.staging = nullptr;
+            g_rb.active = false;
+            return 1;
+        }
+        /* never free or reuse the staging/command memory while the GPU might
+         * still touch it: a stuck fence disables readbacks for the session */
+        if (r == nvn::SyncWaitResult::FAILED || ++g_rb.polls > 600) {
+            g_rb.dead = true;
+            return -1;
+        }
+        return 0;
+    }
+
     void SetRenderTarget(const nvn::Texture *colorTarget) {
         g_frame_color_target = colorTarget;
     }
