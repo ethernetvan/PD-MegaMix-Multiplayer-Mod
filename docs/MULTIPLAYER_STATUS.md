@@ -98,6 +98,40 @@ placement, interactive bot session end-to-end.
   overlay (pad A on a menu item also opened/started the song). `PushBlocks()` now forces a full block while the
   overlay is open. Verified on Ryujinx (docked, pad only); real-Switch pad test still pending (console offline).
 
+## Round 7: lobby avatars (Module Shared Set A)
+- Every member's podium/list avatar is the game's own module-select portrait (`SPR_SEL_MD%03dCMN` /
+  `..._MD_IMG`) of the first module in their **Module Shared Set A**, framed in a pointy-top pink→orange
+  gradient hexagon (white keyline, pale plate, sparkles on the podium, cyan rim = you). No extra screens: the
+  module is read straight from the save manager, so changing it anywhere in the game updates the avatar.
+- Local module: `((int32_t*)saveMgr)[0x546c5]` = Shared Set A slot 1 (3 sets × 9 slots × 7 u32, set stride
+  0x3f). The save manager pointer comes from the `FindScore`/`FindOrCreateScore` hooks; polled every 20 pv_sel
+  frames (`MpAvatar::GamePump`). Sent as `avatar {module}` after every `welcome` and on change; the server keeps
+  it per client and adds `module` to every `lobby` member (and to `admin lobbies`). Bots: `--module N`.
+- Portrait pipeline (`MpAvatar.cpp`): game thread loads the sprite set and draws the sprite once at alpha 0
+  to resolve its `nvn::Texture` (embedded at `obj+0x28`) and rect (2,2 408×494 in a 512×512 RGTC2 texture);
+  the present thread copies mip 0+1 to a CPU buffer with an async fence (`BeginTextureReadback` /
+  `PollTextureReadback`, never waits), decodes DIVA "YCbCr BC5" (mip0 = Y/A, mip1 = Cb/Cr, BT.709; rows are
+  stored bottom-up), crops head-and-shoulders (side 0.37 × card width, top 15 % of the crop above the
+  figure's first opaque row) and uploads an RGBA texture (`CreateRgbaTexture`, backend slots 2–15). Cache of 10
+  modules, LRU, texture frees deferred 4 frames. Unknown/custom modules (no sprite) fall back to a silhouette.
+- Threading rule: game sprite calls (`LoadSprSet`/`UnloadSprSet`/`CheckSprSetLoading`/`DrawSprite`) run
+  without the avatar mutex, because the render thread takes it in `Get()`; the readback never blocks the
+  present thread.
+- Fixed on the way: `SayHello` parsed the whole receive buffer, so a reconnect whose welcome arrived together
+  with the lobby resync failed with `unexpected reply` and retried; it now parses only the first line.
+- Debug: `admin.py avatar_peek | avatar_poke N | avatar_dump N` (see `AGENTS.md`).
+- Long-term plan for selectable poses: `docs/AVATAR_POSES_PLAN.md`.
+- Verified on Ryujinx: 7-member room (Miku, Rin, Len, Luka, KAITO, Kurt, custom → silhouette); `avatar_poke`
+  40 → 0 updates the local avatar and the server; changing Vocal 1 of Shared Set A to KAITO in the game's own
+  Customize screen and back to Miku; Ryujinx restart rejoins the 7-member room without `unexpected reply`.
+  Real Switch: 2 boots idled 5.5 min each through the SEGA logo / intro / attract loop (one connected to the
+  server) with no freeze. The avatar screens themselves have not been captured on the console yet.
+- **Open bug: boot/attract-movie freezes on Ryujinx.** The picture stops during the SEGA logo, intro or an
+  attract PV; the process keeps running and the mod's net thread still answers. Seen with pre-avatar builds and
+  with avatar builds (2 of 4 boots on 2026-11-01, back to back, at ~14:16 and ~14:21). Not reproduced on
+  the real Switch so far. Root cause unknown; not an accepted emulator quirk. Next step: Ryujinx GDB stub
+  stack dump of the game threads during a freeze, and an A/B with the multiplayer overlay disabled.
+
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
    they leave) separately from `leader` (current song picker). Owner chooses `pick_mode`:

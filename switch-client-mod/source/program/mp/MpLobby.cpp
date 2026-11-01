@@ -1,4 +1,5 @@
 #include "MpLobby.hpp"
+#include "MpAvatar.hpp"
 #include "MpNet.hpp"
 #include "MpJson.hpp"
 #include "MpInput.hpp"
@@ -42,6 +43,7 @@ struct MRec {
     bool loaded, ready; char reason[24];
     int32_t score; float pct;
     int32_t max_combo; int32_t life; int rank; bool final;
+    int32_t module;
 };
 static MRec s_members[8];
 static int  s_memberCount = 0;
@@ -279,6 +281,10 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
                 m.ready = line[tok[i + j].start] == 't';
             if ((j = mpjson::Find(line, tok + i, end - i, "reason")) >= 0)
                 mpjson::Copy(line, tok[i + j], m.reason, sizeof(m.reason));
+            int mod = -1;
+            if ((j = mpjson::Find(line, tok + i, end - i, "module")) >= 0)
+                mpjson::ToInt(line, tok[i + j], &mod);
+            m.module = mod;
             s_memberCount++;
             i = end;
         }
@@ -380,6 +386,7 @@ static void ProcessLine(const std::string& l) {
         if (s_code[0]) { s_expectLobby = true; s_expectLobbyAt = NowMs() + 3000; }
         if (s_inLobbyDirty()) s_readyDirty = true;
         ReportAutoPlay(AutoPlay::g_enabled);
+        avatar::OnWelcome();
         return;
     }
     if (strcmp(t, "lobby") == 0) {
@@ -1098,6 +1105,7 @@ void GetSnapshot(Snapshot* out) {
         d.ready = s_members[i].ready;
         d.score = s_members[i].score;
         d.pct = s_members[i].pct;
+        d.module = s_members[i].module;
     }
     int lc = 0, pc = 0;
     for (int i = 0; i < s_memberCount; i++)

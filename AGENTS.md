@@ -22,10 +22,13 @@ Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\
 - `enable_internet_access` must be `true` in `%APPDATA%\Ryujinx\Config.json` for sockets.
 - SD root = `%APPDATA%\Ryujinx\sdcard\`; mod log `hook_log.txt`, config `MikuMikuSwitchPlugin\config.toml` (`[multiplayer]` section).
 - Socket `Poll` is unreliable under Ryujinx — the client uses non-blocking sockets. nn::socket uses Linux errno values (EAGAIN 11, EINPROGRESS 115).
+- **User preference: run Ryujinx on the SECOND monitor** (`\\.\DISPLAY6`, x=1920, 1280x1024), never the main one. Ryujinx goes fullscreen on the monitor its saved window position (`window_startup` in `Config.json`) is on; `mm-re/tmp/avenv.py up|deploy|server|down` does this (backs up and restores `Config.json` and `config.toml` byte-identical) on the isolated ports 37777/37778/37790, and `mm-re/tmp/shot2.py NAME [x0 y0 x1 y1 [scale]]` captures the 1280x720 game frame.
+- `hook_log.txt` is written without flushing on Ryujinx: lines can show up minutes late, so a missing line is not proof that code didn't run.
+- Boot/attract-movie freezes on Ryujinx are an OPEN BUG (see `docs/MULTIPLAYER_STATUS.md`, Round 7), not an acceptable emulator quirk. Before killing a frozen session, save a screenshot, the Ryujinx log and `hook_log.txt`, and note the time since boot.
 
 ## Real Switch (user's console)
-- IP `10.167.0.120` (PC Wi-Fi is `10.169.0.213`, a different subnet → UDP discovery cannot reach the server; `server_ip` is set in the Switch config).
-- sys-ftpd-light on :5000 and sys-botbase on :6000. Helper: `mm-re/tools/nx.py` (`deploy`, `log`, `crash`, `get/put`, `click A`, `shot NAME`).
+- IP changes with the network: currently `10.147.142.150` on the "Alex's iPhone 5G" hotspot, where the PC is `10.147.142.225` (earlier: Switch `10.167.0.120`, PC `10.169.0.213`). Ask the user if it doesn't answer; `nx.py` honours `NX_IP`. UDP discovery is unreliable, so `server_ip` in the Switch's `sdmc:/MikuMikuSwitchPlugin/config.toml` must be the PC's current address on the same network (read at boot only). Check the PC's address with `Get-NetIPAddress -AddressFamily IPv4` (plain `ipconfig` output was stale once).
+- sys-ftpd-light on :5000 and sys-botbase on :6000. Helper: `mm-re/tools/nx.py` (`deploy`, `log`, `crash`, `get/put`, `click A`, `shot NAME`). From Git Bash, set `MSYS_NO_PATHCONV=1` for `get`/`put`, otherwise `/remote/path` arguments are rewritten to Windows paths and FTP answers `450 failed to open file`.
 - Files the game has open (`config.toml`, `hook_log.txt`) cannot be read over FTP while the game (or its crash dialog) is running — close it first (HOME, X, A).
 - Crash reports: `sdmc:/atmosphere/crash_reports/`; symbolize with `aarch64-none-elf-addr2line -f -C -i -e switch-client-mod/switch-client-mod.elf <switch-client-mod + offset>`.
 - The exefs folder must contain only `main.npdm` + `subsdk9`. A stale `subsdk8` from older mod versions crashes at boot (moved to `atmosphere/contents/01001CC00FA1A000/subsdk8.disabled.bak`).
@@ -35,7 +38,7 @@ Testing helpers live outside the repo in `C:\Users\cl672\Documents\Coding\mm-re\
 - Tests: `cd server && python -B -m unittest test_lobby.py test_web_bridge.py -v` (`-B`: `server/__pycache__/*.pyc` are tracked, don't churn them).
 - When another server may be running, test on alternate ports: `--port 17777 --discovery-port 17778 --admin-port 17790 --web-port 18080`.
 - `--lobby-max N` raises the per-lobby member cap (default 8, which is what consoles support) for stress demos.
-- Bots/sim: `server/bot.py --help`, `server/sim.py`. Admin/debug CLI: `server/admin.py` (tap/spam/block/jump/autopause/list_pvs/lobbies/kick/set_leader/overlay open|close/cursor X Y [--click], 720p coords).
+- Bots/sim: `server/bot.py --help` (`--module N` sets the bot's avatar), `server/sim.py`. Admin/debug CLI: `server/admin.py` (tap/spam/block/jump/autopause/list_pvs/lobbies/kick/set_leader/overlay open|close/cursor X Y [--click], 720p coords; avatars: `avatar_peek` (cache state), `avatar_poke N` (overwrite Shared Set A slot 1 in memory), `avatar_dump N` (write module N's whole decoded card to the SD root as `av_dump_NNN_WxH.rgba`, song select only; `mm-re/tmp/rgba2png.py` converts)).
 - Admin debug commands without `--cid` are broadcast to EVERY connected client, including the real Switch. When the console is connected, target Ryujinx explicitly: `python admin.py --cid <cid> tap A` (cids are listed by `admin.py lobbies`).
 - Real-Switch UI testing: `nx.py raw "touch X Y"` taps the touchscreen (1280x720), `nx.py shot NAME` captures it.
 - Lobby engine is pure logic in `server/lobby.py` (protocol v1 documented in its docstring).

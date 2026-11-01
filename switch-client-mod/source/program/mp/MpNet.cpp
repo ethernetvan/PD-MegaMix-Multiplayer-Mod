@@ -1,5 +1,6 @@
 #include "MpNet.hpp"
 #include "MpApi.hpp"
+#include "MpAvatar.hpp"
 #include "MpJson.hpp"
 #include "MpInput.hpp"
 #include "MpLobby.hpp"
@@ -246,7 +247,8 @@ static void HandleLine(const char* line, int len) {
 
 enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
-    LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor
+    LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
+    PokeAvatar, DumpAvatar
 };
 struct MpCmd {
     MpCmdType type;
@@ -352,6 +354,15 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         getInt("x", &c.a); getInt("y", &c.b);
         int cl = mpjson::Find(line, tok, ntok, "click");
         c.count = (cl >= 0 && line[tok[cl].start] == 't') ? 1 : 0;
+    } else if (strcmp(cmd, "peek_avatar") == 0) {
+        c.type = MpCmdType::PeekAvatar;
+    } else if (strcmp(cmd, "poke_avatar") == 0) {
+        /* {module} -> overwrite Shared Set A slot 1 (tests module changes) */
+        c.type = MpCmdType::PokeAvatar;
+        c.a = -1; getInt("module", &c.a);
+    } else if (strcmp(cmd, "dump_avatar") == 0) {
+        c.type = MpCmdType::DumpAvatar;
+        c.a = -1; getInt("module", &c.a);
     } else {
         return;
     }
@@ -408,6 +419,9 @@ void OnFrame() {
             case MpCmdType::SetName:     lobby::CmdSetName(c.str); break;
             case MpCmdType::Overlay:     lobby::SetOverlayOpen(c.a != 0); break;
             case MpCmdType::Cursor:      ImGui::DbgSetCursor((float)c.a, (float)c.b, c.count != 0); break;
+            case MpCmdType::PeekAvatar:  avatar::DbgPeek(); break;
+            case MpCmdType::PokeAvatar:  avatar::DbgPoke(c.a); break;
+            case MpCmdType::DumpAvatar:  avatar::DbgDump(c.a); break;
             default: break;
         }
     }
@@ -567,10 +581,11 @@ static bool SayHello() {
         SleepMs(10);
     }
     if (!gotLine) { SetError("welcome timeout"); return false; }
-    int64_t rn = (int64_t)rl;
+    /* parse only the first line: a reconnect resync can share the buffer */
+    int firstLen = (int)(strchr(rbuf, '\n') - rbuf);
 
     jsmntok_t tok[48];
-    int ntok = mpjson::Parse(rbuf, (int)rn, tok, 48);
+    int ntok = mpjson::Parse(rbuf, firstLen, tok, 48);
     int tIdx = ntok > 0 ? mpjson::Find(rbuf, tok, ntok, "t") : -1;
     char type[24] = "";
     if (tIdx >= 0) mpjson::Copy(rbuf, tok[tIdx], type, sizeof(type));
@@ -929,6 +944,7 @@ static int     s_jumpCheck = 0;
 
 void OnPvSelFrame(const void* sel) {
     if (sel == nullptr) return;
+    avatar::GamePump();
 
     lobby::OnPvSelFrame(sel);
 

@@ -13,6 +13,7 @@
 #include "ScoreData.hpp"
 #include "SaveDataSystem.hpp"
 #include "nc/save_data.hpp"
+#include "mp/MpAvatar.hpp"
 #include "logger.hpp"
 
 #define SCORE_SIZE          0x11F4
@@ -227,6 +228,7 @@ void SaveSD() {
 
 HOOK_DEFINE_TRAMPOLINE(FindOrCreateScoreHook) {
     static void* Callback(void* mgr, int32_t id) {
+        mp::avatar::CaptureSaveMgr(mgr);
         if (id <= 0) return Orig(mgr, id);
         std::scoped_lock lock(g_SaveMtx);
 
@@ -269,6 +271,7 @@ HOOK_DEFINE_TRAMPOLINE(FindOrCreateScoreHook) {
 
 HOOK_DEFINE_TRAMPOLINE(FindScoreHook) {
     static void* Callback(void* mgr, int32_t id) {
+        mp::avatar::CaptureSaveMgr(mgr);
         if (id <= 0) return Orig(mgr, id);
 
         void* baseScore = nullptr;

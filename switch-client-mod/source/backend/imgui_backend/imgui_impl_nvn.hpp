@@ -68,4 +68,19 @@ namespace ImguiNvnBackend {
 
     void SetRenderTarget(const nvn::Texture *colorTarget);
     NvnBackendData *getBackendData();
+
+    /* RGBA8 texture owned by the backend (pool slots 2..15, linear/clamp).
+     * Returns 0 when no slot is free. Destroy only once the GPU can no longer
+     * be reading it (defer a few frames after the last draw). */
+    ImTextureID CreateRgbaTexture(int w, int h, const void *rgba, int *outSlot);
+    void DestroyRgbaTexture(int slot);
+
+    /* Async GPU->CPU copy of whole mip levels 0..count-1 (tightly packed,
+     * back to back; for block-compressed formats sizes[i] is the raw block
+     * data). Submits on the backend queue with a fence and never waits.
+     * One readback at a time; call both from the present thread. */
+    bool BeginTextureReadback(const nvn::Texture *src, int count, const int *w, const int *h,
+                              const size_t *sizes);
+    /* 1 = done (data copied to dst), 0 = still on the GPU, -1 = failed */
+    int PollTextureReadback(void *dst, size_t size);
 }

@@ -75,6 +75,7 @@ class Bot:
         asyncio.ensure_future(self.reader(r))
         self.send({"t": "hello", "cid": self.cid, "name": self.name,
                    "proto": 1, "mod": "bot-1", "game": "1.0.6"})
+        self.send({"t": "avatar", "module": self.a.module})
         print("-- reconnected")
 
     async def run(self):
@@ -90,6 +91,7 @@ class Bot:
         asyncio.ensure_future(self.reader(r))
         self.send({"t": "hello", "cid": self.cid, "name": self.name,
                    "proto": 1, "mod": "bot-1", "game": "1.0.6"})
+        self.send({"t": "avatar", "module": self.a.module})
         await asyncio.sleep(0.3)
         if self.a.create:
             self.send({"t": "lobby_create"})
@@ -338,6 +340,8 @@ def main():
     ap.add_argument("--load-delay", type=float, default=3)
     ap.add_argument("--song-secs", type=float, default=60)
     ap.add_argument("--fail-at", type=float, default=0)
+    ap.add_argument("--module", type=int, default=0,
+                    help="avatar module id (Shared Set A slot 1); 0 = Miku")
     a = ap.parse_args()
 
     bot = Bot(a)
