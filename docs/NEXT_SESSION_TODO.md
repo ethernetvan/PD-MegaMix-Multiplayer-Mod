@@ -1,4 +1,12 @@
-# Next session: handoff (written 2026-11-02 ~08:55, end of session 3)
+# Next session: handoff (written 2026-11-02 ~08:55, end of session 3; updated ~17:30, session 4)
+
+Session 4 commits: `1287d7a` (handoff), `6117201` (web portraits + AutoPlay %), `27be2da` + `6e6cda7`
+(frame-based results/pause holds, tuned), `361fa3b` (record_demo windowed on monitor 2), `6833c05` (avatar
+upload hardening), `9690345` (gauge race fills, rank glow, VP hold 120). Status per item below (1-18).
+Session 4 environment: test server **s17** (`mm-re/tmp/s17_server.log`, detached, `-B`), `live_server.log`
+MUST be a hardlink to the current sN log: a stale one made `ryu_multi up` tap A for 5 min and commit songs.
+The three test roots run `skipAdv = true`; no boot freeze since. `mm-re/tmp/zr_keys.py PID N NAME` = real-key
+taps + PrintWindow capture (works even when instances overlap); `glow_burst.py`, `race_test2.sh`.
 
 Read `AGENTS.md` and `docs/MULTIPLAYER_STATUS.md` (Round 8) first. Older handoff versions (with the full bug
 write-ups 1.1-1.21 from session 2) are archived at `mm-re/tmp/NEXT_SESSION_TODO.session2.md`.
@@ -44,10 +52,13 @@ bug to this file.
    leaves the round with a `final`. All verified on Ryujinx (real key = VK_OEM_PLUS via PostMessage).
 3. **Switch as leader sat on the confirm panel (state 8)** once with the server alive (botbase A clicks); most
    likely botbase input dropping. Re-check with a physical press. (The other time the test server was dead.)
-4. **Results auto-return timings (TODO 6):** `admin.py menu_holds --init 1200 --score_a 900 --vp 1200 --menu 600
-   --nav 250` on all 3 emulators, rounds with `autoplay on --pct 0` (fast fails); need 6 consecutive follower
-   auto-returns without `exit_timeout` / `retry_detected` in the dbg_menu lines, then make the passing values
-   (+100 ms) the defaults in `MpMenu.cpp`. Today: ~4-6 s from round_end to song select.
+4. **DONE: results auto-return timings.**
+   - Wall-clock holds failed at 21-50 FPS (3 instances): presses got eaten, then exit_timeout, then a Retry
+     slip. The holds now count frames (`27be2da`).
+   - Tuned frames 90/60/100/45/15 passed 6/6 rounds (`mm-re/tmp/tune_f1.jsonl`); defaults are those +6
+     (`6e6cda7`), with VP back at 120 (see 15).
+   - Round end -> song select is about 3.4 s at speed (was 4 s).
+   - Tool: `mm-re/tmp/tune_rounds.py N [--holds ...] [--code ROOM]`.
 5. **Ryujinx boot/attract freeze (TODO 7), now frequent:** ryu1 froze on the SEGA logo / intro 3 times on
    2026-11-02 (`mm-re/tmp/freeze_0639_ryu1`, `freeze_0742_ryu1` (status bar 0.00 FPS: no frames presented while
    the mod's net thread kept running), `freeze_0802_ryu1`), plus possible freezes of ryu1/ryu3 at the end of the
@@ -84,20 +95,36 @@ bug to this file.
     badge with the "picking a song" line below it, `r1_sel_pill.png`; no pill on results). The user's "O x4
     didn't trigger AUTO" was by design (4 taps = nothing; 3 = partial AutoPlay, 5 = toggle), but the old
     badge text also overlapped the "Multiplayer" title and was unreadable; fixed.
-12. **Other players on the bottom percentage gauge (user request, session 4).** Show every other player's
-    current % as a bar on/at the game's bottom gauge, same styling as the game's own fill but in per-player
-    colours. The local player's own bar keeps its colour and is never covered. Measured geometry (720p):
-    inner track x 130..1230 = 0..100 % (11 px per %), y 691..711. The clear border is the red line (EASY 30 %
-    at x 461). Data: the live `board` (pct per member, ~state rate); interpolate between updates.
-13. **Avatar upload hardening (user request, session 4).** The server must normalize every upload to the
-    expected resolution, name it itself (never from the uploader), and keep nothing unsafe: square
-    32..96 px only, size checked before decoding, re-encoded server-side to a fixed 96x96 PNG with only
-    IHDR/IDAT/IEND, transparent pixels' RGB zeroed, garbage (blank/flat) rejected, uploads only for the
-    client's own announced module, rate-limited, safe response headers (nosniff, CSP sandbox, CORP).
-14. **Rank-change glow (user request, session 4).** In song: when the local player moves UP a place on the live
-    board, a subtle green glow comes in from the left/right screen edges for a moment; when they drop a place,
-    the same in purple. Subtle and short (about 1 s fade). Ignore the first seconds of a song and rank jitter
-    (debounce plus cooldown), so it only fires on real overtakes.
+12. **DONE in `9690345`: other players on the bottom gauge ("race fill", the user's choice).** Their fills
+    sit in the game's own track in per-player colours. Only their lead beyond the local fill is drawn (farthest
+    first, nearest on top), every other player gets a pointer above the track, and MP Live rows have matching
+    colour chips. Geometry (720p): track x 130..1230 = 0..100 %, y 691..711. The game's OWN fill changes colour
+    with life (cyan / yellow / red), so the palette leads with violet, orange, blue, white, lime.
+    Verified on 3 emulators (`mm-re/screens/race2_gauges.png`). Open: user feedback on the look; a 0.3 % lead
+    is only ~3 px wide.
+13. **DONE in `6833c05`: avatar upload hardening.** Uploads are accepted only as square 32..96 RGBA for the
+    client's own announced module, at most 3 attempts/cid/60 s, with the string size checked before decoding.
+    Blank or flat images are rejected. Everything is normalized to 96x96 with the RGB of transparent pixels
+    zeroed and re-encoded server-side (only IHDR/IDAT/IEND). Images are memory-only, named only by module id,
+    and served with nosniff / CSP sandbox / CORP. Live check: 3 real uploads accepted (s17).
+14. **DONE in `9690345`: rank-change glow.** Green edge glow on moving up a place, purple on dropping one: about
+    1.2 s, peak alpha 0.38, not in the first 8 s, 400 ms debounce, 1.5 s cooldown. `admin.py glow up|down`
+    fires it for testing. The look was verified with the debug trigger (`mm-re/screens/glow_burst_up.png`);
+    a natural overtake firing it was not captured on screen.
+15. **Results VP page needs a real "ready" signal.** The frame-based holds (`27be2da`, `6e6cda7`) were tuned on
+    FAILED rounds only. A CLEARED result's VP page (count-up) locks input longer: a leader's A at ~106 frames
+    was eaten, and the retry recovery cleaned up. VP is back at 120 frames (`9690345`, the old default, which
+    worked for cleared AutoPlay rounds in session 3). Next: log every layer name the results-window hook
+    (`nc/ui/result_switch.cpp`, `MpSceneHooks.cpp`) sees during a cleared and a failed round. If the 2-item menu
+    or a `win_vp_loop` layer shows up, switch the model to it and drop the VP guess.
+16. **AutoPlay at 100 % misses notes on Secret Police (pv 607)** on NORMAL and HARD (e.g. 600 COOL / 50 MISS,
+    life down to 0, sometimes a fail). Pre-existing AutoPlay gap, probably a note type it doesn't handle. It
+    makes long test rounds unreliable.
+17. **The PC's address changed to `10.90.99.133`** (Wi-Fi; was `10.169.0.37`). The Switch's
+    `sdmc:/MikuMikuSwitchPlugin/config.toml` still points at 10.169.0.37, so update `server_ip` before the next
+    console session if the PC stays on this network.
+18. **ryu1 exited right after connecting** again (16:34, `mm-re/tmp/exit_1634_ryu1`; also 07:43 and 14:04, the
+    last one when its song hit life 0). No Windows error event and no Ryujinx log (the test roots write none).
 
 ### Environment at the end of session 3
 - Test server **s13** (detached, ports 37777/37778/37790/38080, `mm-re/tmp/s13_server.log`, `live_server.log`

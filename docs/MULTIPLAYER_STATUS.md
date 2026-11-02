@@ -205,6 +205,16 @@ Commits `815f20b`, `79e244c`, `ce0a059` (on top of `f9f16c6`).
   4 = nothing (by design), 5 = toggle AutoPlay. Verified with real key presses on Ryujinx.
 - Ryujinx boot freezes all happened in the SEGA logo / opening movie (`TaskAdvLogo`); the test roots now run
   with `skipAdv = true`, which skips it (see the boot tally in `docs/NEXT_SESSION_TODO.md`).
+- Avatar uploads are admission-gated and sanitized server-side (`avatars.py` UploadGate + parse_upload: own
+  announced module only, rate-limited, square 32..96, size checked before decoding, blank/flat rejected,
+  normalized to 96x96, transparent RGB zeroed, re-encoded; nosniff/CSP sandbox/CORP on responses).
+- Results/pause menu holds count FRAMES (`menu::Frame()` from `mp::OnFrame`), not ms: the game's results input
+  locks are frame-based animations and the emulators run at 21-50 FPS with 3 instances. Results defaults
+  96/66/120/51/21 frames (init/score_a/vp/menu/nav). VP stays at 120 because cleared results lock longer than
+  failed ones; a real "VP done" signal is still to be found.
+- In song: other players' percentages are "race fills" inside the game's bottom gauge (per-player colours;
+  only their lead beyond the local fill, pointers for everyone; MP Live rows carry matching colour chips),
+  and moving up / down a place flashes a soft green / purple glow from the screen edges.
 
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
