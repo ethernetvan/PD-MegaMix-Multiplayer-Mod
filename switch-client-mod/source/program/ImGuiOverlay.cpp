@@ -501,7 +501,7 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
         if ((ph == 3 /*LOADING*/ || ph == 4 /*PLAYING*/ || ph == 5 /*SPEC*/) &&
             !sn.inSongSelect && sn.resultsAgeMs < 0)
             mp::lobby::DrawLeaderboard();
-        if (ph == 3) mp::lobby::DrawWaiting();
+        if (sn.waitingStart) mp::lobby::DrawWaiting();
         if (sn.resultsAgeMs >= 0 && sn.standingCount > 0)
             mp::lobby::DrawResultsAvatars();
         else if ((ph == 6 || ph == 5) && !sn.inSongSelect)

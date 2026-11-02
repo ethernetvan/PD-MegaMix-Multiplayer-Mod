@@ -27,6 +27,7 @@ S->C: welcome/error/pong (existing);
       board {round, e:[{cid,name,score,pct,life,rank,connected}]};
       event {kind, cid, name, value};
       standings {round, complete:bool, e:[{cid,name,score,pct,max_combo,life,rank,final:bool}]};
+      (rank: tied rows share the LOWEST position of their group, 1-3-3-4);
       round_end {round, next_leader}.
 
 Every public method appends (cid, msg_dict) to self.outbox; the caller drains
@@ -47,16 +48,19 @@ PLAYING_ALL_DC_ABORT_S = 60.0
 
 
 def _competition_ranks(rows):
-    """1-2-2-4 competition ranking on an already-sorted row list;
-    rows tie on (round(pct, 2), score) and share the better rank."""
-    rank = 0
-    prev_key = None
-    for i, row in enumerate(rows):
-        key = (round(row["pct"], 2), row["score"])
-        if key != prev_key:
-            rank = i + 1
-            prev_key = key
-        row["rank"] = rank
+    """Ranking on an already-sorted row list where tied rows share the
+    LOWEST position of their group (1-3-3-4: two tied for first are both
+    2nd); rows tie on (round(pct, 2), score)."""
+    i = 0
+    while i < len(rows):
+        key = (round(rows[i]["pct"], 2), rows[i]["score"])
+        j = i
+        while (j + 1 < len(rows) and
+               (round(rows[j + 1]["pct"], 2), rows[j + 1]["score"]) == key):
+            j += 1
+        for k in range(i, j + 1):
+            rows[k]["rank"] = j + 1
+        i = j + 1
 
 
 class Member:

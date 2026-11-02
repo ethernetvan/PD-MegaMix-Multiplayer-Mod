@@ -33,6 +33,9 @@ def main():
     sub.add_parser("avatar_dump").add_argument("module", type=int)
     sub.add_parser("menu_cursor").add_argument("v", type=int)
     p = sub.add_parser("sel_lists"); p.add_argument("pvs", type=int, nargs="+")
+    sub.add_parser("lobby_create")
+    sub.add_parser("lobby_join").add_argument("code")
+    sub.add_parser("lobby_leave")
     ap.add_argument("--cid", default=None)
     ap.add_argument("--port", type=int, default=7790)
     args = ap.parse_args()
@@ -81,6 +84,10 @@ def main():
         pl = {"cmd": "menu_cursor", "v": args.v}
     elif args.cmd == "sel_lists":
         pl = {"cmd": "sel_lists", "pvs": args.pvs}
+    elif args.cmd in ("lobby_create", "lobby_leave"):
+        pl = {"cmd": args.cmd}
+    elif args.cmd == "lobby_join":
+        pl = {"cmd": "lobby_join", "code": args.code.upper()}
     if args.cid:
         pl["cid"] = args.cid
     send(pl, args.port)

@@ -657,7 +657,7 @@ class T5(unittest.TestCase):
         for c in "abc": self.mk(c)
         lb = self._mk(3)
         rid = self._playing(lb, players="abc")
-        # a and b tie on pct+score -> share rank 1; c is rank 3
+        # a and b tie on pct+score -> both 2nd (lowest position); c is 3rd
         self.lm.on_message("a", {"t": "state", "round": rid, "score": 100,
                                  "combo": 0, "pct": 50.0, "life": 200}, 105.0)
         self.lm.on_message("b", {"t": "state", "round": rid, "score": 100,
@@ -668,8 +668,8 @@ class T5(unittest.TestCase):
         b = [m for _, m in self.msgs(t="board")][-1]
         ranks = {row["cid"]: row["rank"] for row in b["e"]}
         lives = {row["cid"]: row["life"] for row in b["e"]}
-        self.assertEqual(ranks["a"], 1)
-        self.assertEqual(ranks["b"], 1)
+        self.assertEqual(ranks["a"], 2)
+        self.assertEqual(ranks["b"], 2)
         self.assertEqual(ranks["c"], 3)
         self.assertEqual(lives["a"], 200)
         self.assertEqual(lives["b"], 90)
@@ -764,8 +764,8 @@ class T5(unittest.TestCase):
         self.lm.on_message("a", {"t": "lobby_join", "code": lb.code}, 222.0)
         self.assertEqual(lb.owner_cid, "b")         # grace expired
 
-    # ---- 12: competition ranking
-    def test_ties_1_2_2_4(self):
+    # ---- 12: ties share the lowest position of their group
+    def test_ties_1_3_3_4(self):
         for c in "abcd": self.mk(c)
         lb = self._mk(4)
         rid = self._playing(lb, "abcd")
@@ -774,7 +774,17 @@ class T5(unittest.TestCase):
         self._final("c", rid, 90, 50)
         self._final("d", rid, 80, 200)
         rows, complete = self.lm._standings(lb, 104.0)
-        self.assertEqual([r["rank"] for r in rows], [1, 2, 2, 4])
+        self.assertEqual([r["rank"] for r in rows], [1, 3, 3, 4])
+
+    def test_tie_for_first_is_second(self):
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        rid = self._playing(lb, "abc")
+        self._final("a", rid, 90, 50)
+        self._final("b", rid, 90, 50)
+        self._final("c", rid, 80, 200)
+        rows, complete = self.lm._standings(lb, 104.0)
+        self.assertEqual([r["rank"] for r in rows], [2, 2, 3])
 
     # ---- 13: pause dedupe + stale
     def test_pause_same_state_sync_only(self):

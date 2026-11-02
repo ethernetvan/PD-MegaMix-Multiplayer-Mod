@@ -215,12 +215,14 @@ function ResCard({
   delay,
   tags,
   hideRank,
+  win,
 }: {
   r: StandingRow;
   m: MemberSnap | undefined;
   delay: number;
   tags: string[];
   hideRank?: boolean;
+  win: boolean; /* in the top group (a tie for first ranks as 2) */
 }) {
   const score = useCountUp(r.score, delay + 150);
   const jc = m?.final?.jc;
@@ -229,7 +231,7 @@ function ResCard({
   const d = { "--d": `${delay}ms` } as CSSProperties;
   return (
     <div
-      className={`res-card${r.rank === 1 ? " win" : ""}${clear === "dnf" ? " dnf" : ""}`}
+      className={`res-card${win ? " win" : ""}${clear === "dnf" ? " dnf" : ""}`}
       style={d}
     >
       <div className="res-top">
@@ -240,12 +242,12 @@ function ResCard({
           name={r.name}
           size={38}
           status={r.connected ? "online" : "offline"}
-          ring={r.rank === 1}
+          ring={win}
         />
         <span className="res-name">
           {r.name}
           {r.autoplay && <span className="badge auto">AUTO</span>}
-          {r.rank === 1 && <span className="badge star">★ WINNER</span>}
+          {win && <span className="badge star">★ WINNER</span>}
           {tags.map((t) => (
             <span key={t} className="badge star">
               ★ {t}
@@ -372,6 +374,7 @@ function ResultsBoard({ l }: { l: LobbySnap }) {
               m={memberOf(l, r.mid)}
               delay={(n - 1 - i0) * 170}
               tags={tags.get(r.mid) ?? []}
+              win={i0 === 0}
             />
           );
         }
@@ -391,6 +394,7 @@ function ResultsBoard({ l }: { l: LobbySnap }) {
                   delay={delay}
                   tags={tags.get(r.mid) ?? []}
                   hideRank
+                  win={i0 === 0}
                 />
               ))}
             </div>

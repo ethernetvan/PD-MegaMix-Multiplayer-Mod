@@ -51,6 +51,8 @@ struct Snapshot {
     bool     connected;
     int32_t  offlineMs;       /* ms since the session dropped, -1 online */
     bool     inSongSelect;    /* pv_sel is active */
+    bool     inSong;          /* a song is loaded and playing/paused (scene "game") */
+    bool     waitingStart;    /* loaded, waiting for the round's start (any member) */
     char     code[8];
     char     myCid[20];
     char     leaderCid[20];

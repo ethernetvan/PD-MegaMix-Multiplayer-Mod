@@ -58,6 +58,7 @@ static bool  s_amLeader  = false;
 static bool  s_amPlayer  = false;
 static bool  s_committed = false;
 static bool  s_selActive = false;
+static bool  s_selBrowsing = false;  /* song list up: state 6, no picker/customize */
 static int32_t s_leaderPv = -1;
 static int32_t s_localPv  = -1;
 static int32_t s_launchHandledRound = -1;
@@ -792,7 +793,9 @@ static bool s_inLobbyDirty() {
 }
 
 static void ApplyBlocks() {
-    if (s_phase == L_SELECT && !s_amLeader && s_selActive)
+    /* follower lock only on the song list itself: the module picker /
+     * customize run inside song select and must stay usable */
+    if (s_phase == L_SELECT && !s_amLeader && s_selActive && s_selBrowsing)
         SetBlocks(MASK_FOLLOWER, true);
     else if (s_phase == L_LOADING ||
              (s_phase == L_LAUNCHING && s_launchBlocking))
@@ -1202,6 +1205,28 @@ void OnPvSelFrame(const void* sel) {
     uint64_t now = NowMs();
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
     s_lastSelState = state;
+
+    /* follower lock follows the song list: drop it while the module picker
+     * or customize is open, and keep buttons held at that moment blocked
+     * until released so they don't land as fresh presses in the picker */
+    {
+        bool cust = CustomizeSelUi::IsInCustomizeScene() ||
+                    CustomizeSelUi::IsOpen();
+        bool browsing = state == 6 && !busy && !cust;
+        if (browsing != s_selBrowsing) {
+            bool wasLocked = s_baseMask == MASK_FOLLOWER;
+            s_selBrowsing = browsing;
+            ApplyBlocks();
+            if (wasLocked && s_baseMask != MASK_FOLLOWER) {
+                s_relGuard |= input::NavHeld() & MASK_FOLLOWER;
+                int sx = 0, sy = 0;
+                input::NavStick(&sx, &sy);
+                if (sx >= 8000 || sx <= -8000 || sy >= 8000 || sy <= -8000)
+                    s_relGuardStick = true;
+                PushBlocks();
+            }
+        }
+    }
 
     /* sel_lists probe: dump the 8 sorted_pv_lists of the current sort */
     if (s_slPending) {
@@ -1759,6 +1784,11 @@ void GetSnapshot(Snapshot* out) {
     }
     out->resultsAgeMs = s_resultsShownAt > 0
         ? (int32_t)(NowMs() - s_resultsShownAt) : -1;
+    out->inSong = strcmp(s_scene, "game") == 0;
+    /* the leader waits in LOADING, followers in LAUNCHING once loaded */
+    out->waitingStart = s_phase == L_LOADING ||
+                        (s_phase == L_LAUNCHING &&
+                         (s_launchStage >= 4 || s_loadedSent));
     out->round = s_round;
     strncpy(out->ownerCid, s_ownerCid, sizeof(out->ownerCid) - 1);
     strncpy(out->pickMode, s_pickMode, sizeof(out->pickMode) - 1);

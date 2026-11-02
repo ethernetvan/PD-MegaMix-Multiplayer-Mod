@@ -409,7 +409,7 @@ static void GlowText(ImDrawList* dl, ImFont* font, float size, ImVec2 pos,
  * doesn't cut the head) or the silhouette fallback. */
 static void DrawResultHex(const Ui& u, ImVec2 c, float r, int32_t module,
                           bool you, bool connected, bool final, bool sparkle,
-                          float faceShift = 0.15f) {
+                          float faceShift = 0.15f, bool plusSign = false) {
     ImDrawList* dl = u.dl;
     ImVec2 p[6];
     HexFill(dl, ImVec2(c.x, c.y + 3.0f * u.k), r + 1.0f * u.k,
@@ -435,7 +435,15 @@ static void DrawResultHex(const Ui& u, ImVec2 c, float r, int32_t module,
                       pl1 = IM_COL32(170, 170, 170, 255); }
     HexFill(dl, c, ri, pl0, pl1, nullptr, ImVec2(0, 0), ImVec2(1, 1), 0.0f);
     void* tex = nullptr; float uv0[2], uv1[2];
-    if (mp::avatar::Get(module, &tex, uv0, uv1) == 1) {
+    if (plusSign) {
+        /* "and X others" slot of a 4+ tie: a bold plus instead of a face */
+        const float t = ri * 0.24f, L = ri * 0.95f;
+        const ImU32 pc = IM_COL32(232, 140, 30, 255);
+        dl->AddRectFilled(ImVec2(vx - L * 0.5f, c.y - t * 0.5f),
+                          ImVec2(vx + L * 0.5f, c.y + t * 0.5f), pc, t * 0.35f);
+        dl->AddRectFilled(ImVec2(vx - t * 0.5f, c.y - L * 0.5f),
+                          ImVec2(vx + t * 0.5f, c.y + L * 0.5f), pc, t * 0.35f);
+    } else if (mp::avatar::Get(module, &tex, uv0, uv1) == 1) {
         ImU32 tint = !final ? IM_COL32(190, 190, 190, 255)
                    : (connected ? IM_COL32_WHITE : IM_COL32(140, 140, 140, 255));
         ImVec2 uvC(vx, c.y + 0.06f * ri);
@@ -447,7 +455,7 @@ static void DrawResultHex(const Ui& u, ImVec2 c, float r, int32_t module,
                          : IM_COL32(240, 190, 120, 255));
         IconPerson(u, ImVec2(vx, c.y - ri * 0.05f), ri * 0.55f, sil, sil);
     }
-    if (!final) {
+    if (!final && !plusSign) {
         /* still playing: three pulsing dots on a dark pill, visible bottom;
          * scaled for the small cluster hexes */
         float ps = r / (50.0f * u.k);
@@ -547,21 +555,42 @@ void DrawResultsAvatars() {
                 break;
             }
 
-    const float cy720[4] = { 305.0f, 410.0f, 515.0f, 620.0f };
-    /* row 0 is a single hex at r=50; tied groups draw a connected cluster
-     * that takes about one hexagon's footprint (n=2: r=30 diagonal pair,
-     * n>=3: r=26 triangle) so it never reaches the results table */
+    /* single players get one hex at r=50; a tie is one connected cluster of
+     * about one hexagon's footprint (n=2: r=30 diagonal pair, n>=3: r=26
+     * triangle; 4+ shows a "+" in the third slot) so it never reaches the
+     * results table. Each row reserves one hexagon's height plus one line
+     * per stacked name; rows below a tie move down and the column moves up
+     * if it would run off the bottom. */
+    const float HEXH = 90.0f, LINE = 16.0f;
+    int lines[4]; float rowH[4], total = 0.0f;
+    for (int i = 0; i < nRows; i++) {
+        int c = gCount[i];
+        lines[i] = c == 1 ? 1 : (c >= 4 ? 3 : c);
+        rowH[i] = HEXH + 4.0f + lines[i] * LINE + 6.0f;
+        total += rowH[i];
+    }
+    float top = 262.0f;
+    if (top + total > 708.0f) top = 708.0f - total;
+    if (top < 214.0f) top = 214.0f;
     for (int i = 0; i < nRows; i++) {
         int first = gFirst[i], cnt = gCount[i];
         int shown = cnt < 3 ? cnt : 3;
         int rank = sn.standing[first].rank;
+        /* local player first, so YOU is never folded into "and X others" */
+        int ord[8], no = 0;
+        for (int m = 0; m < cnt && no < 8; m++)
+            if (sn.standing[first + m].me) ord[no++] = first + m;
+        for (int m = 0; m < cnt && no < 8; m++)
+            if (!sn.standing[first + m].me) ord[no++] = first + m;
+        const float rowTop = top;
+        top += rowH[i];
         float p = (age - (1.0f + 0.12f * i)) / 0.5f;
         if (p <= 0.0f) continue;
         if (p > 1.0f) p = 1.0f;
         float W = ds.x / k;
         float xoff = (1.0f - EaseOutBack(p)) * (2 * 50.0f + 60.0f);
         float alpha = p * p * (3.0f - 2.0f * p);          /* smoothstep */
-        float cy = cy720[i];
+        float cy = rowTop + HEXH * 0.5f;
 
         /* member center positions in 720p space */
         float r720 = 50.0f;
@@ -598,37 +627,32 @@ void DrawResultsAvatars() {
         float lsz = 38.0f * k;
         ImVec2 lszV = u.font->CalcTextSizeA(lsz, FLT_MAX, 0.0f, lab);
         GlowText(u.dl, u.font, lsz,
-                 ImVec2((bboxLeft + 4.0f) * k - lszV.x,
-                        (cy - 0.866f * 50.0f - 2.0f) * k),
+                 ImVec2((bboxLeft + 4.0f) * k - lszV.x, (rowTop - 2.0f) * k),
                  lab, alpha, pulse, k);
 
         for (int m = 0; m < shown; m++) {
-            int si = first + m;
-            const auto& st = sn.standing[si];
+            const auto& st = sn.standing[ord[m]];
             ImVec2 c(hp[m].x * k, hp[m].y * k);
-            DrawResultHex(u, c, r720 * k, StandingModule(sn, si), st.me,
+            DrawResultHex(u, c, r720 * k, StandingModule(sn, ord[m]), st.me,
                           st.connected, st.final,
-                          rank == 1 && m == 0,
-                          shown > 1 ? 0.0f : 0.15f);
+                          i == 0 && m == 0,          /* top group sparkles */
+                          shown > 1 ? 0.0f : 0.15f,
+                          cnt >= 4 && m == 2);       /* "+" = the others */
         }
 
-        /* one joined name line under the cluster; local reads YOU */
-        char nm[44];
-        {
-            const char* sep = shown == 2 ? " & " : ", ";
-            int o = 0;
-            nm[0] = 0;
+        /* names stacked one per line under the cluster (local reads YOU);
+         * 4+: first, second, "and X others" */
+        for (int L = 0; L < lines[i]; L++) {
+            char nm[48];
+            if (cnt >= 4 && L == 2)
+                snprintf(nm, sizeof(nm), "and %d others", cnt - 2);
+            else
+                snprintf(nm, sizeof(nm), "%s",
+                         sn.standing[ord[L]].me ? "YOU" : sn.standing[ord[L]].name);
             bool ascii = true;
-            for (int m = 0; m < shown; m++) {
-                const char* raw = sn.standing[first + m].me
-                                    ? "YOU" : sn.standing[first + m].name;
-                for (const char* s = raw; *s; s++) {
-                    unsigned char ch = (unsigned char)*s;
-                    if (ch > 126 || ch < 32) { ascii = false; break; }
-                }
-                if (m) o += snprintf(nm + o, sizeof(nm) - o, "%s", sep);
-                o += snprintf(nm + o, sizeof(nm) - o, "%s", raw);
-                if (o >= (int)sizeof(nm) - 8) break;
+            for (const char* s = nm; *s; s++) {
+                unsigned char ch = (unsigned char)*s;
+                if (ch > 126 || ch < 32) { ascii = false; break; }
             }
             ImFont* nf = ascii ? u.font : ImGui::GetFont();
             float nsz = 15.0f * k;
@@ -642,7 +666,7 @@ void DrawResultsAvatars() {
             float nx = bboxCen * k - ntx.x * 0.5f;
             if (nx + ntx.x > ds.x - 6.0f * k) nx = ds.x - 6.0f * k - ntx.x;
             if (nx < 0) nx = 0;
-            ImVec2 npos(nx, (cy + 0.866f * 50.0f + 2.0f) * k);
+            ImVec2 npos(nx, (rowTop + HEXH + 4.0f + L * LINE) * k);
             const ImU32 nOut = IM_COL32(30, 16, 48, (int)(230 * alpha));
             for (int d = 0; d < 8; d++) {
                 float a = d * 6.28318f / 8.0f;
@@ -650,17 +674,6 @@ void DrawResultsAvatars() {
                     ImVec2(npos.x + cosf(a) * 1.2f * k, npos.y + sinf(a) * 1.2f * k), nOut, nm);
             }
             u.dl->AddText(nf, nsz, npos, IM_COL32(255, 255, 255, (int)(255 * alpha)), nm);
-        }
-
-        /* "+N" under the rank label when the group has more members */
-        if (cnt > shown) {
-            char plus[12];
-            snprintf(plus, sizeof(plus), "+%d", cnt - shown);
-            float psz = 20.0f * k;
-            ImVec2 pszV = u.font->CalcTextSizeA(psz, FLT_MAX, 0.0f, plus);
-            u.dl->AddText(u.font, psz,
-                ImVec2((bboxLeft + 4.0f) * k - pszV.x, (cy + 2.0f) * k),
-                IM_COL32(255, 255, 255, (int)(255 * alpha)), plus);
         }
     }
     EndWin();
@@ -1516,16 +1529,24 @@ void DrawBanners() {
     if (s.bannerCount == 0) return;
     ImVec2 ds = ImGui::GetIO().DisplaySize;
     float k = ds.y / 720.0f;
-    /* above the overlay panel while it is open, otherwise below the top UI */
-    float top = OverlayOpen() ? 6 * k : 60 * k;
-    for (int i = 0; i < s.bannerCount; i++) {
+    /* in a song: small, top-left below the life bar, newest 2 only (keeps
+     * the note area clear); otherwise top-centre (above the overlay panel
+     * while it is open, else below the top UI) */
+    const bool song = s.inSong && !OverlayOpen();
+    float top = song ? 62 * k : (OverlayOpen() ? 6 * k : 60 * k);
+    int i0 = song && s.bannerCount > 2 ? s.bannerCount - 2 : 0;
+    for (int i = i0; i < s.bannerCount; i++) {
         float ttl = s.banners[i].ttl;
         float alpha = ttl > 2.5f ? (3.0f - ttl) * 2.0f
                     : (ttl < 0.8f ? ttl / 0.8f : 1.0f);
         const char* txt = s.banners[i].text;
-        ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, top + i * 34 * k),
-                                ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-        ImGui::SetNextWindowBgAlpha(0.55f * alpha);
+        if (song)
+            ImGui::SetNextWindowPos(ImVec2(14 * k, top + (i - i0) * 26 * k),
+                                    ImGuiCond_Always, ImVec2(0.0f, 0.0f));
+        else
+            ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, top + i * 34 * k),
+                                    ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+        ImGui::SetNextWindowBgAlpha((song ? 0.45f : 0.55f) * alpha);
         char id[16];
         snprintf(id, sizeof(id), "##mpb%d", i);
         if (!BeginWin(id, nullptr,
@@ -1535,7 +1556,7 @@ void DrawBanners() {
             EndWin();
             continue;
         }
-        ImGui::SetWindowFontScale(1.35f);
+        ImGui::SetWindowFontScale(song ? 1.0f : 1.35f);
         ImGui::TextColored(ImVec4(1, 1, 1, alpha), "%s", txt);
         EndWin();
     }
