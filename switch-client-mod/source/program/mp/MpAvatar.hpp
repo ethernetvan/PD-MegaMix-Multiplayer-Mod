@@ -32,6 +32,9 @@ void RenderPump();
  * -1 = unavailable (custom module / decode failed / module < 0). */
 int Get(int32_t module, void** tex, float uv0[2], float uv1[2]);
 
+/* Mark a module wanted without drawing (warm the cache before a round). */
+void Prefetch(int32_t module);
+
 /* debug (admin dbg_cmd): overwrite Set A slot 1 / report state / write the
  * module's whole decoded card to ExlSD:/av_dump_MMM_WxH.rgba (in pv_sel). */
 void DbgPoke(int32_t module);

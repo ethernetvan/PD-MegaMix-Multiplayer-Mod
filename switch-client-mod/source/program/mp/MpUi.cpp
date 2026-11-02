@@ -2,6 +2,7 @@
 #include "MpAvatar.hpp"
 #include "MpInput.hpp"
 #include "../Config.hpp"
+#include "../FontLoader.hpp"
 #include "../keyboard.hpp"
 #include "../overlays/VirtualKeyboard.hpp"
 
@@ -273,28 +274,33 @@ static ImU32 LerpCol(ImU32 a, ImU32 b, float t) {
     return o;
 }
 
-static void HexPts(ImVec2 c, float r, ImVec2 out[6]) {
+static void HexPts(ImVec2 c, float r, ImVec2 out[6], float rotDeg = -90.0f) {
     for (int i = 0; i < 6; i++) {
-        float ang = (-90.0f + 60.0f * i) * 3.14159265f / 180.0f;
+        float ang = (rotDeg + 60.0f * i) * 3.14159265f / 180.0f;
         out[i] = ImVec2(c.x + cosf(ang) * r, c.y + sinf(ang) * r);
     }
 }
 
 /* filled hexagon, c0 at the top-left -> c1 at the bottom-right; with a
- * texture, the square [c-r, c+r] maps to uv0..uv1 (tint = vertex colour) */
+ * texture, the square [uvC-uvR, uvC+uvR] maps to uv0..uv1 (tint = vertex
+ * colour; uvC/uvR default to the hexagon centre/radius). rotDeg rotates
+ * the vertex order (0 = flat-top, -90 = pointy-top). */
 static void HexFill(ImDrawList* dl, ImVec2 c, float r, ImU32 c0, ImU32 c1,
-                    ImTextureID tex = nullptr, ImVec2 uv0 = ImVec2(0, 0), ImVec2 uv1 = ImVec2(1, 1)) {
+                    ImTextureID tex = nullptr, ImVec2 uv0 = ImVec2(0, 0), ImVec2 uv1 = ImVec2(1, 1),
+                    float rotDeg = -90.0f, const ImVec2* uvC = nullptr, float uvR = 0.0f) {
     ImVec2 p[7];
     p[0] = c;
-    HexPts(c, r, p + 1);
+    HexPts(c, r, p + 1, rotDeg);
+    const ImVec2 vc = uvC ? *uvC : c;
+    const float vr = uvR > 0.0f ? uvR : r;
     if (tex) dl->PushTextureID(tex);
     const ImVec2 white = ImGui::GetFontTexUvWhitePixel();
     dl->PrimReserve(18, 7);
     const ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
     for (int i = 0; i < 7; i++) {
         float t = ((p[i].x - c.x) + (p[i].y - c.y)) / (2.0f * 1.366f * r) + 0.5f;
-        ImVec2 uv = tex ? ImVec2(uv0.x + (p[i].x - c.x + r) / (2.0f * r) * (uv1.x - uv0.x),
-                                 uv0.y + (p[i].y - c.y + r) / (2.0f * r) * (uv1.y - uv0.y))
+        ImVec2 uv = tex ? ImVec2(uv0.x + (p[i].x - vc.x + vr) / (2.0f * vr) * (uv1.x - uv0.x),
+                                 uv0.y + (p[i].y - vc.y + vr) / (2.0f * vr) * (uv1.y - uv0.y))
                         : white;
         dl->PrimWriteVtx(p[i], uv, LerpCol(c0, c1, t));
     }
@@ -352,6 +358,236 @@ static void DrawAvatar(const Ui& u, ImVec2 c, float r, int32_t module, bool you,
         Sparkle(dl, ImVec2(p[1].x - r * 0.02f, p[1].y - r * 0.10f), r * 0.17f, IM_COL32(255, 255, 255, 235));
         Sparkle(dl, ImVec2(p[1].x + r * 0.12f, p[1].y + r * 0.16f), r * 0.08f, IM_COL32(255, 240, 200, 220));
     }
+}
+
+/* ================================================================
+ * Results screen: top-3 avatars peeking in from the right edge.
+ * Flat-top hexagons (rotDeg 0), gold for others / pink for "YOU",
+ * NEW-RECORD-style glowing rank labels. All positions in 720p units
+ * (x measured from the right edge W = DisplaySize.x).
+ * ============================================================== */
+
+/* multi-pass text: outer+inner pulsing glow, dark outline, vertical
+ * gradient fill, then an italic shear applied to every pass. */
+static void GlowText(ImDrawList* dl, ImFont* font, float size, ImVec2 pos,
+                     const char* text, float alpha, float pulse, float k) {
+    const int vtx0 = dl->VtxBuffer.Size;
+    auto ring = [&](int n, float rad, ImU32 col) {
+        for (int i = 0; i < n; i++) {
+            float a = i * 6.28318f / n;
+            dl->AddText(font, size,
+                        ImVec2(pos.x + cosf(a) * rad * k, pos.y + sinf(a) * rad * k), col, text);
+        }
+    };
+    /* sticker look like the game's NEW RECORD!: soft orange glow, dark red
+     * rim, white edge, then the red-orange gradient fill */
+    ring(16, 5.5f, IM_COL32(255, 170, 50, (int)(55 * alpha * pulse)));
+    ring(16, 3.2f, IM_COL32(140, 16, 16, (int)(255 * alpha)));
+    ring(12, 1.8f, IM_COL32(255, 255, 255, (int)(255 * alpha)));
+    const int vtxFill = dl->VtxBuffer.Size;
+    dl->AddText(font, size, pos, IM_COL32(255, 255, 255, (int)(255 * alpha)), text);
+    const int vtxEnd = dl->VtxBuffer.Size;
+    /* vertical gradient on the fill pass: (255,200,60) -> (255,52,40) */
+    float yT = 1e30f, yB = -1e30f;
+    for (int v = vtxFill; v < vtxEnd; v++) {
+        yT = yT < dl->VtxBuffer[v].pos.y ? yT : dl->VtxBuffer[v].pos.y;
+        yB = yB > dl->VtxBuffer[v].pos.y ? yB : dl->VtxBuffer[v].pos.y;
+    }
+    const ImU32 cT = IM_COL32(255, 200, 60, 255), cB = IM_COL32(255, 52, 40, 255);
+    for (int v = vtxFill; v < vtxEnd; v++) {
+        ImDrawVert& vt = dl->VtxBuffer[v];
+        float t = yB > yT ? (vt.pos.y - yT) / (yB - yT) : 0.0f;
+        vt.col = (LerpCol(cT, cB, t) & 0x00FFFFFFu) | (vt.col & 0xFF000000u);
+    }
+    /* italic shear on all passes */
+    for (int v = vtx0; v < vtxEnd; v++)
+        dl->VtxBuffer[v].pos.x += (yB - dl->VtxBuffer[v].pos.y) * 0.2f;
+}
+
+/* flat-top results hexagon: drop shadow, gold/pink frame, bevel, keyline,
+ * pale plate, clipped portrait (uv box nudged down so the flat top edge
+ * doesn't cut the head) or the silhouette fallback. */
+static void DrawResultHex(const Ui& u, ImVec2 c, float r, int32_t module,
+                          bool you, bool connected, bool final, bool sparkle) {
+    ImDrawList* dl = u.dl;
+    ImVec2 p[6];
+    HexFill(dl, ImVec2(c.x, c.y + 3.0f * u.k), r + 1.0f * u.k,
+            IM_COL32(0, 0, 0, 100), IM_COL32(0, 0, 0, 100), nullptr,
+            ImVec2(0, 0), ImVec2(1, 1), 0.0f);
+    ImU32 f0 = you ? IM_COL32(255, 110, 215, 255) : IM_COL32(255, 216, 72, 255);
+    ImU32 f1 = you ? IM_COL32(226, 36, 158, 255) : IM_COL32(255, 138, 24, 255);
+    if (!connected) { f0 = IM_COL32(150, 150, 150, 255);
+                      f1 = IM_COL32(105, 105, 105, 255); }
+    HexFill(dl, c, r, f0, f1, nullptr, ImVec2(0, 0), ImVec2(1, 1), 0.0f);
+    HexPts(c, r - 1.6f * u.k, p, 0.0f);
+    /* y grows down: verts 4/5 are the top ones */
+    ImVec2 bevel[3] = { p[3], p[4], p[5] };         /* left, up-left, up-right */
+    dl->AddPolyline(bevel, 3, IM_COL32(255, 255, 255, 130), 0, 2.2f * u.k);
+    float ri = r * 0.86f;                            /* thin frame, big portrait */
+    HexFill(dl, c, ri + 1.6f * u.k, IM_COL32(255, 255, 255, 240),
+            IM_COL32(255, 255, 255, 240), nullptr, ImVec2(0, 0), ImVec2(1, 1), 0.0f);
+    /* the right part is off-screen: centre faces in the visible part */
+    const float vx = c.x - 0.15f * ri;
+    ImU32 pl0 = you ? IM_COL32(255, 222, 244, 255) : IM_COL32(255, 246, 222, 255);
+    ImU32 pl1 = you ? IM_COL32(255, 236, 248, 255) : IM_COL32(255, 236, 200, 255);
+    if (!connected) { pl0 = IM_COL32(200, 200, 200, 255);
+                      pl1 = IM_COL32(170, 170, 170, 255); }
+    HexFill(dl, c, ri, pl0, pl1, nullptr, ImVec2(0, 0), ImVec2(1, 1), 0.0f);
+    void* tex = nullptr; float uv0[2], uv1[2];
+    if (mp::avatar::Get(module, &tex, uv0, uv1) == 1) {
+        ImU32 tint = !final ? IM_COL32(190, 190, 190, 255)
+                   : (connected ? IM_COL32_WHITE : IM_COL32(140, 140, 140, 255));
+        ImVec2 uvC(vx, c.y + 0.06f * ri);
+        HexFill(dl, c, ri, tint, tint, (ImTextureID)tex,
+                ImVec2(uv0[0], uv0[1]), ImVec2(uv1[0], uv1[1]), 0.0f, &uvC, ri);
+    } else {
+        ImU32 sil = !connected ? IM_COL32(150, 150, 150, 255)
+                  : (you ? IM_COL32(255, 160, 215, 255)
+                         : IM_COL32(240, 190, 120, 255));
+        IconPerson(u, ImVec2(vx, c.y - ri * 0.05f), ri * 0.55f, sil, sil);
+    }
+    if (!final) {
+        /* still playing: three pulsing dots on a dark pill, visible bottom */
+        ImVec2 pc(vx, c.y + ri * 0.58f);
+        dl->AddRectFilled(ImVec2(pc.x - 20 * u.k, pc.y - 7 * u.k),
+                          ImVec2(pc.x + 20 * u.k, pc.y + 7 * u.k), IM_COL32(20, 16, 30, 190),
+                          7 * u.k);
+        for (int i = 0; i < 3; i++) {
+            float a = 0.35f + 0.65f *
+                (0.5f + 0.5f * sinf(u.t * 6.0f - (float)i * 1.1f));
+            ImU32 dc = you ? IM_COL32(255, 120, 220, (int)(255 * a))
+                           : IM_COL32(255, 196, 70, (int)(255 * a));
+            dl->AddCircleFilled(ImVec2(pc.x + (i - 1) * 11 * u.k, pc.y), 3.6f * u.k, dc, 12);
+        }
+    }
+    if (sparkle && connected) {
+        HexPts(c, r, p, 0.0f);
+        /* top-left corner (vert 4) */
+        Sparkle(dl, ImVec2(p[4].x - r * 0.04f, p[4].y + r * 0.02f), r * 0.20f,
+                IM_COL32(255, 255, 255, 240));
+        Sparkle(dl, ImVec2(p[4].x + r * 0.16f, p[4].y + r * 0.22f), r * 0.09f,
+                IM_COL32(255, 240, 200, 225));
+    }
+}
+
+/* the local player's own row follows the save immediately */
+static int32_t StandingModule(const Snapshot& sn, int i) {
+    int32_t local = mp::avatar::LocalModule();
+    return (sn.standing[i].me && local >= 0) ? local : sn.standing[i].module;
+}
+
+static float EaseOutBack(float p) {
+    const float c1 = 1.70158f;
+    float q = p - 1.0f;
+    return 1.0f + (c1 + 1.0f) * q * q * q + c1 * q * q;
+}
+
+void DrawResultsAvatars() {
+    Snapshot sn;
+    GetSnapshot(&sn);
+    if (sn.standingCount <= 0 || sn.resultsAgeMs < 0) return;
+    const float age = sn.resultsAgeMs / 1000.0f;
+    ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 ds = io.DisplaySize;
+    const float k = ds.y / 720.0f;
+
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ds, ImGuiCond_Always);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar;
+    if (!BeginWin("##mpresults", nullptr, flags)) { EndWin(); return; }
+
+    Ui u;
+    u.dl = ImGui::GetWindowDrawList();
+    ImFont* big = FontLoader::Big();
+    u.font = big ? big : ImGui::GetFont();
+    u.k = k;
+    u.fs = u.font->FontSize;
+    u.mouse = io.MousePos;
+    u.clicked = false; u.down = false;
+    u.t = (float)ImGui::GetTime();
+    const float pulse = 0.8f + 0.2f * sinf(u.t * 6.28318f * 0.8f);
+
+    /* rows: top 3 standings + an extra local row when rank > 3 */
+    int rows[4], nRows = 0;
+    for (int i = 0; i < sn.standingCount && nRows < 3; i++)
+        rows[nRows++] = i;
+    bool meInTop = false;
+    for (int i = 0; i < nRows; i++) if (sn.standing[rows[i]].me) meInTop = true;
+    int extra = -1;
+    if (!meInTop)
+        for (int i = 0; i < sn.standingCount; i++)
+            if (sn.standing[i].me && sn.standing[i].rank > 3) { extra = i; break; }
+    if (extra >= 0 && nRows < 4) rows[nRows++] = extra;
+
+    const float cy720[4] = { 305.0f, 410.0f, 515.0f, 620.0f };
+    /* one size for every row so the hexagons and the #N labels line up */
+    const float rr720[4] = { 50.0f, 50.0f, 50.0f, 50.0f };
+    for (int i = 0; i < nRows; i++) {
+        const auto& st = sn.standing[rows[i]];
+        float p = (age - (1.0f + 0.12f * i)) / 0.5f;
+        if (p <= 0.0f) continue;
+        if (p > 1.0f) p = 1.0f;
+        float xoff = (1.0f - EaseOutBack(p)) * (2 * rr720[i] + 60.0f);
+        float alpha = p * p * (3.0f - 2.0f * p);          /* smoothstep */
+        float r720 = rr720[i], cy = cy720[i];
+        float cx720 = ds.x / k - 0.55f * r720 + xoff;
+        ImVec2 c(cx720 * k, cy * k);
+
+        DrawResultHex(u, c, r720 * k, StandingModule(sn, rows[i]), st.me,
+                      st.connected, st.final, i == 0);
+
+        /* rank label, NEW RECORD! style; right edge at cx - r + 4 */
+        char lab[12];
+        snprintf(lab, sizeof(lab), "#%d", st.rank > 0 ? st.rank : rows[i] + 1);
+        float lsz = 38.0f * k;
+        ImVec2 lszV = u.font->CalcTextSizeA(lsz, FLT_MAX, 0.0f, lab);
+        GlowText(u.dl, u.font, lsz,
+                 ImVec2((cx720 - r720 + 4.0f) * k - lszV.x,
+                        (cy - 0.866f * r720 - 2.0f) * k),
+                 lab, alpha, pulse, k);
+
+        /* name under the hex: white + dark outline; local reads YOU */
+        char nm[44];
+        const char* raw = st.me ? "YOU" : st.name;
+        bool ascii = true;
+        int j = 0;
+        for (; raw[j] && j < (int)sizeof(nm) - 1; j++) {
+            unsigned char ch = (unsigned char)raw[j];
+            if (ch > 126 || ch < 32) { ascii = false; break; }
+            nm[j] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 32) : (char)ch;
+        }
+        nm[j] = 0;
+        if (!ascii) snprintf(nm, sizeof(nm), "%s", raw);   /* keep it, base font */
+        ImFont* nf = ascii ? u.font : ImGui::GetFont();
+        float nsz = 15.0f * k;
+        /* max width 110 (720p), Fit-style trim */
+        {
+            float maxW = 110.0f * k;
+            int len = (int)strlen(nm);
+            while (nf->CalcTextSizeA(nsz, FLT_MAX, 0.0f, nm).x > maxW && len > 0) {
+                do { len--; } while (len > 0 && ((unsigned char)nm[len] & 0xC0) == 0x80);
+                snprintf(nm + len, sizeof(nm) - len, "..");
+            }
+        }
+        ImVec2 ntx = nf->CalcTextSizeA(nsz, FLT_MAX, 0.0f, nm);
+        float ncx = (cx720 - 0.12f * r720) * k;
+        float nx = ncx - ntx.x * 0.5f;
+        if (nx + ntx.x > ds.x - 6.0f * k) nx = ds.x - 6.0f * k - ntx.x;
+        ImVec2 npos(nx, (cy + 0.866f * r720 + 2.0f) * k);
+        const ImU32 nOut = IM_COL32(30, 16, 48, (int)(230 * alpha));
+        for (int d = 0; d < 8; d++) {
+            float a = d * 6.28318f / 8.0f;
+            u.dl->AddText(nf, nsz,
+                ImVec2(npos.x + cosf(a) * 1.2f * k, npos.y + sinf(a) * 1.2f * k), nOut, nm);
+        }
+        u.dl->AddText(nf, nsz, npos, IM_COL32(255, 255, 255, (int)(255 * alpha)), nm);
+    }
+    EndWin();
 }
 
 static void IconPeople(const Ui& u, ImVec2 c, float sz) {
@@ -436,11 +672,12 @@ static float Header(const Ui& u, ImVec2 a, ImVec2 b, const char* title, bool wit
     return a.y + hh;
 }
 
-static void Footer(const Ui& u, ImVec2 a, ImVec2 b, const char* hint, float reserveR = 0.0f) {
+static void Footer(const Ui& u, ImVec2 a, ImVec2 b, const char* hint, float reserveR = 0.0f,
+                   ImU32 col = kMuted) {
     float fy = b.y - 44.0f * u.k;
     u.dl->AddLine(ImVec2(a.x + 24 * u.k, fy), ImVec2(b.x - 24 * u.k, fy), kLine, 1.5f);
     if (hint && *hint)
-        u.TextLeft(ImVec2(a.x + 30 * u.k, fy), ImVec2(b.x - 30 * u.k - reserveR, b.y), hint, 1.3f, kMuted);
+        u.TextLeft(ImVec2(a.x + 30 * u.k, fy), ImVec2(b.x - 30 * u.k - reserveR, b.y), hint, 1.3f, col);
 }
 
 /* ---- button guide glyphs (Switch style) ---- */
@@ -652,7 +889,8 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     char title[32];
     snprintf(title, sizeof(title), "ROOM %s", s.code);
     float top = Header(u, a, b, title, true);
-    bool owner = strcmp(s.ownerCid, s.myCid) == 0;
+    /* offline: owner actions can't reach the server, so hide them */
+    bool owner = strcmp(s.ownerCid, s.myCid) == 0 && s.connected;
 
     /* header buttons: [Room Config] [Exit Room]  (X) */
     float bh = 48 * u.k, bw = 190 * u.k, gap = 14 * u.k;
@@ -837,7 +1075,13 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     const char* leadName = "";
     for (int i = 0; i < s.memberCount; i++)
         if (strcmp(s.members[i].cid, s.leaderCid) == 0) leadName = s.members[i].name;
-    if (s.voteKind[0])
+    ImU32 footCol = kMuted;
+    if (!s.connected) {
+        int left = s.offlineMs >= 0 ? 30 - s.offlineMs / 1000 : 30;
+        snprintf(foot, sizeof(foot), "Connection lost - reconnecting (leaving the room in %ds)",
+                 left < 0 ? 0 : left);
+        footCol = kYellow;
+    } else if (s.voteKind[0])
         snprintf(foot, sizeof(foot), "%s vote: %d/%d agreed (%ds left)",
                  strcmp(s.voteKind, "pause") == 0 ? "Pause" : "Resume",
                  s.voteAgreed, s.voteNeed, s.voteEndsIn);
@@ -870,7 +1114,7 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     float gw = GuideW(u, g, 2);
     DrawGuide(u, ImVec2(b.x - 30 * u.k - gw - reserve, a.y),
               ImVec2(b.x - reserve, b.y), g, 2);
-    Footer(u, a, b, foot, reserve + gw + 10 * u.k);
+    Footer(u, a, b, foot, reserve + gw + 10 * u.k, footCol);
     if (assignMode)
         u.TextLeft(ImVec2(lx, cy1 - 30 * u.k), ImVec2(b.x - 30 * u.k, cy1), "Tap a member to make them the song picker", 1.15f, kMuted);
 }
@@ -1059,7 +1303,8 @@ void DrawPanel() {
     bool inLobby = InLobby();
     if (inLobby && (s_screen == SC_HOME || s_screen == SC_JOIN_ROOM)) GoHomeOrRoom();
     if (!inLobby && (s_screen == SC_ROOM || s_screen == SC_ROOM_CONFIG)) GoHomeOrRoom();
-    if (s_screen == SC_ROOM_CONFIG && strcmp(s.ownerCid, s.myCid) != 0) s_screen = SC_ROOM;
+    if (s_screen == SC_ROOM_CONFIG && (strcmp(s.ownerCid, s.myCid) != 0 || !s.connected))
+        s_screen = SC_ROOM;
     /* keyboard dismissed (CLOSE / tap outside) while editing -> cancel */
     if ((s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM) && s_kbArmed &&
         !VirtualKeyboard::IsOpen())

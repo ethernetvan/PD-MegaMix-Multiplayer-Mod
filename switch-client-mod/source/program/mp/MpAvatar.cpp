@@ -119,6 +119,11 @@ int Get(int32_t module, void** tex, float uv0[2], float uv1[2]) {
     return 1;
 }
 
+void Prefetch(int32_t module) {
+    void* t = nullptr; float a[2], b[2];
+    Get(module, &t, a, b);
+}
+
 /* ============================ game thread ============================ */
 
 struct Sv { const char* a; const char* b; };

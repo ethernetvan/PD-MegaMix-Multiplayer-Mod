@@ -29,6 +29,7 @@ void DrawBanners();
 void DrawLeaderboard();
 void DrawWaiting();
 void DrawStandings();
+void DrawResultsAvatars();
 void DrawEmergency();
 
 /* Commands from panel buttons / dbg_cmd. */
@@ -44,6 +45,8 @@ struct MemberInfo { char cid[20]; char name[40]; bool connected, is_leader,
 struct Snapshot {
     int      phase;           /* LPhase */
     bool     connected;
+    int32_t  offlineMs;       /* ms since the session dropped, -1 online */
+    bool     inSongSelect;    /* pv_sel is active */
     char     code[8];
     char     myCid[20];
     char     leaderCid[20];
@@ -58,9 +61,11 @@ struct Snapshot {
     struct { char name[40]; int32_t score; float pct; bool connected, me; } board[8];
     int      boardCount;
     bool     standingsComplete;
-    struct { char name[40]; int32_t score; float pct; int32_t max_combo;
-             int32_t life; int rank; bool final; bool me; } standing[8];
+    struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t max_combo;
+             int32_t life; int rank; bool final; bool me; bool connected;
+             int32_t module; } standing[8];
     int      standingCount;
+    int32_t  resultsAgeMs;  /* ms on the results screen, -1 when not shown */
     /* banners */
     struct { char text[128]; float ttl; } banners[4];
     int      bannerCount;

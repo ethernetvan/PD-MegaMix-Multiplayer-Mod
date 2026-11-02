@@ -49,6 +49,9 @@ static MRec s_members[8];
 static int  s_memberCount = 0;
 
 static bool  s_connected = false;
+static int64_t s_offlineSince = 0;      /* ms the session dropped, 0 = online */
+static bool  s_leaveOnReconnect = false;  /* left locally while offline */
+static int64_t s_ignoreRoomUntil = 0;   /* drop the stale room resync */
 static bool  s_amLeader  = false;
 static bool  s_amPlayer  = false;
 static bool  s_committed = false;
@@ -79,6 +82,7 @@ static int64_t s_resumeLastMs = 0;
 static bool  s_standingsComplete = false;
 static bool  s_backInSelSent = false;
 static int64_t s_resultInitAt = 0;
+static int64_t s_resultsShownAt = 0;   /* ms when the results screen appeared */
 static bool  s_retryWarned = false;
 static int   s_retStage = 0;
 static int64_t s_retStageAt = 0;
@@ -105,8 +109,9 @@ struct BoardRow { char cid[24]; char name[40]; int32_t score; float pct;
                   bool connected; };
 static BoardRow s_board[8];
 static int  s_boardCount = 0;
-struct StandingRow { char name[40]; int32_t score; float pct;
-                     int32_t max_combo; int32_t life; int rank; bool final; };
+struct StandingRow { char cid[20]; char name[40]; int32_t score; float pct;
+                     int32_t max_combo; int32_t life; int rank; bool final;
+                     bool connected; };
 static StandingRow s_standings[8];
 static int  s_standingCount = 0;
 
@@ -228,6 +233,8 @@ static void ResetLobbyState() {
     s_resumePending = false;
     s_standingsComplete = false; s_backInSelSent = false;
     s_resultInitAt = 0; s_retryWarned = false;
+    s_resultsShownAt = 0;
+    s_launchHandledRound = -1;   /* round numbers restart in every room */
     s_notReady[0] = 0;
     s_ready = true; s_readyReason[0] = 0;
     s_statusLine[0] = 0;
@@ -329,6 +336,11 @@ static void HandleStandings(const char* line, jsmntok_t* tok, int ntok) {
         int end = i + mpjson::Skip(tok, i, ntok), j;
         StandingRow& r = s_standings[s_standingCount];
         memset(&r, 0, sizeof(r));
+        r.connected = true;
+        if ((j = mpjson::Find(line, tok + i, end - i, "cid")) >= 0)
+            mpjson::Copy(line, tok[i + j], r.cid, sizeof(r.cid));
+        if ((j = mpjson::Find(line, tok + i, end - i, "connected")) >= 0)
+            r.connected = line[tok[i + j].start] == 't';
         if ((j = mpjson::Find(line, tok + i, end - i, "name")) >= 0)
             mpjson::Copy(line, tok[i + j], r.name, sizeof(r.name));
         int v;
@@ -383,11 +395,30 @@ static void ProcessLine(const std::string& l) {
 
     if (strcmp(t, "welcome") == 0) {
         s_connected = true;
+        s_offlineSince = 0;
+        if (s_leaveOnReconnect) {
+            /* we left the room while offline: tell the server, and ignore
+             * the room resync it sends with the welcome */
+            s_leaveOnReconnect = false;
+            s_ignoreRoomUntil = NowMs() + 4000;
+            SendLine("{\"t\":\"lobby_leave\"}");
+        }
         if (s_code[0]) { s_expectLobby = true; s_expectLobbyAt = NowMs() + 3000; }
         if (s_inLobbyDirty()) s_readyDirty = true;
         ReportAutoPlay(AutoPlay::g_enabled);
         avatar::OnWelcome();
         return;
+    }
+    if (s_ignoreRoomUntil) {
+        if (strcmp(t, "lobby_left") == 0 || NowMs() >= s_ignoreRoomUntil) {
+            s_ignoreRoomUntil = 0;
+            if (strcmp(t, "lobby_left") == 0) return;
+        } else if (strcmp(t, "lobby_error") == 0) {
+            s_ignoreRoomUntil = 0;     /* server had already dropped us */
+            return;
+        } else {
+            return;                    /* stale room traffic */
+        }
     }
     if (strcmp(t, "lobby") == 0) {
         HandleLobby(line, tok, ntok);
@@ -465,6 +496,7 @@ static void ProcessLine(const std::string& l) {
         if (s_launchHandledRound == rd) return;
         s_launchHandledRound = rd;
         s_round = rd;
+        s_standingCount = 0;   /* don't show last round's standings */
         int32_t pv = 0; i = mpjson::Find(line, tok, ntok, "pv");
         if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) pv = v;
         s_selPv = pv;
@@ -616,8 +648,10 @@ static void ProcessLine(const std::string& l) {
         if (i >= 0) mpjson::Copy(line, tok[i], k, sizeof(k));
         i = mpjson::Find(line, tok, ntok, "name");
         if (i >= 0) mpjson::Copy(line, tok[i], nm, sizeof(nm));
-        if (strcmp(k, "combo") == 0) PushBanner("%s hit a big combo!", nm);
-        else if (strcmp(k, "low_life") == 0) PushBanner("%s is in danger!", nm);
+        /* the results screen has its own standings; don't cover its title */
+        bool onResults = s_resultsShownAt > 0;
+        if (strcmp(k, "combo") == 0) { if (!onResults) PushBanner("%s hit a big combo!", nm); }
+        else if (strcmp(k, "low_life") == 0) { if (!onResults) PushBanner("%s is in danger!", nm); }
         else if (strcmp(k, "leader") == 0) PushBanner("%s is the leader", nm);
         else if (strcmp(k, "joined") == 0) PushBanner("%s joined", nm);
         else if (strcmp(k, "left") == 0) PushBanner("%s left", nm);
@@ -653,6 +687,18 @@ static void ApplyBlocks() {
         SetBlocks(0, false);
 }
 
+/* leave the room on this side only (offline): the server is told on the
+ * next welcome, and its room resync is ignored until it confirms */
+static void LocalLeave(const char* why) {
+    WriteLog("[MP-L] local leave: %s\n", why);
+    ResetLobbyState();
+    ClearAllInput();
+    SetPhase(L_NONE, "");
+    ApplyBlocks();
+    s_leaveOnReconnect = true;
+    PushBanner("%s", why);
+}
+
 /* ============================ per-frame ============================ */
 
 void Pump() {
@@ -669,6 +715,24 @@ void Pump() {
 
     uint64_t now = NowMs();
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
+
+    /* connection watchdog: the session dropped (server gone, network
+     * changed, Wi-Fi lost) -> show it; 30 s later leave the room locally */
+    {   /* edge on the net thread's state: the welcome can be handled here
+         * before the net thread marks the session Connected */
+        static bool s_netUp = false;
+        bool up = mp::GetState() == MpState::Connected;
+        if (s_netUp && !up && s_connected) {
+            s_connected = false;
+            s_offlineSince = (int64_t)now;
+            WriteLog("[MP-L] session lost (in room: %d)\n", (int)(s_code[0] != 0));
+            if (s_code[0]) PushBanner("Connection lost - reconnecting...");
+        }
+        s_netUp = up;
+    }
+    if (!s_connected && s_code[0] && s_offlineSince > 0 &&
+        (int64_t)now - s_offlineSince >= 30000)
+        LocalLeave("Disconnected for 30 seconds - left the room");
 
     for (int i = 0; i < s_bannerCount; i++)
         s_banners[i].ttl -= 1.0f / 60.0f;
@@ -783,6 +847,20 @@ void OnPvSelDest() {
 
 void OnPvSelFrame(const void* sel) {
     if (sel == nullptr) return;
+    /* portrait prefetch: every 30 calls, warm the cache for the next
+     * results screen (loads only happen on song-select frames) */
+    {
+        static int s_pf = 0;
+        int32_t mods[9]; int nm = 0;
+        {
+            std::lock_guard<std::recursive_mutex> g(s_mtx);
+            if (s_code[0] && (s_pf++ % 30) == 0)
+                for (int i = 0; i < s_memberCount && nm < 8; i++)
+                    mods[nm++] = s_members[i].module;
+        }
+        for (int i = 0; i < nm; i++) avatar::Prefetch(mods[i]);
+        if (nm) avatar::Prefetch(avatar::LocalModule());
+    }
     int32_t state  = *reinterpret_cast<const int32_t*>(
                         (const char*)sel + 0x68);
     int32_t selPv  = *reinterpret_cast<const int32_t*>(
@@ -898,10 +976,10 @@ void OnPvSelFrame(const void* sel) {
                     s_leaderPv, has ? "true" : "false",
                     ok ? "true" : "false", fbpv, esc);
                 SendLine(m);
+                if (!ok)    /* once per new failure, not on every retry */
+                    PushBanner("Not available at your difficulty - "
+                               "change difficulty with < >");
             }
-            if (!ok)
-                PushBanner("Not available at your difficulty - "
-                           "change difficulty with < >");
         }
     }
 
@@ -1049,6 +1127,7 @@ void OnPvGameFrame(PVGameData* pv) {
 
 void OnStageResult(bool init) {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
+    if (init && s_code[0]) s_resultsShownAt = NowMs();
     if (init && s_phase == L_PLAYING) {
         PVGameData* pv = GetPVGameData();
         if (pv) {
@@ -1067,8 +1146,9 @@ void OnStageResult(bool init) {
         s_retStage = 0; s_retStageAt = 0;
         input::ResetAll();     /* drop queued taps/spam: an A here = RETRY */
         SetBlocks(MASK_ALL_NO_MINUS, false);
-    } else if (!init && s_phase == L_RESULTS) {
-        s_resultInitAt = 0;
+    } else if (!init) {
+        if (s_phase == L_RESULTS) s_resultInitAt = 0;
+        s_resultsShownAt = 0;
     }
 }
 
@@ -1086,6 +1166,9 @@ void GetSnapshot(Snapshot* out) {
     memset(out, 0, sizeof(*out));
     out->phase = (int)s_phase;
     out->connected = s_connected;
+    out->offlineMs = (!s_connected && s_offlineSince > 0)
+        ? (int32_t)((int64_t)NowMs() - s_offlineSince) : -1;
+    out->inSongSelect = s_selActive;
     strncpy(out->code, s_code, sizeof(out->code) - 1);
     strncpy(out->myCid, s_myCid, sizeof(out->myCid) - 1);
     strncpy(out->leaderCid, s_leaderCid, sizeof(out->leaderCid) - 1);
@@ -1133,11 +1216,20 @@ void GetSnapshot(Snapshot* out) {
     out->standingCount = s_standingCount;
     for (int i = 0; i < s_standingCount; i++) {
         auto& r = s_standings[i]; auto& d = out->standing[i];
+        strncpy(d.cid, r.cid, sizeof(d.cid) - 1);
         strncpy(d.name, r.name, sizeof(d.name) - 1);
         d.score = r.score; d.pct = r.pct; d.max_combo = r.max_combo;
         d.life = r.life; d.rank = r.rank; d.final = r.final;
-        d.me = strstr(r.name, s_myName) != nullptr && s_myName[0];
+        d.connected = r.connected;
+        d.me = r.cid[0] ? (strcmp(r.cid, s_myCid) == 0)
+                        : (strstr(r.name, s_myName) != nullptr && s_myName[0]);
+        d.module = -1;
+        for (int q = 0; q < s_memberCount; q++)
+            if (r.cid[0] && strcmp(s_members[q].cid, r.cid) == 0) {
+                d.module = s_members[q].module; break; }
     }
+    out->resultsAgeMs = s_resultsShownAt > 0
+        ? (int32_t)(NowMs() - s_resultsShownAt) : -1;
     out->round = s_round;
     strncpy(out->ownerCid, s_ownerCid, sizeof(out->ownerCid) - 1);
     strncpy(out->pickMode, s_pickMode, sizeof(out->pickMode) - 1);
@@ -1167,7 +1259,11 @@ void CmdLobbyJoin(const char* code) {
     snprintf(m, sizeof(m), "{\"t\":\"lobby_join\",\"code\":\"%s\"}", up);
     SendLine(m);
 }
-void CmdLobbyLeave() { SendLine("{\"t\":\"lobby_leave\"}"); }
+void CmdLobbyLeave() {
+    std::lock_guard<std::recursive_mutex> lk(s_mtx);
+    if (!s_connected && s_code[0]) { LocalLeave("Left the room"); return; }
+    SendLine("{\"t\":\"lobby_leave\"}");
+}
 bool OverlayOpen() { return s_overlayOpen; }
 void ToggleOverlay() { s_overlayOpen = !s_overlayOpen; }
 void SetOverlayOpen(bool open) {

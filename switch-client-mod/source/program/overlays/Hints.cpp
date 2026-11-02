@@ -319,6 +319,9 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
     if (!mpOn) {
         snprintf(label, sizeof(label), "OFF");
         stateColor = IM_COL32(150, 158, 166, 255);
+    } else if (inLobby && !sn.connected) {
+        snprintf(label, sizeof(label), "RECONNECTING");
+        stateColor = IM_COL32(255, 170, 70, 255);
     } else if (inLobby) {
         snprintf(label, sizeof(label), "ROOM: %s", sn.code);
         stateColor = IM_COL32(90, 205, 130, 255);
@@ -351,7 +354,11 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
         float maxW = 300.0f * s, fsz = baseFontSz * 1.0f;
         char line[128];
         int len = (int)strlen(who);
-        for (;;) {
+        if (!sn.connected) {
+            int left = sn.offlineMs >= 0 ? 30 - sn.offlineMs / 1000 : 30;
+            snprintf(line, sizeof(line), "Connection lost - leaving room in %ds",
+                     left < 0 ? 0 : left);
+        } else for (;;) {
             snprintf(line, sizeof(line), "%.*s%s picking a song  (%d)", len, who,
                      len < (int)strlen(who) ? ".." : "", sn.memberCount);
             if (len == 0 || font->CalcTextSizeA(fsz, FLT_MAX, 0, line).x <= maxW) break;

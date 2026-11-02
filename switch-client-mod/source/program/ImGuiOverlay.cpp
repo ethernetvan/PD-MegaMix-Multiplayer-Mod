@@ -493,12 +493,19 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
     Hints::Draw();
 
     {
-        int ph = 0; { mp::lobby::Snapshot sn; mp::lobby::GetSnapshot(&sn); ph = sn.phase; }
+        mp::lobby::Snapshot sn;
+        mp::lobby::GetSnapshot(&sn);
+        int ph = sn.phase;
         if (mp::lobby::PanelWanted()) mp::lobby::DrawPanel();
-        if (ph == 3 /*LOADING*/ || ph == 4 /*PLAYING*/ || ph == 5 /*SPEC*/)
+        /* in-round boxes never cover song select (spectators wait there) */
+        if ((ph == 3 /*LOADING*/ || ph == 4 /*PLAYING*/ || ph == 5 /*SPEC*/) &&
+            !sn.inSongSelect)
             mp::lobby::DrawLeaderboard();
         if (ph == 3) mp::lobby::DrawWaiting();
-        if (ph == 6 || ph == 5) mp::lobby::DrawStandings();
+        if (sn.resultsAgeMs >= 0 && sn.standingCount > 0)
+            mp::lobby::DrawResultsAvatars();
+        else if ((ph == 6 || ph == 5) && !sn.inSongSelect)
+            mp::lobby::DrawStandings();
         mp::lobby::DrawBanners();
         mp::lobby::DrawEmergency();
     }

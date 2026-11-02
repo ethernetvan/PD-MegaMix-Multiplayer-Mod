@@ -75,11 +75,31 @@ namespace FontLoader {
                 cfg.SizePixels,
                 &cfg
             );
+
+            /* big display font for rank labels: ASCII only, crisper glyphs */
+            static const ImWchar s_bigRanges[] = { 0x0020, 0x007E, 0 };
+            ImFontConfig big {};
+            big.FontDataOwnedByAtlas = false;
+            big.SizePixels           = std::round(36.0f * scale);
+            big.OversampleH          = 1;
+            big.OversampleV          = 1;
+            big.GlyphRanges          = s_bigRanges;
+            io.Fonts->AddFontFromMemoryTTF(
+                const_cast<void*>(fontData),
+                static_cast<int>(fontSize),
+                big.SizePixels,
+                &big
+            );
         } else {
             io.Fonts->AddFontDefault();
         }
 
         io.Fonts->Build();
+    }
+
+    ImFont* Big() {
+        ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+        return (atlas && atlas->Fonts.Size > 1) ? atlas->Fonts[1] : nullptr;
     }
 
 } // namespace FontLoader
