@@ -471,6 +471,7 @@ static void SendPvList() {
 }
 
 void OnFrame() {
+    menu::Frame();
     MpCmd c;
     while (PopCmd(&c)) {
         switch (c.type) {

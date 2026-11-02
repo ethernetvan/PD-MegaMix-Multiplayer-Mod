@@ -5,15 +5,19 @@
 namespace mp::menu {
 
 /* holds: how long a page ignores edges after it (or its last accepted
- * nav) appeared; nav: gap between accepted Up/Down edges. All ms. */
-static uint64_t RES_INIT_HOLD       = 2000;
-static uint64_t RES_SCORE_A_HOLD    = 1200;
-static uint64_t RES_VP_HOLD         = 2000;
-static uint64_t RES_MENU_HOLD       = 1000;
-static uint64_t RES_NAV_HOLD        = 350;
-static const uint64_t PAUSE_OPEN_HOLD     = 350;
-static const uint64_t PAUSE_NAV_HOLD      = 150;
-static const uint64_t PAUSE_QUIT_TIMEOUT  = 3000;
+ * nav) appeared; nav: gap between accepted Up/Down edges. FRAME counts
+ * (60-fps equivalents of the old ms values): wall-clock holds broke on
+ * 26-46 FPS emulators because the results-page input locks are
+ * frame-based animations. s_frame ticks once per presented frame
+ * (mp::OnFrame -> menu::Frame). */
+static uint64_t RES_INIT_HOLD       = 120;
+static uint64_t RES_SCORE_A_HOLD    = 72;
+static uint64_t RES_VP_HOLD         = 120;
+static uint64_t RES_MENU_HOLD       = 60;
+static uint64_t RES_NAV_HOLD        = 21;
+static const uint64_t PAUSE_OPEN_HOLD     = 21;
+static const uint64_t PAUSE_NAV_HOLD      = 9;
+static const uint64_t PAUSE_QUIT_TIMEOUT  = 3000;   /* wall-clock ms */
 
 /* a source is "live" for the held-OR if Apply saw it this recently */
 static const uint64_t SRC_WINDOW = 250;
@@ -28,7 +32,9 @@ static std::mutex  s_mtx;
 static Page        s_page = P_NONE;
 static int         s_cursor = 0;
 static bool        s_guard = false;
-static uint64_t    s_readyAt = 0;
+static uint64_t    s_frame = 0;
+static uint64_t    s_readyFrame = 0;
+static uint64_t    s_pageFrame = 0;
 static uint64_t    s_pageSince = 0;
 static uint32_t    s_events = 0;
 static uint64_t    s_suppress = 0;   /* buttons stripped until released */
@@ -36,10 +42,16 @@ static uint64_t    s_srcHeld[27] = {};  /* per (style, controller slot) */
 static uint64_t    s_srcMs[27] = {};
 static uint64_t    s_prevCombined = 0;
 
-static void SetPage(Page p, uint64_t now, uint64_t hold) {
+void Frame() {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    s_frame++;
+}
+
+static void SetPage(Page p, uint64_t now, uint64_t holdFrames) {
     s_page = p;
     s_pageSince = now;
-    s_readyAt = now + hold;
+    s_pageFrame = s_frame;
+    s_readyFrame = s_frame + holdFrames;
 }
 
 void BeginResults(bool guard, uint64_t now) {
@@ -52,11 +64,13 @@ void BeginResults(bool guard, uint64_t now) {
 void SetResHolds(uint64_t init, uint64_t scoreA, uint64_t vp,
                  uint64_t menu, uint64_t nav) {
     std::lock_guard<std::mutex> lk(s_mtx);
-    if ((int64_t)init   >= 0) RES_INIT_HOLD    = init;
-    if ((int64_t)scoreA >= 0) RES_SCORE_A_HOLD = scoreA;
-    if ((int64_t)vp     >= 0) RES_VP_HOLD      = vp;
-    if ((int64_t)menu   >= 0) RES_MENU_HOLD    = menu;
-    if ((int64_t)nav    >= 0) RES_NAV_HOLD     = nav;
+    /* admin `menu_holds` still passes ms; convert to 60-fps frames */
+    auto ms2fr = [](uint64_t ms) { return (ms * 60 + 500) / 1000; };
+    if ((int64_t)init   >= 0) RES_INIT_HOLD    = ms2fr(init);
+    if ((int64_t)scoreA >= 0) RES_SCORE_A_HOLD = ms2fr(scoreA);
+    if ((int64_t)vp     >= 0) RES_VP_HOLD      = ms2fr(vp);
+    if ((int64_t)menu   >= 0) RES_MENU_HOLD    = ms2fr(menu);
+    if ((int64_t)nav    >= 0) RES_NAV_HOLD     = ms2fr(nav);
 }
 
 void ResultsVpShown(uint64_t now) {
@@ -113,9 +127,10 @@ Status Get(uint64_t now) {
     Status s{};
     s.page = (int)s_page;
     s.cursor = s_cursor;
-    s.ready = s_page != P_NONE && now >= s_readyAt;
+    s.ready = s_page != P_NONE && s_frame >= s_readyFrame;
     s.guard = s_guard;
     s.pageSince = s_pageSince;
+    s.pageFrames = s_frame - s_pageFrame;
     return s;
 }
 
@@ -147,7 +162,7 @@ void Filter(int slot, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
 
     for (uint64_t e : {A, B, Up, Down}) {
         if (!(edges & e)) continue;
-        if (now < s_readyAt) {           /* too early: keep both in agreement */
+        if (s_frame < s_readyFrame) {    /* too early: keep both in agreement */
             s_suppress |= e;
             *buttons &= ~e;
             continue;
@@ -155,7 +170,7 @@ void Filter(int slot, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
         bool pass = false;
         switch (s_page) {
         case P_RES_SCORE:
-            if (e == A) { pass = true; s_readyAt = now + RES_SCORE_A_HOLD; }
+            if (e == A) { pass = true; s_readyFrame = s_frame + RES_SCORE_A_HOLD; }
             break;
         case P_RES_VP:
             if (e == A) { pass = true; SetPage(P_RES_MENU, now, RES_MENU_HOLD); s_cursor = 0; }
@@ -164,7 +179,7 @@ void Filter(int slot, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
             if (e == Up || e == Down) {
                 pass = true;
                 s_cursor ^= 1;
-                s_readyAt = now + RES_NAV_HOLD;
+                s_readyFrame = s_frame + RES_NAV_HOLD;
             } else if (e == A) {
                 if (s_cursor == 0 && s_guard) {
                     s_events |= EV_RETRY_BLOCKED;
@@ -178,11 +193,11 @@ void Filter(int slot, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
             if (e == Up) {
                 pass = true;
                 s_cursor = (s_cursor + 4) % 5;
-                s_readyAt = now + PAUSE_NAV_HOLD;
+                s_readyFrame = s_frame + PAUSE_NAV_HOLD;
             } else if (e == Down) {
                 pass = true;
                 s_cursor = (s_cursor + 1) % 5;
-                s_readyAt = now + PAUSE_NAV_HOLD;
+                s_readyFrame = s_frame + PAUSE_NAV_HOLD;
             } else if (e == A) {
                 if (s_cursor == 0)      s_events |= EV_RESUME;
                 else if (s_cursor == 1) s_events |= EV_RETRY_BLOCKED;

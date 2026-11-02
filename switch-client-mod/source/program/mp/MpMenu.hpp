@@ -28,6 +28,7 @@ enum Ev : uint32_t {
     EV_QUIT          = 8,   /* user confirmed Return to Song List from pause */
 };
 
+void Frame();                                 /* once per presented frame */
 void BeginResults(bool guard, uint64_t now);  /* page SCORE */
 void SetResHolds(uint64_t init, uint64_t scoreA, uint64_t vp,
                  uint64_t menu, uint64_t nav);
@@ -48,9 +49,10 @@ uint32_t ConsumeEvents();
 struct Status {
     int      page;
     int      cursor;
-    bool     ready;       /* now >= readyAt: next edge is modelled */
+    bool     ready;       /* s_frame >= readyFrame: next edge is modelled */
     bool     guard;
     uint64_t pageSince;   /* ms when the current page was entered */
+    uint64_t pageFrames;  /* frames since the current page was entered */
 };
 Status Get(uint64_t now);
 

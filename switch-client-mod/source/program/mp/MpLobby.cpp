@@ -956,7 +956,7 @@ void Pump() {
      * resync the model to MENU on Return so input isn't swallowed forever */
     if (s_resultsShownAt > 0) {
         menu::Status ms = menu::Get(now);
-        if (ms.page == mp::menu::P_RES_EXIT && now - ms.pageSince > 4000) {
+        if (ms.page == mp::menu::P_RES_EXIT && ms.pageFrames > 240) {
             DbgMenu(ms.page, ms.cursor, "exit_timeout");
             menu::ExitFallback(now);
         }
