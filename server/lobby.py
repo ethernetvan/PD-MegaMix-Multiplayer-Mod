@@ -24,7 +24,7 @@ S->C: welcome/error/pong (existing);
       sel_status {pv, missing:[{cid,name,fb_name|null}], cant:[{cid,name}]};
       launch {round, pv, name, players:[cid], spectators:[cid]};
       start {round, dropped:[cid]};
-      board {round, e:[{cid,name,score,pct,connected}]};
+      board {round, e:[{cid,name,score,pct,life,rank,connected}]};
       event {kind, cid, name, value};
       standings {round, complete:bool, e:[{cid,name,score,pct,max_combo,life,rank,final:bool}]};
       round_end {round, next_leader}.
@@ -44,6 +44,19 @@ BOARD_MIN_INTERVAL_S = 0.1
 ROUND_END_ALL_BACK_S = 90.0
 PAUSE_VOTE_S = 15.0
 PLAYING_ALL_DC_ABORT_S = 60.0
+
+
+def _competition_ranks(rows):
+    """1-2-2-4 competition ranking on an already-sorted row list;
+    rows tie on (round(pct, 2), score) and share the better rank."""
+    rank = 0
+    prev_key = None
+    for i, row in enumerate(rows):
+        key = (round(row["pct"], 2), row["score"])
+        if key != prev_key:
+            rank = i + 1
+            prev_key = key
+        row["rank"] = rank
 
 
 class Member:
@@ -762,8 +775,10 @@ class LobbyManager:
             e.append({"cid": m.cid, "name": m.name,
                       "score": m.state.get("score", 0),
                       "pct": m.state.get("pct", 0.0),
+                      "life": m.state.get("life", 0),
                       "connected": m.connected})
         e.sort(key=lambda x: (-x["pct"], -x["score"]))
+        _competition_ranks(e)
         self._broadcast(lobby, {"t": "board", "round": r.id, "e": e})
 
     # ------------------------------------------------- RESULTS
@@ -809,14 +824,7 @@ class LobbyManager:
                          "final": f is not None or not m.connected or stale,
                          "connected": m.connected})
         rows.sort(key=lambda x: (-x["pct"], -x["score"]))
-        rank = 0
-        prev_key = None
-        for i, row in enumerate(rows):
-            key = (round(row["pct"], 2), row["score"])
-            if key != prev_key:
-                rank = i + 1
-                prev_key = key
-            row["rank"] = rank
+        _competition_ranks(rows)
         complete = all(row["final"] for row in rows) if rows else True
         return rows, complete
 

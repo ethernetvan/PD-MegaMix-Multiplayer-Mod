@@ -653,6 +653,28 @@ class T5(unittest.TestCase):
                                "pct": pct, "max_combo": 0,
                                "jc": [0, 0, 0, 0, 0], "life": 0}, 104.0)
 
+    def test_board_competition_ranks_and_life(self):
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        rid = self._playing(lb, players="abc")
+        # a and b tie on pct+score -> share rank 1; c is rank 3
+        self.lm.on_message("a", {"t": "state", "round": rid, "score": 100,
+                                 "combo": 0, "pct": 50.0, "life": 200}, 105.0)
+        self.lm.on_message("b", {"t": "state", "round": rid, "score": 100,
+                                 "combo": 0, "pct": 50.0, "life": 90}, 105.1)
+        self.lm.on_message("c", {"t": "state", "round": rid, "score": 80,
+                                 "combo": 0, "pct": 40.0, "life": 15}, 105.2)
+        self.lm.tick(106.0)
+        b = [m for _, m in self.msgs(t="board")][-1]
+        ranks = {row["cid"]: row["rank"] for row in b["e"]}
+        lives = {row["cid"]: row["life"] for row in b["e"]}
+        self.assertEqual(ranks["a"], 1)
+        self.assertEqual(ranks["b"], 1)
+        self.assertEqual(ranks["c"], 3)
+        self.assertEqual(lives["a"], 200)
+        self.assertEqual(lives["b"], 90)
+        self.assertEqual(lives["c"], 15)
+
     # ---- 7/8: scene -> spectator at launch
     def test_scene_spectator(self):
         for c in "abcd": self.mk(c)

@@ -1625,6 +1625,35 @@ tr.off td {
     inset 0 0 26px rgba(255, 201, 51, 0.07);
 }
 
+/* tie group: shared rank + TIE tag, member cards side by side */
+.tie-group {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(101, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.04);
+}
+.tie-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.tie-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+@media (min-width: 720px) {
+  .tie-cards {
+    grid-template-columns: 1fr 1fr;
+    gap: 0 12px;
+  }
+}
+.tie-cards .res-card {
+  margin: 6px 0;
+}
+
 /* one-shot sheen sweep across the winner card after it lands */
 .res-card.win::after {
   content: "";

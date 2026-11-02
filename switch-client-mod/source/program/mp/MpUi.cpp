@@ -512,80 +512,120 @@ void DrawResultsAvatars() {
     u.t = (float)ImGui::GetTime();
     const float pulse = 0.8f + 0.2f * sinf(u.t * 6.28318f * 0.8f);
 
-    /* rows: top 3 standings + an extra local row when rank > 3 */
-    int rows[4], nRows = 0;
-    for (int i = 0; i < sn.standingCount && nRows < 3; i++)
-        rows[nRows++] = i;
-    bool meInTop = false;
-    for (int i = 0; i < nRows; i++) if (sn.standing[rows[i]].me) meInTop = true;
-    int extra = -1;
-    if (!meInTop)
+    /* rows are rank groups: consecutive standings sharing one rank.
+     * first 3 groups, plus the local player's group if not among them */
+    int gFirst[4], gCount[4], nRows = 0;
+    for (int i = 0; i < sn.standingCount && nRows < 3; i++) {
+        if (i > 0 && sn.standing[i].rank == sn.standing[i - 1].rank)
+            continue;
+        gFirst[nRows] = i;
+        gCount[nRows] = 1;
+        while (i + gCount[nRows] < sn.standingCount &&
+               sn.standing[i + gCount[nRows]].rank == sn.standing[i].rank)
+            gCount[nRows]++;
+        nRows++;
+    }
+    int meRank = 0;
+    for (int i = 0; i < sn.standingCount; i++)
+        if (sn.standing[i].me) { meRank = sn.standing[i].rank; break; }
+    bool meShown = false;
+    for (int i = 0; i < nRows; i++)
+        if (sn.standing[gFirst[i]].rank == meRank) meShown = true;
+    if (!meShown && meRank > 0 && nRows < 4)
         for (int i = 0; i < sn.standingCount; i++)
-            if (sn.standing[i].me && sn.standing[i].rank > 3) { extra = i; break; }
-    if (extra >= 0 && nRows < 4) rows[nRows++] = extra;
+            if (sn.standing[i].rank == meRank) {
+                gFirst[nRows] = i;
+                gCount[nRows] = 1;
+                while (i + gCount[nRows] < sn.standingCount &&
+                       sn.standing[i + gCount[nRows]].rank == meRank)
+                    gCount[nRows]++;
+                nRows++;
+                break;
+            }
 
     const float cy720[4] = { 305.0f, 410.0f, 515.0f, 620.0f };
     /* one size for every row so the hexagons and the #N labels line up */
     const float rr720[4] = { 50.0f, 50.0f, 50.0f, 50.0f };
     for (int i = 0; i < nRows; i++) {
-        const auto& st = sn.standing[rows[i]];
+        int first = gFirst[i], cnt = gCount[i];
+        int shown = cnt < 3 ? cnt : 3;
+        int rank = sn.standing[first].rank;
         float p = (age - (1.0f + 0.12f * i)) / 0.5f;
         if (p <= 0.0f) continue;
         if (p > 1.0f) p = 1.0f;
         float xoff = (1.0f - EaseOutBack(p)) * (2 * rr720[i] + 60.0f);
         float alpha = p * p * (3.0f - 2.0f * p);          /* smoothstep */
         float r720 = rr720[i], cy = cy720[i];
-        float cx720 = ds.x / k - 0.55f * r720 + xoff;
-        ImVec2 c(cx720 * k, cy * k);
+        float cxR = ds.x / k - 0.55f * r720 + xoff;       /* rightmost hex */
+        float step = 2.0f * r720 + 8.0f;
+        float cxLeft = cxR - (shown - 1) * step;          /* leftmost hex */
 
-        DrawResultHex(u, c, r720 * k, StandingModule(sn, rows[i]), st.me,
-                      st.connected, st.final, i == 0);
-
-        /* rank label, NEW RECORD! style; right edge at cx - r + 4 */
+        /* rank label, NEW RECORD! style; right edge at leftmost cx - r + 4 */
         char lab[12];
-        snprintf(lab, sizeof(lab), "#%d", st.rank > 0 ? st.rank : rows[i] + 1);
+        snprintf(lab, sizeof(lab), "#%d", rank > 0 ? rank : first + 1);
         float lsz = 38.0f * k;
         ImVec2 lszV = u.font->CalcTextSizeA(lsz, FLT_MAX, 0.0f, lab);
         GlowText(u.dl, u.font, lsz,
-                 ImVec2((cx720 - r720 + 4.0f) * k - lszV.x,
+                 ImVec2((cxLeft - r720 + 4.0f) * k - lszV.x,
                         (cy - 0.866f * r720 - 2.0f) * k),
                  lab, alpha, pulse, k);
 
-        /* name under the hex: white + dark outline; local reads YOU */
-        char nm[44];
-        const char* raw = st.me ? "YOU" : st.name;
-        bool ascii = true;
-        int j = 0;
-        for (; raw[j] && j < (int)sizeof(nm) - 1; j++) {
-            unsigned char ch = (unsigned char)raw[j];
-            if (ch > 126 || ch < 32) { ascii = false; break; }
-            nm[j] = (char)ch;
-        }
-        nm[j] = 0;
-        if (!ascii) snprintf(nm, sizeof(nm), "%s", raw);   /* keep it, base font */
-        ImFont* nf = ascii ? u.font : ImGui::GetFont();
-        float nsz = 15.0f * k;
-        /* max width 110 (720p), Fit-style trim */
-        {
-            float maxW = 110.0f * k;
-            int len = (int)strlen(nm);
-            while (nf->CalcTextSizeA(nsz, FLT_MAX, 0.0f, nm).x > maxW && len > 0) {
-                do { len--; } while (len > 0 && ((unsigned char)nm[len] & 0xC0) == 0x80);
-                snprintf(nm + len, sizeof(nm) - len, "..");
+        for (int m = 0; m < shown; m++) {
+            int si = first + m;
+            const auto& st = sn.standing[si];
+            float cx720 = cxR - m * step;
+            ImVec2 c(cx720 * k, cy * k);
+
+            DrawResultHex(u, c, r720 * k, StandingModule(sn, si), st.me,
+                          st.connected, st.final, rank == 1);
+
+            /* name under the hex: white + dark outline; local reads YOU */
+            char nm[44];
+            const char* raw = st.me ? "YOU" : st.name;
+            bool ascii = true;
+            int j = 0;
+            for (; raw[j] && j < (int)sizeof(nm) - 1; j++) {
+                unsigned char ch = (unsigned char)raw[j];
+                if (ch > 126 || ch < 32) { ascii = false; break; }
+                nm[j] = (char)ch;
             }
+            nm[j] = 0;
+            if (!ascii) snprintf(nm, sizeof(nm), "%s", raw); /* keep, base font */
+            ImFont* nf = ascii ? u.font : ImGui::GetFont();
+            float nsz = 15.0f * k;
+            /* max width 110 (720p), Fit-style trim */
+            {
+                float maxW = 110.0f * k;
+                int len = (int)strlen(nm);
+                while (nf->CalcTextSizeA(nsz, FLT_MAX, 0.0f, nm).x > maxW && len > 0) {
+                    do { len--; } while (len > 0 && ((unsigned char)nm[len] & 0xC0) == 0x80);
+                    snprintf(nm + len, sizeof(nm) - len, "..");
+                }
+            }
+            ImVec2 ntx = nf->CalcTextSizeA(nsz, FLT_MAX, 0.0f, nm);
+            float ncx = (cx720 - 0.12f * r720) * k;
+            float nx = ncx - ntx.x * 0.5f;
+            if (nx + ntx.x > ds.x - 6.0f * k) nx = ds.x - 6.0f * k - ntx.x;
+            ImVec2 npos(nx, (cy + 0.866f * r720 + 2.0f) * k);
+            const ImU32 nOut = IM_COL32(30, 16, 48, (int)(230 * alpha));
+            for (int d = 0; d < 8; d++) {
+                float a = d * 6.28318f / 8.0f;
+                u.dl->AddText(nf, nsz,
+                    ImVec2(npos.x + cosf(a) * 1.2f * k, npos.y + sinf(a) * 1.2f * k), nOut, nm);
+            }
+            u.dl->AddText(nf, nsz, npos, IM_COL32(255, 255, 255, (int)(255 * alpha)), nm);
         }
-        ImVec2 ntx = nf->CalcTextSizeA(nsz, FLT_MAX, 0.0f, nm);
-        float ncx = (cx720 - 0.12f * r720) * k;
-        float nx = ncx - ntx.x * 0.5f;
-        if (nx + ntx.x > ds.x - 6.0f * k) nx = ds.x - 6.0f * k - ntx.x;
-        ImVec2 npos(nx, (cy + 0.866f * r720 + 2.0f) * k);
-        const ImU32 nOut = IM_COL32(30, 16, 48, (int)(230 * alpha));
-        for (int d = 0; d < 8; d++) {
-            float a = d * 6.28318f / 8.0f;
-            u.dl->AddText(nf, nsz,
-                ImVec2(npos.x + cosf(a) * 1.2f * k, npos.y + sinf(a) * 1.2f * k), nOut, nm);
+
+        /* "+N" under the rank label when the group has more members */
+        if (cnt > shown) {
+            char plus[12];
+            snprintf(plus, sizeof(plus), "+%d", cnt - shown);
+            float psz = 20.0f * k;
+            ImVec2 pszV = u.font->CalcTextSizeA(psz, FLT_MAX, 0.0f, plus);
+            u.dl->AddText(u.font, psz,
+                ImVec2((cxLeft - r720 + 4.0f) * k - pszV.x, (cy + 2.0f) * k),
+                IM_COL32(255, 255, 255, (int)(255 * alpha)), plus);
         }
-        u.dl->AddText(nf, nsz, npos, IM_COL32(255, 255, 255, (int)(255 * alpha)), nm);
     }
     EndWin();
 }
@@ -1474,7 +1514,10 @@ void DrawLeaderboard() {
     if (s.boardCount == 0) return;
     float k = ImGui::GetIO().DisplaySize.y / 720.0f;
     ImVec2 ds = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(ds.x - 200 * k, 95 * k), ImGuiCond_Always);
+    /* top-right at (W - 8, 48) in 720p: right of/above the old spot and
+     * below the note-rating icons (~x 1040-1260, y 15-40) */
+    ImGui::SetNextWindowPos(ImVec2(ds.x - 8 * k, 48 * k), ImGuiCond_Always,
+                            ImVec2(1, 0));
     ImGui::SetNextWindowBgAlpha(0.55f);
     if (!BeginWin("##mplb", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -1489,7 +1532,16 @@ void DrawLeaderboard() {
         ImVec4 c = b.me ? ImVec4(1.0f, 0.9f, 0.3f, 1)
                  : (b.connected ? ImVec4(1, 1, 1, 1)
                                 : ImVec4(0.5f, 0.5f, 0.5f, 1));
-        ImGui::TextColored(c, "%d. %-12.12s %d", r + 1, b.name, b.score);
+        ImGui::TextColored(c, "%d %-10.10s %.1f%%", b.rank > 0 ? b.rank : r + 1,
+                           b.name, (double)b.pct);
+        ImVec4 lc = b.life >= 77 ? ImVec4(0.35f, 0.80f, 0.51f, 1)
+                  : b.life >= 40 ? ImVec4(1.0f, 0.67f, 0.27f, 1)
+                                 : ImVec4(0.90f, 0.31f, 0.27f, 1);
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, lc);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg,
+                              ImVec4(0.15f, 0.15f, 0.15f, 1));
+        ImGui::ProgressBar(b.life / 255.0f, ImVec2(44 * k, 6 * k), "");
+        ImGui::PopStyleColor(2);
     }
     EndWin();
 }

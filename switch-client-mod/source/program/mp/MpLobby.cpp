@@ -129,7 +129,7 @@ static Banner s_banners[4];
 static int  s_bannerCount = 0;
 
 struct BoardRow { char cid[24]; char name[40]; int32_t score; float pct;
-                  bool connected; };
+                  int32_t life; int rank; bool connected; };
 static BoardRow s_board[8];
 static int  s_boardCount = 0;
 struct StandingRow { char cid[20]; char name[40]; int32_t score; float pct;
@@ -396,6 +396,12 @@ static void HandleBoard(const char* line, jsmntok_t* tok, int ntok) {
             mpjson::Copy(line, tok[i + j], pb, sizeof(pb));
             b.pct = (float)strtod(pb, nullptr);
         }
+        if ((j = mpjson::Find(line, tok + i, end - i, "life")) >= 0 &&
+            mpjson::ToInt(line, tok[i + j], &v))
+            b.life = v;
+        if ((j = mpjson::Find(line, tok + i, end - i, "rank")) >= 0 &&
+            mpjson::ToInt(line, tok[i + j], &v))
+            b.rank = v;
         if ((j = mpjson::Find(line, tok + i, end - i, "connected")) >= 0)
             b.connected = line[tok[i + j].start] == 't';
         s_boardCount++;
@@ -1565,6 +1571,8 @@ void GetSnapshot(Snapshot* out) {
                 sizeof(out->board[i].name) - 1);
         out->board[i].score = s_board[i].score;
         out->board[i].pct = s_board[i].pct;
+        out->board[i].life = s_board[i].life;
+        out->board[i].rank = s_board[i].rank;
         out->board[i].connected = s_board[i].connected;
         out->board[i].me = strcmp(s_board[i].cid, s_myCid) == 0;
     }

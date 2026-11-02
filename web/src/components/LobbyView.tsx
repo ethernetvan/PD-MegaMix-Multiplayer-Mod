@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react"
 import type { CSSProperties } from "react";
 import { feedText } from "../feedText";
 import { fmtElapsed, fmtPct, fmtRel, fmtScore } from "../format";
+import { competitionRanks } from "../rank";
 import { canAdmin, serverNow } from "../state";
 import { useStore } from "../store";
 import type { LobbySnap, MemberSnap, PickMode, StandingRow } from "../types";
@@ -27,6 +28,7 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
     .map((mid) => memberOf(l, mid))
     .filter((m): m is MemberSnap => !!m)
     .sort((a, b) => b.pct - a.pct || b.score - a.score);
+  const ranks = competitionRanks(rows);
 
   const rowEls = useRef(new Map<string, HTMLTableRowElement>());
   const prevIdx = useRef(new Map<string, number>());
@@ -120,7 +122,7 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
                   className={`${m.connected ? "" : "off"}${lat ? ` rd-${lat}` : ""}`}
                 >
                   <td className="rank">
-                    {i + 1}
+                    {ranks[i]}
                     {lat && (
                       <span className={`dmark ${lat}`} aria-hidden>
                         {lat === "up" ? "▲" : "▼"}
@@ -212,11 +214,13 @@ function ResCard({
   m,
   delay,
   tags,
+  hideRank,
 }: {
   r: StandingRow;
   m: MemberSnap | undefined;
   delay: number;
   tags: string[];
+  hideRank?: boolean;
 }) {
   const score = useCountUp(r.score, delay + 150);
   const jc = m?.final?.jc;
@@ -229,7 +233,9 @@ function ResCard({
       style={d}
     >
       <div className="res-top">
-        <span className={`rank-num r${r.rank}`}>{r.rank}</span>
+        {!hideRank && (
+          <span className={`rank-num r${r.rank}`}>{r.rank}</span>
+        )}
         <HexAvatar
           name={r.name}
           size={38}
@@ -340,21 +346,57 @@ function ResultsBoard({ l }: { l: LobbySnap }) {
     );
     if (topCombo.max_combo > 0) push(topCombo.mid, "COMBO KING");
   }
+  /* consecutive rows with the same rank render as one tie card */
+  const groups: StandingRow[][] = [];
+  for (const r of st.e) {
+    const g = groups[groups.length - 1];
+    if (g && g[0].rank === r.rank) g.push(r);
+    else groups.push([r]);
+  }
+  let seen = 0;
   return (
     <section className="panel res-panel">
       <span className="res-ribbon" aria-hidden>
         RESULT
       </span>
       <h3>Results</h3>
-      {st.e.map((r, i) => (
-        <ResCard
-          key={r.mid}
-          r={r}
-          m={memberOf(l, r.mid)}
-          delay={(n - 1 - i) * 170}
-          tags={tags.get(r.mid) ?? []}
-        />
-      ))}
+      {groups.map((g) => {
+        const i0 = seen;
+        seen += g.length;
+        if (g.length === 1) {
+          const r = g[0];
+          return (
+            <ResCard
+              key={r.mid}
+              r={r}
+              m={memberOf(l, r.mid)}
+              delay={(n - 1 - i0) * 170}
+              tags={tags.get(r.mid) ?? []}
+            />
+          );
+        }
+        const delay = (n - 1 - i0) * 170;   /* all tied members together */
+        return (
+          <div className="tie-group" key={`tie-${g[0].rank}-${i0}`}>
+            <div className="tie-head">
+              <span className={`rank-num r${g[0].rank}`}>{g[0].rank}</span>
+              <span className="badge star">TIE</span>
+            </div>
+            <div className="tie-cards">
+              {g.map((r) => (
+                <ResCard
+                  key={r.mid}
+                  r={r}
+                  m={memberOf(l, r.mid)}
+                  delay={delay}
+                  tags={tags.get(r.mid) ?? []}
+                  hideRank
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </section>
   );
 }

@@ -58,7 +58,8 @@ struct Snapshot {
     char     statusLine[96];
     char     notReady[128];   /* leader warnings */
     /* board rows */
-    struct { char name[40]; int32_t score; float pct; bool connected, me; } board[8];
+    struct { char name[40]; int32_t score; float pct; int32_t life;
+             int rank; bool connected, me; } board[8];
     int      boardCount;
     bool     standingsComplete;
     struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t max_combo;
