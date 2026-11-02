@@ -61,28 +61,43 @@ bug to this file.
    too (`freeze_1349_ryu1`, `freeze_1349_ryu3`, `freeze_1359_ryu1`); ryu1 needed 3 boots. ryu2 (muted) never
    froze. A muted instance freezing weakens the audio-only hypothesis; ryu2 surviving every launch is the
    odd one out (same build, same game files, different data root).
+   Later in session 4 ryu2 froze too (`freeze_1513_ryu2`: 0.00 FPS on the opening movie, Meiko in London) and
+   ryu3 again (`freeze_1513_ryu3`). Every freeze so far is in the SEGA logo / opening movie, which the mod's
+   `TaskAdvLogo` hook skips when `[gameplay] skipAdv = true`. The three TEST roots now run with
+   `skipAdv = true` (main install untouched, still false); no boot freeze since the switch (small sample, keep
+   counting). If it holds, recommend `skipAdv = true` to the user for Ryujinx, and the root cause is the
+   movie playback path in Ryujinx (frames stop while the mod's net thread keeps running), not MP code.
 6. **Not yet checked on the console** (all verified on emulators): connection watchdog (30 s local leave / quick
    reconnect keeps the room), ties layout, partial AutoPlay, waiting popup, in-song banners, module picker fix.
-7. `tools/record_demo.py` full tour never run end to end. It boots Ryujinx fullscreen on monitor 0; the user wants
-   Ryujinx on the second monitor only, so change it to use `\\.\DISPLAY6` (window position + ddagrab output)
-   before running it.
+7. `tools/record_demo.py`: now runs Ryujinx WINDOWED on the second monitor (`361fa3b`: Config.json
+   window_startup, game-area crop, gdigrab fallback because DISPLAY6 isn't a ddagrab output here; a 3 s gdigrab
+   test of that monitor captured game frames at ~58 fps). The full tour has still never run end to end (needs the
+   main install free and RAM: close the ryu_multi instances first, use `--port-base 47777` if a test server is up).
 8. FT UI (`ft_ui` / `force_ft_ui`) has no MP hooks at all (PS4-style selector/results); MP needs the Switch UI.
 9. Lag Config / Options stay swallowed in guarded rooms: probed, entering/leaving them gives no signal (no DBG
    field, no AET layer call), so the blind count can't follow them.
-10. **Web frontend: show the real profile pictures (user request).** Every web avatar is still a
-    `HexAvatar` gradient placeholder (`web/src/components/HexAvatar.tsx` already takes a `src` prop). The server
-    knows each member's module (`avatar {module}`, Round 7) but the web snapshot doesn't carry it, and the
-    portraits are game assets (`SPR_SEL_MD%03dCMN`), so they can't be committed to the repo. Likely route: the
-    client uploads its own decoded portrait (the `MpAvatar` readback that `avatar_dump` already writes) and the
-    bridge serves it per `mid` (e.g. `GET /api/avatar/<mid>.png`, cached by module id). Fallback: a one-time
-    local extraction into an uncommitted cache dir. Show it everywhere a `HexAvatar` appears (Overview, lobby
-    members, live board, standings, owner/picker chips) and keep the placeholder for unknown or custom modules.
-11. **AutoPlay percentage (user request, scope narrowed in session 4).** The user is fine with the existing
-    web "AUTO" badge; it only needs the percentage (`AUTO 50%`), which means the server must keep the `pct`
-    the client already sends. In game: show `AUTO` / `AUTO N%` for the local player during the song (gold
-    pill under the life gauge; in-song MP banners stack below it). No per-round latch or other-player
-    indicators were asked for. (ZR x3 note: in song select 3 quick ZR taps = partial AutoPlay, 4 taps
-    resolve to nothing by design, 5 taps toggle.)
+10. **DONE in `6117201`: real profile pictures on the web** (see `MULTIPLAYER_STATUS.md` Round 9). Verified
+    on 3 emulators: AVATAR_IMG for modules 0/363/91, upright PNGs, lobby page with portraits
+    (`mm-re/screens/web_lobby_vlwf.png`). Not checked on the real Switch.
+11. **DONE in `6117201`: AutoPlay percentage** (web badge `AUTO 50%`; gold in-song pill under the life gauge
+    with banners stacked below, `mm-re/screens/r1_song_banner.png`; song-select pill under the Multiplayer
+    badge with the "picking a song" line below it, `r1_sel_pill.png`; no pill on results). The user's "O x4
+    didn't trigger AUTO" was by design (4 taps = nothing; 3 = partial AutoPlay, 5 = toggle), but the old
+    badge text also overlapped the "Multiplayer" title and was unreadable; fixed.
+12. **Other players on the bottom percentage gauge (user request, session 4).** Show every other player's
+    current % as a bar on/at the game's bottom gauge, same styling as the game's own fill but in per-player
+    colours. The local player's own bar keeps its colour and is never covered. Measured geometry (720p):
+    inner track x 130..1230 = 0..100 % (11 px per %), y 691..711. The clear border is the red line (EASY 30 %
+    at x 461). Data: the live `board` (pct per member, ~state rate); interpolate between updates.
+13. **Avatar upload hardening (user request, session 4).** The server must normalize every upload to the
+    expected resolution, name it itself (never from the uploader), and keep nothing unsafe: square
+    32..96 px only, size checked before decoding, re-encoded server-side to a fixed 96x96 PNG with only
+    IHDR/IDAT/IEND, transparent pixels' RGB zeroed, garbage (blank/flat) rejected, uploads only for the
+    client's own announced module, rate-limited, safe response headers (nosniff, CSP sandbox, CORP).
+14. **Rank-change glow (user request, session 4).** In song: when the local player moves UP a place on the live
+    board, a subtle green glow comes in from the left/right screen edges for a moment; when they drop a place,
+    the same in purple. Subtle and short (about 1 s fade). Ignore the first seconds of a song and rank jitter
+    (debounce plus cooldown), so it only fires on real overtakes.
 
 ### Environment at the end of session 3
 - Test server **s13** (detached, ports 37777/37778/37790/38080, `mm-re/tmp/s13_server.log`, `live_server.log`

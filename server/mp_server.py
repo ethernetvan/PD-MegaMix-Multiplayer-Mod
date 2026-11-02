@@ -15,7 +15,7 @@ import sys
 import time
 
 from lobby import LobbyManager
-from avatars import AvatarStore, parse_upload
+from avatars import AvatarStore, UploadGate, parse_upload
 from web_bridge import WebBridge
 
 sys.stdout.reconfigure(errors="replace")
@@ -76,6 +76,8 @@ class Server:
         self.known_cids = set()    # ever seen
         self.first_mod_version = None
         self.avatars = AvatarStore()
+        self._avatar_gate = UploadGate()
+        self._avatar_logged = set()   # (cid, reason) already logged
         self.web = None
         self.lobby = LobbyManager(log=lambda m: log(f"LOBBY {m}"))
 
@@ -85,6 +87,12 @@ class Server:
             return
         for c in self.clients.values():
             log(f"  client {c.cid} '{c.name}' mod={c.mod} {c.addr[0]}:{c.addr[1]}")
+
+    def _avatar_reject(self, client, reason):
+        key = (client.cid, reason)
+        if key not in self._avatar_logged:
+            self._avatar_logged.add(key)
+            log(f"  avatar_img from '{client.name}' rejected: {reason}")
 
     async def handle(self, reader, writer):
         addr = writer.get_extra_info("peername")
@@ -187,14 +195,29 @@ class Server:
                     self.lobby.on_message(client.cid, msg, time.time())
                     await self.drain_outbox()
                 elif t == "avatar_img":
-                    try:
-                        module, w, h, png = parse_upload(msg)
-                    except ValueError as e:
-                        log(f"  bad avatar_img from '{client.name}': {e}")
+                    module = msg.get("module")
+                    if not isinstance(module, int) or \
+                            isinstance(module, bool):
+                        module = -1
+                    if module >= 0 and self.avatars.has(module):
+                        pass   # first upload per module wins; skip decode
                     else:
-                        if self.avatars.put(module, png):
-                            log(f"AVATAR_IMG module {module} {w}x{h} "
-                                f"from '{client.name}'")
+                        ok, reason = self._avatar_gate.check(
+                            client.cid, module,
+                            self.lobby._client_modules.get(
+                                client.cid, -1),
+                            time.time())
+                        if not ok:
+                            self._avatar_reject(client, reason)
+                        else:
+                            try:
+                                module, w, h, png = parse_upload(msg)
+                            except ValueError as e:
+                                self._avatar_reject(client, str(e))
+                            else:
+                                if self.avatars.put(module, png):
+                                    log(f"AVATAR_IMG module {module} "
+                                        f"{w}x{h} from '{client.name}'")
                 elif t == "dbg_pvs":
                     log(f"PVS '{client.name}' i={msg.get('i')} n={msg.get('n')} "
                         f"ids={msg.get('ids')} names={msg.get('names')}")
@@ -212,6 +235,9 @@ class Server:
                 await self.drain_outbox()
                 del self.clients[client.cid]
             log(f"DROPPED {client.cid} '{client.name}'")
+            self._avatar_gate.forget(client.cid)
+            self._avatar_logged = {k for k in self._avatar_logged
+                                   if k[0] != client.cid}
             self.table()
             try:
                 writer.close()

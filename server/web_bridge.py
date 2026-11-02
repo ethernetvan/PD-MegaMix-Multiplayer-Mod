@@ -414,7 +414,13 @@ class WebBridge:
             else:
                 await self._respond(
                     writer, 200, png, "image/png",
-                    [("Cache-Control", "public, max-age=86400")],
+                    [("Cache-Control", "public, max-age=86400"),
+                     ("X-Content-Type-Options", "nosniff"),
+                     ("Content-Security-Policy",
+                      "default-src 'none'; sandbox"),
+                     ("Cross-Origin-Resource-Policy", "same-origin"),
+                     ("Content-Disposition",
+                      f'inline; filename="avatar_{int(m.group(1)):03d}.png"')],
                     head_only=method == "HEAD")
             return
         if path == "/api/health":
