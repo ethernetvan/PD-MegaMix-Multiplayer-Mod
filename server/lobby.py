@@ -136,6 +136,8 @@ class LobbyManager:
         return self.by_cid.get(cid)
 
     def _member(self, lobby, cid):
+        if lobby is None:
+            return None
         for m in lobby.members:
             if m.cid == cid:
                 return m

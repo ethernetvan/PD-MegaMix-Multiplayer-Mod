@@ -213,13 +213,14 @@ class Server:
                 writer.write(b"bad json\n")
                 await writer.drain()
                 continue
-            cid = msg.pop("cid", None)
+            cid = msg.get("cid")
             if msg.get("cmd") in ("lobbies", "kick", "set_leader"):
                 res = self.lobby.on_admin(msg, time.time())
                 await self.drain_outbox()
                 writer.write((json.dumps(res) + "\n").encode())
                 await writer.drain()
                 continue
+            msg.pop("cid", None)
             msg["t"] = "dbg_cmd"
             targets = ([self.clients[cid]] if cid in self.clients
                        else list(self.clients.values()))
