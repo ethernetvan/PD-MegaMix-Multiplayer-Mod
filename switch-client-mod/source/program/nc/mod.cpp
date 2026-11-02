@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "ModLoader.hpp"
+#include "../AutoPlay.hpp"
 #include "lib.hpp"
 #include "nc_state.hpp"
 #include "logger.hpp"
@@ -91,6 +92,7 @@ HOOK_DEFINE_TRAMPOLINE(TaskPvGameCtrlHook) {
 
 		ret = Orig(a1);
 		mp::OnPvGameFrame();
+		AutoPlay::OnGameTaskFrame();
 		return ret;
 	}
 };

@@ -6,6 +6,10 @@ export function memberName(l: LobbySnap, mid: string | null | undefined) {
   return l.members.find((m) => m.mid === mid)?.name ?? "?";
 }
 
+export function memberAvatar(l: LobbySnap, mid: string | null | undefined) {
+  return l.members.find((m) => m.mid === mid)?.avatar ?? undefined;
+}
+
 export function PhaseBadge({ phase }: { phase: string }) {
   return <span className={`pchip phase-${phase.toLowerCase()}`}>{phase}</span>;
 }
@@ -31,7 +35,7 @@ function LobbyCard({ l }: { l: LobbySnap }) {
         ) : (
           <span className="card-hexes">
             {shown.map((m) => (
-              <HexAvatar key={m.mid} name={m.name} size={30} />
+              <HexAvatar key={m.mid} name={m.name} src={m.avatar ?? undefined} size={30} />
             ))}
             {l.members.length > shown.length && (
               <span className="card-hexes-more">+{l.members.length - 3}</span>
@@ -84,7 +88,7 @@ export default function Overview() {
           {snap.consoles.length === 0 && <li className="dim">none connected</li>}
           {snap.consoles.map((c) => (
             <li key={c.mid}>
-              <HexAvatar name={c.name} size={30} status="online" />
+              <HexAvatar name={c.name} src={c.avatar ?? undefined} size={30} status="online" />
               <span className="console-name">
                 <b>{c.name}</b>{" "}
                 <span className="dim">

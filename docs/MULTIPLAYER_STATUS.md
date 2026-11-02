@@ -188,6 +188,24 @@ Commits `815f20b`, `79e244c`, `ce0a059` (on top of `f9f16c6`).
 - Partial AutoPlay cheat for testing: ZR x3 in song select cycles 100/75/50/25 %, `admin.py autoplay on --pct N`.
 - MP works with `new_classics = false` (MpSceneHooks); FT UI is still unsupported.
 
+## Round 9: real portraits on the web, AutoPlay percentage (2026-11-02, session 4)
+- Web avatars are the real module portraits. Each console uploads its OWN portrait once per module per
+  connection: `avatar_img {module,w,h,rgba}` = 96x96 RGBA (alpha-weighted box downscale of the decoded
+  in-game crop), base64, sent as one ~49 KB line through a separate 64 KiB blob slot in `MpNet` (the 510-byte
+  ring can't carry it; a failed blob send ends the session so the stream never half-writes). The server keeps
+  the first upload per module (`server/avatars.py`, PNG encoded with stdlib zlib; console readline limit raised
+  to 128 KiB) and serves `GET /api/avatar/<module>.png`; snapshots carry `avatar` (URL or null) on consoles,
+  members and standings. Portraits are game assets: memory only, never committed. Custom modules keep the
+  placeholder hexagon.
+- AutoPlay percentage: the server keeps `autoplay_pct` from `autoplay {on, pct}`; the web badge reads
+  `AUTO 50%`. In game, a gold `AUTO` / `AUTO N%` pill sits under the life gauge for the whole song (stamped
+  from TaskPvGameCtrl, hidden on results; in-song MP banners stack below it), and the song-select badge shows
+  the same pill under the Multiplayer badge (it used to overlap the title and was unreadable).
+- ZR shortcut: in song select 1 tap = MP overlay, 2 = No Movie, 3 = partial AutoPlay (cycles 75/50/25/100),
+  4 = nothing (by design), 5 = toggle AutoPlay. Verified with real key presses on Ryujinx.
+- Ryujinx boot freezes all happened in the SEGA logo / opening movie (`TaskAdvLogo`); the test roots now run
+  with `skipAdv = true`, which skips it (see the boot tally in `docs/NEXT_SESSION_TODO.md`).
+
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
    they leave) separately from `leader` (current song picker). Owner chooses `pick_mode`:

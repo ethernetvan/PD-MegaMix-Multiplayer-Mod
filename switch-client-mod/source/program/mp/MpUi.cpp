@@ -1,6 +1,7 @@
 #include "MpLobby.hpp"
 #include "MpAvatar.hpp"
 #include "MpInput.hpp"
+#include "../AutoPlay.hpp"
 #include "../Config.hpp"
 #include "../FontLoader.hpp"
 #include "../keyboard.hpp"
@@ -1534,6 +1535,8 @@ void DrawBanners() {
      * while it is open, else below the top UI) */
     const bool song = s.inSong && !OverlayOpen();
     float top = song ? 62 * k : (OverlayOpen() ? 6 * k : 60 * k);
+    if (song && AutoPlay::IndicatorVisible())
+        top += 30 * k;   /* banners stack below the AUTO pill */
     int i0 = song && s.bannerCount > 2 ? s.bannerCount - 2 : 0;
     for (int i = i0; i < s.bannerCount; i++) {
         float ttl = s.banners[i].ttl;

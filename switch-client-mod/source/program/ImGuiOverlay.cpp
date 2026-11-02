@@ -8,6 +8,7 @@
 #include "FontLoader.hpp"
 #include "keyboard.hpp"
 #include "Config.hpp"
+#include "AutoPlay.hpp"
 #include "lib.hpp"
 
 #include "overlays/ExtraMenu.hpp"
@@ -491,6 +492,7 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
     DimOverlay::Draw();
     VolumeOverlay::Draw();
     Hints::Draw();
+    AutoPlay::DrawIndicator();
 
     {
         mp::lobby::Snapshot sn;

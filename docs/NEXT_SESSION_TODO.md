@@ -57,6 +57,10 @@ bug to this file.
    Planned test (not run): enable Ryujinx file logging for the ryu_multi instances (they currently write no
    log), boot ryu1 muted ~8x vs unmuted ~8x, and ~6x with `[multiplayer] enabled = false`; count freezes (no pv_sel
    INIT within 3 min). Also seen once: ryu1's process exited right after connecting (07:43:48).
+   Session 4 (2026-11-02 ~13:45-14:02): ryu1 (unmuted) froze on the intro twice more and ryu3 (MUTED) froze
+   too (`freeze_1349_ryu1`, `freeze_1349_ryu3`, `freeze_1359_ryu1`); ryu1 needed 3 boots. ryu2 (muted) never
+   froze. A muted instance freezing weakens the audio-only hypothesis; ryu2 surviving every launch is the
+   odd one out (same build, same game files, different data root).
 6. **Not yet checked on the console** (all verified on emulators): connection watchdog (30 s local leave / quick
    reconnect keeps the room), ties layout, partial AutoPlay, waiting popup, in-song banners, module picker fix.
 7. `tools/record_demo.py` full tour never run end to end. It boots Ryujinx fullscreen on monitor 0; the user wants
@@ -73,17 +77,12 @@ bug to this file.
     bridge serves it per `mid` (e.g. `GET /api/avatar/<mid>.png`, cached by module id). Fallback: a one-time
     local extraction into an uncommitted cache dir. Show it everywhere a `HexAvatar` appears (Overview, lobby
     members, live board, standings, owner/picker chips) and keep the placeholder for unknown or custom modules.
-11. **AutoPlay must be CLEARLY shown on the web frontend and on the Switch client (user request).** Today:
-    - the client sends `autoplay {on, pct}`, but `lobby.py` keeps only the bool and drops `pct`;
-    - the web shows only a small "AUTO" badge in member and standings rows, and standings use the member's
-      *current* flag rather than whether AutoPlay was on during that round;
-    - in game, only the local song-select badge says `AUTO` / `AUTO N%`; the MP Live board, results hexagons,
-      member list and room panel show nothing for other players (the "Known gap" in `MULTIPLAYER_STATUS.md`).
-    To do: keep `pct` on the server and latch "AutoPlay was used" per member per round (any time between
-    launch and final); send it in board, standings and members, plus web and lobby snapshots. Make it
-    unmistakable everywhere: a prominent `AUTO` / `AUTO 50%` tag on web rows, the tie card and results; on the
-    client, the live board, results hexagons/names and the room member list; and a persistent in-song
-    indicator for the local player. Add a server unit test for the latch and the `pct` field.
+11. **AutoPlay percentage (user request, scope narrowed in session 4).** The user is fine with the existing
+    web "AUTO" badge; it only needs the percentage (`AUTO 50%`), which means the server must keep the `pct`
+    the client already sends. In game: show `AUTO` / `AUTO N%` for the local player during the song (gold
+    pill under the life gauge; in-song MP banners stack below it). No per-round latch or other-player
+    indicators were asked for. (ZR x3 note: in song select 3 quick ZR taps = partial AutoPlay, 4 taps
+    resolve to nothing by design, 5 taps toggle.)
 
 ### Environment at the end of session 3
 - Test server **s13** (detached, ports 37777/37778/37790/38080, `mm-re/tmp/s13_server.log`, `live_server.log`

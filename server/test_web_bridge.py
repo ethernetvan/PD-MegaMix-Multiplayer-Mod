@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
+from avatars import AvatarStore
 from lobby import LobbyManager
 from web_bridge import (WebBridge, WsError, encode_frame, read_frame,
                         ws_accept)
@@ -52,8 +53,9 @@ class FakeConn:
         pass
 
 
-class FakeServer:
+class FakeServer:  # minimal stand-in for MpServer
     def __init__(self):
+        self.avatars = AvatarStore()
         self.lobby = LobbyManager()
         self.clients = {}
         self.forwarded = []          # outbox copies drained
@@ -197,6 +199,40 @@ class Snap(unittest.TestCase):
         for c in ("cid_alice_01", "cid_bob_0002", "cid_carol_03"):
             self.assertNotIn(c, blob)
 
+
+
+    def test_avatar_default_and_store(self):
+        code, rid = self.drive_to_playing()
+        # default: member + standings carry autoplay_pct + avatar=None
+        s = self.web.snapshot()
+        l = s["lobbies"][0]
+        self.assertEqual(l["members"][0]["autoplay_pct"], 100)
+        self.assertIsNone(l["members"][0]["avatar"])
+        if l["standings"]:
+            self.assertIsNone(l["standings"]["e"][0]["avatar"])
+        # after an upload for module 12 (assigned to alice's cid), the
+        # member and consoles rows expose /api/avatar/12.png
+        self.srv.avatars.put(12, b"png-bytes")
+        self.lm._client_modules["cid_alice_01"] = 12
+        self.srv.clients["cid_alice_01"] = SimpleNamespace(
+            cid="cid_alice_01", name="Alice", mod="m")
+        # a final puts the lobby in RESULTS so a standings row exists
+        self.lm.on_message("cid_alice_01",
+                           {"t": "final", "round": rid, "score": 9000,
+                            "pct": 90.0, "max_combo": 42, "jc": [1, 2, 3],
+                            "life": 100}, 105.0)
+        self.lm.on_message("cid_alice_01",
+                           {"t": "autoplay", "on": True, "pct": 50}, 105.0)
+        s = self.web.snapshot()
+        l = s["lobbies"][0]
+        mem = [m for m in l["members"] if m["name"] == "Alice"][0]
+        self.assertEqual(mem["avatar"], "/api/avatar/12.png")
+        self.assertEqual(mem["autoplay_pct"], 50)
+        self.assertEqual(s["consoles"][0]["avatar"],
+                         "/api/avatar/12.png")
+        row = [r for r in l["standings"]["e"] if r["name"] == "Alice"][0]
+        self.assertEqual(row["avatar"], "/api/avatar/12.png")
+        self.assertEqual(row["autoplay_pct"], 50)
 
 class Actions(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -410,6 +446,17 @@ class Integration(unittest.IsolatedAsyncioTestCase):
         w.close()
         head, _, body = data.partition(b"\r\n\r\n")
         return head.decode("latin-1"), body
+
+    async def test_http_avatar_route(self):
+        self.srv.avatars.put(12, b"fake-png-bytes")
+        head, body = await self.http("/api/avatar/12.png")
+        self.assertIn("200", head)
+        self.assertIn("image/png", head.lower())
+        self.assertEqual(body, b"fake-png-bytes")
+        head, _ = await self.http("/api/avatar/13.png")
+        self.assertIn("404", head)
+        head, _ = await self.http("/api/avatar/abc.png")
+        self.assertIn("404", head)
 
     async def test_http_routes(self):
         head, body = await self.http("/api/health")

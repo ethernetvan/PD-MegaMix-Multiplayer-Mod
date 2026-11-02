@@ -310,15 +310,23 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
     float gw = 28.0f * s, gh = 18.0f * s;
     ImVec2 gpos(posX + w - gw - 10.0f * s, posY + 7.0f * s);
     DrawSwitchTriggerZR(drawList, font, gpos, ImVec2(gw, gh), hovered);
-    /* AUTO tag left of the ZR glyph when AutoPlay is on */
+    /* gold AUTO pill directly under the badge when AutoPlay is on
+     * (right edge aligned to the badge); the lobby lines stack below it */
+    float autoH = 0.0f;
     if (AutoPlay::g_enabled) {
         char atag[16];
         if (AutoPlay::g_hitPct >= 100) snprintf(atag, sizeof(atag), "AUTO");
         else snprintf(atag, sizeof(atag), "AUTO %d%%", (int)AutoPlay::g_hitPct);
         ImVec2 asz = font->CalcTextSizeA(baseFontSz, FLT_MAX, 0.0f, atag);
+        float padX = 6.0f * s, padY = 2.0f * s;
+        ImVec2 p1(posX + w, posY + h + 4.0f * s + asz.y + padY * 2);
+        ImVec2 p0(p1.x - asz.x - padX * 2, posY + h + 4.0f * s);
+        drawList->AddRectFilled(p0, p1, IM_COL32(255, 201, 51, 235), 5.0f * s);
+        drawList->AddRect(p0, p1, IM_COL32(0, 0, 0, 120), 5.0f * s, 0, 1.2f * s);
         drawList->AddText(font, baseFontSz,
-                          ImVec2(gpos.x - asz.x - 8.0f * s, posY + 6.0f * s),
-                          IM_COL32(255, 210, 60, 255), atag);
+                          ImVec2(p0.x + padX, p0.y + padY),
+                          IM_COL32(25, 25, 25, 255), atag);
+        autoH = p1.y - p0.y + 2.0f * s;
     }
     drawList->AddText(font, baseFontSz, ImVec2(posX + 12.0f * s, posY + 6.0f * s),
                       mpOn ? IM_COL32(255, 255, 255, 255) : IM_COL32(165, 175, 185, 200), title);
@@ -353,7 +361,7 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
 
     /* in a lobby: who is picking, right-aligned under the badge */
     if (inLobby) {
-        float y = posY + h + 6.0f * s;
+        float y = posY + h + 6.0f * s + autoH;
         const char* lname = "";
         for (int i = 0; i < sn.memberCount; i++)
             if (strcmp(sn.members[i].cid, sn.leaderCid) == 0)

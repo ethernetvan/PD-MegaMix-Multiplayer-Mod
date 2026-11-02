@@ -357,8 +357,26 @@ class T(unittest.TestCase):
         self.assertEqual(end[0][1]["next_leader"], "b")
 
 
+    def test_autoplay_pct(self):
+        self.mk("a"); self.create("a")
+        lob = self.lm.lobbies[self.code_of("a")]
+        m = lob.members[0]
+        for msg, want in (
+            ({"t": "autoplay", "on": True, "pct": 50}, 50),
+            ({"t": "autoplay", "on": True}, 100),
+            ({"t": "autoplay", "on": True, "pct": True}, 100),
+            ({"t": "autoplay", "on": True, "pct": "50"}, 100),
+            ({"t": "autoplay", "on": True, "pct": 150}, 100),
+            ({"t": "autoplay", "on": True, "pct": -5}, 0),
+        ):
+            self.lm.on_message("a", msg, 100.0)
+            self.assertEqual(m.autoplay_pct, want, msg)
+            self.assertTrue(m.autoplay)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 class T2(unittest.TestCase):
     def setUp(self):

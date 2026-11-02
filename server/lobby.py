@@ -13,7 +13,10 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       standings complete); a member off song select at launch becomes a
       spectator; owner leaving hands ownership to the first connected
       non-bot member and rejoining within 120s restores it;
-      avatar {module} (Shared Set A slot-1 module id, -1 unknown; any time).
+      avatar {module} (Shared Set A slot-1 module id, -1 unknown; any time);
+      autoplay {on, pct} (AutoPlay on/off plus hit-rate 0..100);
+      avatar_img {module,w,h,rgba} (base64 portrait upload; handled by
+      mp_server, not the engine).
 S->C: welcome/error/pong (existing);
       lobby {code, phase, leader, you, round, sel_pv,
              members:[{cid,name,connected,role,loaded,module}]}
@@ -68,7 +71,7 @@ class Member:
                  "back_in_sel", "state", "prev_combo_bucket", "low_life_armed",
                  "disconnect_at", "last_activity",
                  "ready", "ready_reason", "ready_pv", "autoplay",
-                 "scene", "pause_req_at", "pause_req_kind")
+                 "autoplay_pct", "scene", "pause_req_at", "pause_req_kind")
 
     def __init__(self, cid, name):
         self.cid = cid
@@ -87,6 +90,7 @@ class Member:
         self.ready_reason = ""
         self.ready_pv = -1
         self.autoplay = False
+        self.autoplay_pct = 100
         self.scene = None         # sel|results|game|other, None = unknown ("sel")
         self.pause_req_at = 0.0
         self.pause_req_kind = ""
@@ -194,6 +198,7 @@ class LobbyManager:
                              "loaded": m.loaded,
                              "ready": m.ready, "reason": m.ready_reason,
                              "autoplay": m.autoplay,
+                             "autoplay_pct": m.autoplay_pct,
                              "module": self._client_modules.get(m.cid, -1)}
                             for m in lobby.members]}
 
@@ -296,9 +301,15 @@ class LobbyManager:
         elif t == "kick":
             self._kick(cid, msg.get("cid"), now)
         elif t == "autoplay":
+            # autoplay {on, pct}: on/off flag plus optional hit-rate 0..100
             m = self._member(self._lobby_of(cid), cid)
             if m:
                 m.autoplay = bool(msg.get("on"))
+                pct = msg.get("pct")
+                m.autoplay_pct = (max(0, min(100, int(pct)))
+                                  if isinstance(pct, int)
+                                  and not isinstance(pct, bool)
+                                  else 100)
                 lobby = self._lobby_of(cid)
                 if lobby:
                     self._broadcast_lobby(lobby)

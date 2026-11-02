@@ -1,7 +1,7 @@
 // Hexagonal player avatar, in the style of the MegaMix room overlay.
 // Placeholder art: a deterministic 2-stop diagonal gradient picked from a
 // DIVA-ish palette by hashing the player name, with the first initial in
-// condensed bold type. `src` is reserved for future per-player icon images.
+// condensed bold type. `src` renders a per-player icon image (real portraits from /api/avatar/N.png).
 
 const GRADS: [string, string][] = [
   ["#39c5bb", "#128f8a"], // miku teal

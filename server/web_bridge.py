@@ -17,6 +17,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 import socket
 import struct
@@ -215,6 +216,12 @@ class WebBridge:
                 return m
         return None
 
+    def _avatar_url(self, cid):
+        mod = self.server.lobby._client_modules.get(cid, -1)
+        if mod >= 0 and self.server.avatars.has(mod):
+            return f"/api/avatar/{mod}.png"
+        return None
+
     def you_for(self, conn):
         owns = []
         if conn.name:
@@ -237,7 +244,8 @@ class WebBridge:
         for c in self.server.clients.values():
             l = lm.by_cid.get(c.cid)
             s["consoles"].append({"mid": self.mid(c.cid), "name": c.name,
-                                  "mod": c.mod, "lobby": l.code if l else None})
+                                  "mod": c.mod, "lobby": l.code if l else None,
+                                  "avatar": self._avatar_url(c.cid)})
         for code in sorted(lm.lobbies):
             s["lobbies"].append(self._lobby_snap(lm.lobbies[code], now))
         return s
@@ -280,14 +288,19 @@ class WebBridge:
                      "rank": x["rank"], "final": x["final"],
                      "connected": x["connected"],
                      "autoplay": (self._member(l, x["cid"]).autoplay
-                                if self._member(l, x["cid"]) else False)}
+                                if self._member(l, x["cid"]) else False),
+                     "autoplay_pct": (self._member(l, x["cid"]).autoplay_pct
+                                if self._member(l, x["cid"]) else 100),
+                     "avatar": self._avatar_url(x["cid"])}
                     for x in rows]}
         for m in l.members:
             d["members"].append({
                 "mid": self.mid(m.cid), "name": m.name,
                 "connected": m.connected, "role": m.role, "loaded": m.loaded,
                 "ready": m.ready, "reason": m.ready_reason,
-                "autoplay": m.autoplay, "back_in_sel": m.back_in_sel,
+                "autoplay": m.autoplay, "autoplay_pct": m.autoplay_pct,
+                "avatar": self._avatar_url(m.cid),
+                "back_in_sel": m.back_in_sel,
                 "score": m.state.get("score", 0),
                 "combo": m.state.get("combo", 0),
                 "pct": m.state.get("pct", 0.0),
@@ -391,6 +404,18 @@ class WebBridge:
             else:
                 await self._respond(writer, 400, b"expected websocket upgrade",
                                     "text/plain")
+            return
+        m = re.fullmatch(r"/api/avatar/(\d{1,3})\.png", path)
+        if m:
+            png = self.server.avatars.get(int(m.group(1)))
+            if png is None:
+                await self._respond(writer, 404, b"not found",
+                                    "text/plain", head_only=method == "HEAD")
+            else:
+                await self._respond(
+                    writer, 200, png, "image/png",
+                    [("Cache-Control", "public, max-age=86400")],
+                    head_only=method == "HEAD")
             return
         if path == "/api/health":
             await self._respond(writer, 200, b'{"ok":true}',

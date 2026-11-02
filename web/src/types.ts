@@ -15,6 +15,7 @@ export interface ConsoleEntry {
   name: string;
   mod: string;
   lobby: string | null;
+  avatar: string | null;
 }
 
 export interface VoteInfo {
@@ -45,6 +46,8 @@ export interface MemberSnap {
   ready: boolean;
   reason: string;
   autoplay: boolean;
+  autoplay_pct: number;
+  avatar: string | null;
   back_in_sel: boolean;
   score: number;
   combo: number;
@@ -70,6 +73,8 @@ export interface StandingRow {
   final: boolean;
   connected: boolean;
   autoplay: boolean;
+  autoplay_pct: number;
+  avatar: string | null;
 }
 
 export interface Standings {

@@ -15,6 +15,7 @@ import sys
 import time
 
 from lobby import LobbyManager
+from avatars import AvatarStore, parse_upload
 from web_bridge import WebBridge
 
 sys.stdout.reconfigure(errors="replace")
@@ -74,6 +75,7 @@ class Server:
         self.clients = {}          # cid -> Client
         self.known_cids = set()    # ever seen
         self.first_mod_version = None
+        self.avatars = AvatarStore()
         self.web = None
         self.lobby = LobbyManager(log=lambda m: log(f"LOBBY {m}"))
 
@@ -184,6 +186,15 @@ class Server:
                            "pause_req", "resume_req", "avatar", "scene"):
                     self.lobby.on_message(client.cid, msg, time.time())
                     await self.drain_outbox()
+                elif t == "avatar_img":
+                    try:
+                        module, w, h, png = parse_upload(msg)
+                    except ValueError as e:
+                        log(f"  bad avatar_img from '{client.name}': {e}")
+                    else:
+                        if self.avatars.put(module, png):
+                            log(f"AVATAR_IMG module {module} {w}x{h} "
+                                f"from '{client.name}'")
                 elif t == "dbg_pvs":
                     log(f"PVS '{client.name}' i={msg.get('i')} n={msg.get('n')} "
                         f"ids={msg.get('ids')} names={msg.get('names')}")
@@ -273,7 +284,8 @@ class Server:
         asyncio.get_running_loop().create_task(self.ticker())
         transport, _ = await loop.create_datagram_endpoint(
             lambda: DiscoveryProtocol(self), local_addr=("0.0.0.0", self.disc_port))
-        srv = await asyncio.start_server(self.handle, "0.0.0.0", self.port)
+        srv = await asyncio.start_server(self.handle, "0.0.0.0", self.port,
+                                        limit=1 << 17)
         adm = await asyncio.start_server(self.admin_handle, "127.0.0.1",
                                          self.admin_port)
         if self.web:

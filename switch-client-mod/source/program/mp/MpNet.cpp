@@ -196,11 +196,45 @@ static bool SendAll(const char* data, size_t len) {
     return true;
 }
 
+static void CloseSock();
+
+/* big one-shot line (avatar_img): 64 KiB slot; '\n' appended; returns
+ * false if a blob is pending / not connected / too big. */
+static char         s_blob[64 * 1024 + 1];
+static uint32_t     s_blobLen = 0;
+static std::mutex   s_blobMtx;
+
+bool EnqueueBlob(const char* line, size_t len) {
+    std::lock_guard<std::mutex> lk(s_blobMtx);
+    if (s_blobLen || g_sock < 0 || len + 1 > sizeof(s_blob)) return false;
+    memcpy(s_blob, line, len);
+    s_blob[len] = '\n';
+    s_blobLen = (uint32_t)(len + 1);
+    return true;
+}
+
+static void ClearBlob() {
+    std::lock_guard<std::mutex> lk(s_blobMtx);
+    s_blobLen = 0;
+}
+
 static void FlushOutgoing() {
     char buf[16 * 1024];
     size_t n = DrainQueue(buf, sizeof(buf));
     if (n > 0 && !SendAll(buf, n))
         WriteLog("[MP] flush failed (%d bytes dropped)\n", (int)n);
+    /* one-shot big blob (avatar image): sent right after the ring; a
+     * failed send ends the session so the stream never half-writes.
+     * The producer never touches s_blob while s_blobLen != 0, so the
+     * send runs outside the lock (EnqueueBlob is called on the
+     * present thread - holding it across SendAll would hitch a frame) */
+    uint32_t blen;
+    { std::lock_guard<std::mutex> lk(s_blobMtx); blen = s_blobLen; }
+    if (blen) {
+        bool ok = SendAll(s_blob, blen);
+        { std::lock_guard<std::mutex> lk(s_blobMtx); s_blobLen = 0; }
+        if (!ok) CloseSock();
+    }
 }
 
 /* Process one complete line (no trailing \n). */
@@ -677,6 +711,7 @@ static bool SayHello() {
 static void SessionLoop() {
     SetState(MpState::Connected);
     g_connectCount++;
+    ClearBlob();
     s_lastRecv = NowMs();
     s_lastPingSent = 0;
     uint64_t nextPing = NowMs() + 2000;

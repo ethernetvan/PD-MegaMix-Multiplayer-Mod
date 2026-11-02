@@ -28,6 +28,13 @@ static std::atomic<int32_t> s_local{-1};
 static std::atomic<bool>    s_announce{false};   /* welcome seen, (re)send */
 static int32_t              s_sent = -2;
 
+/* 96x96 RGBA copy of the LOCAL module's portrait for server upload */
+static uint8_t  s_imgRgba[96 * 96 * 4];
+static int32_t  s_imgW = 0, s_imgH = 0;
+static int32_t  s_imgModule = -1;
+static int32_t  s_imgSent = -1;   /* module whose image was uploaded */
+static int32_t  s_imgAsked = -1;  /* module whose decode was requested */
+
 void CaptureSaveMgr(void* mgr) {
     if (mgr) s_mgr = mgr;
 }
@@ -36,6 +43,7 @@ int32_t LocalModule() { return s_local.load(std::memory_order_relaxed); }
 
 void OnWelcome() {
     s_sent = -2;
+    s_imgSent = -1;   /* server may have restarted (it dedupes anyway) */
     s_announce.store(true);
 }
 
@@ -44,6 +52,7 @@ static uint64_t NowMs() {
            / nn::os::GetSystemTickFrequency();
 }
 
+static int B64(char* out, size_t cap, const uint8_t* p, size_t n);
 static void* ModBase() { return (void*)exl::util::GetMainModuleInfo().m_Total.m_Start; }
 
 /* ============================ portrait cache ============================ */
@@ -405,6 +414,42 @@ static int FinishUpload(Ent& e) {
     WriteLog("[MP-AV] module %d: decoded %d px crop -> %dx%d %s (slot %d)\n", e.module, side, os, os,
              ok ? "ok" : "FAILED", e.slot);
     if (e.dump) DumpCard(e, raw);
+    /* keep a 96x96 RGBA copy of the LOCAL module's portrait for the
+     * server upload. os <= 96: copy as-is (w = h = os, no upscale).
+     * os > 96: alpha-weighted box downscale - dst pixel averages the
+     * src block [x*os/96, max(x0+1,(x+1)*os/96)) x same for y; rgb
+     * weighted by alpha (0 when sum a == 0), a = mean alpha. */
+    if (ok && e.module == s_local.load(std::memory_order_relaxed)) {
+        static const int O = 96;
+        if (os <= O) {
+            memcpy(s_imgRgba, rgba, (size_t)os * os * 4);
+            s_imgW = s_imgH = os;
+        } else {
+            for (int y = 0; y < O; y++) {
+                int y0 = y * os / O, y1 = (y + 1) * os / O;
+                if (y1 <= y0) y1 = y0 + 1;
+                for (int x = 0; x < O; x++) {
+                    int x0 = x * os / O, x1 = (x + 1) * os / O;
+                    if (x1 <= x0) x1 = x0 + 1;
+                    uint64_t sa = 0, sr = 0, sg = 0, sb = 0;
+                    for (int sy = y0; sy < y1; sy++)
+                        for (int sx = x0; sx < x1; sx++) {
+                            const uint8_t* p = rgba + (sy * os + sx) * 4;
+                            sa += p[3]; sr += p[0] * p[3];
+                            sg += p[1] * p[3]; sb += p[2] * p[3];
+                        }
+                    int n = (y1 - y0) * (x1 - x0);
+                    uint8_t* d = &s_imgRgba[(y * O + x) * 4];
+                    d[0] = (uint8_t)(sa ? sr / sa : 0);
+                    d[1] = (uint8_t)(sa ? sg / sa : 0);
+                    d[2] = (uint8_t)(sa ? sb / sa : 0);
+                    d[3] = (uint8_t)(sa / n);
+                }
+            }
+            s_imgW = s_imgH = O;
+        }
+        s_imgModule = e.module;
+    }
     free(raw);
     free(rgba);
     return ok ? 1 : -1;
@@ -420,6 +465,29 @@ void RenderPump() {
             snprintf(line, sizeof(line), "{\"t\":\"avatar\",\"module\":%d}", m);
             Enqueue(line);
             s_sent = m;
+        }
+        /* upload the local portrait once per module per connection */
+        if (m >= 0 && m != s_imgSent) {
+            if (s_imgModule == m && s_imgW > 0) {
+                static char buf[64 * 1024];
+                int n = snprintf(buf, sizeof(buf),
+                    "{\"t\":\"avatar_img\",\"module\":%d,\"w\":%d,\"h\":%d,"
+                    "\"rgba\":\"", m, s_imgW, s_imgH);
+                n += B64(buf + n, sizeof(buf) - n, s_imgRgba,
+                         s_imgW * s_imgH * 4);
+                n += snprintf(buf + n, sizeof(buf) - n, "\"}");
+                if (EnqueueBlob(buf, n)) s_imgSent = m;
+            } else if (m != s_imgAsked) {
+                /* decode it once (custom/failed: no upload, no retry) */
+                std::lock_guard<std::mutex> g(s_mtx);
+                Ent* e = Find(m);
+                if (e && e->st == ST_READY) Release(*e);
+                if (!e || e->st == ST_FREE) {
+                    if (!e) e = Alloc(NowMs());
+                    if (e) { e->module = m; e->st = ST_WANTED; }
+                }
+                s_imgAsked = m;
+            }
         }
     }
 
@@ -452,6 +520,26 @@ void RenderPump() {
 }
 
 /* ============================ debug ============================ */
+
+static int B64(char* out, size_t cap, const uint8_t* p, size_t n) {
+    static const char* T =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t o = 0, i;
+    for (i = 0; i + 3 <= n && o + 4 < cap; i += 3, o += 4) {
+        uint32_t v = (p[i] << 16) | (p[i+1] << 8) | p[i+2];
+        out[o] = T[v >> 18]; out[o+1] = T[(v >> 12) & 63];
+        out[o+2] = T[(v >> 6) & 63]; out[o+3] = T[v & 63];
+    }
+    if (i < n && o + 4 < cap) {
+        uint32_t v = (p[i] << 16) | ((i+1 < n ? p[i+1] : 0) << 8);
+        out[o] = T[v >> 18]; out[o+1] = T[(v >> 12) & 63];
+        out[o+2] = (i+1 < n) ? T[(v >> 6) & 63] : '=';
+        out[o+3] = '=';
+        o += 4;
+    }
+    out[o] = 0;
+    return (int)o;
+}
 
 void DbgPoke(int32_t module) {
     WriteLog("[MP-AV] poke %d (mgr %p, was %d)\n", module, s_mgr,

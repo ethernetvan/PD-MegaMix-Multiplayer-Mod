@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 
 #include <cstdint>
 
@@ -48,5 +49,9 @@ void OnStageResult(bool init);
 MpState GetState();
 void    GetStatus(MpStatus* out);
 const char* StateName(MpState s);
+
+/* big one-shot line (avatar_img) - a static 64 KiB slot outside the
+ * 510-byte ring; false if busy, not connected, or too big */
+bool EnqueueBlob(const char* line, size_t len);
 
 } // namespace mp

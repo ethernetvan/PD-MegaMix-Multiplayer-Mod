@@ -5,12 +5,54 @@
 #include "nc/input.hpp"
 #include "nc/game/target.hpp"
 #include "Sound.hpp"
+#include "imgui/imgui.h"
+#include <nn/os.hpp>
+#include <atomic>
 #include <cmath>
 
 namespace AutoPlay {
 
 bool g_enabled = false;
 int32_t g_hitPct = 100;
+
+static std::atomic<int64_t> s_gameFrameMs{0};
+
+void OnGameTaskFrame() {
+    s_gameFrameMs.store(
+        (int64_t)nn::os::GetSystemTick().GetInt64Value()
+            * 1000 / nn::os::GetSystemTickFrequency(),
+        std::memory_order_relaxed);
+}
+
+bool IndicatorVisible() {
+    if (!g_enabled || IsInSongResults()) return false;
+    int64_t now = (int64_t)nn::os::GetSystemTick().GetInt64Value()
+                    * 1000 / nn::os::GetSystemTickFrequency();
+    return now - s_gameFrameMs.load(std::memory_order_relaxed) < 300;
+}
+
+void DrawIndicator() {
+    if (!IndicatorVisible()) return;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    if (!dl) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    float k = io.DisplaySize.y / 720.0f;
+    const char* txt = (g_hitPct >= 100) ? "AUTO"
+                      : nullptr;
+    char buf[16];
+    if (!txt) { snprintf(buf, sizeof(buf), "AUTO %d%%", (int)g_hitPct);
+                txt = buf; }
+    float fs = ImGui::GetFont()->FontSize * 1.15f;
+    ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, txt);
+    float padX = 8 * k, padY = 3 * k;
+    ImVec2 p0(14 * k, 62 * k);
+    ImVec2 p1(p0.x + ts.x + padX * 2, p0.y + ts.y + padY * 2);
+    dl->AddRectFilled(p0, p1, IM_COL32(255, 201, 51, 235), 6 * k);
+    dl->AddRect(p0, p1, IM_COL32(0, 0, 0, 120), 6 * k, 0, 1.5f * k);
+    dl->AddText(ImGui::GetFont(), fs,
+                ImVec2(p0.x + padX, p0.y + padY),
+                IM_COL32(25, 25, 25, 255), txt);
+}
 
 /* deterministic per target index: pct=50 hits every other note; two
  * consoles with the same pct make the same judgments -> tie */

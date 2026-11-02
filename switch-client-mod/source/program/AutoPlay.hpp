@@ -11,6 +11,12 @@ namespace AutoPlay {
 extern bool g_enabled;
 extern int32_t g_hitPct;   /* 0..100: fraction of notes AutoPlay hits */
 
+/* in-song indicator: stamped each PV-game-task frame so the badge knows
+ * a song (incl. pause) is actually running */
+void OnGameTaskFrame();
+bool IndicatorVisible();
+void DrawIndicator();
+
 void init();
 void CheckMenuToggle();
 void Update(PVGameArcade* game);

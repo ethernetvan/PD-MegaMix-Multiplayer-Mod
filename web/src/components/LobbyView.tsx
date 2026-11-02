@@ -7,7 +7,8 @@ import { canAdmin, serverNow } from "../state";
 import { useStore } from "../store";
 import type { LobbySnap, MemberSnap, PickMode, StandingRow } from "../types";
 import HexAvatar from "./HexAvatar";
-import { memberName, PhaseBadge } from "./Overview";
+import { autoLabel } from "../autoplay";
+import { memberAvatar, memberName, PhaseBadge } from "./Overview";
 
 const PICK_LABEL: Record<PickMode, string> = {
   rotate: "Rotate",
@@ -133,13 +134,14 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
                     <span className="p-cell">
                       <HexAvatar
                         name={m.name}
+                        src={m.avatar ?? undefined}
                         size={32}
                         status={m.connected ? "online" : "offline"}
                       />
                       <span>
                         {m.name}
                         {m.autoplay && (
-                          <span className="badge auto">AUTO</span>
+                          <span className="badge auto">{autoLabel(m.autoplay_pct)}</span>
                         )}
                         {m.final && (
                           <span className="badge done">✓ finished</span>
@@ -240,13 +242,14 @@ function ResCard({
         )}
         <HexAvatar
           name={r.name}
+          src={r.avatar ?? undefined}
           size={38}
           status={r.connected ? "online" : "offline"}
           ring={win}
         />
         <span className="res-name">
           {r.name}
-          {r.autoplay && <span className="badge auto">AUTO</span>}
+          {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct)}</span>}
           {win && <span className="badge star">★ WINNER</span>}
           {tags.map((t) => (
             <span key={t} className="badge star">
@@ -443,7 +446,7 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
             if (!m) return null;
             return (
               <li key={mid} className={m.loaded ? "ok" : ""}>
-                <HexAvatar name={m.name} size={30} />
+                <HexAvatar name={m.name} src={m.avatar ?? undefined} size={30} />
                 <span className="chk-name">{m.name}</span>
                 <span className="chk-mark">{m.loaded ? "✓" : "…"}</span>
               </li>
@@ -486,12 +489,13 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
                   <span className="p-cell">
                     <HexAvatar
                       name={r.name}
+                      src={r.avatar ?? undefined}
                       size={32}
                       status={r.connected ? "online" : "offline"}
                     />
                     <span>
                       {r.name}
-                      {r.autoplay && <span className="badge auto">AUTO</span>}
+                      {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct)}</span>}
                     </span>
                   </span>
                 </td>
@@ -523,6 +527,7 @@ function Members({ l }: { l: LobbySnap }) {
             <span className="mem-hex">
               <HexAvatar
                 name={m.name}
+                src={m.avatar ?? undefined}
                 size={56}
                 status={m.connected ? "online" : "offline"}
                 ring={
@@ -538,7 +543,7 @@ function Members({ l }: { l: LobbySnap }) {
               {m.mid === l.owner && <span className="badge">Owner</span>}
               {m.mid === l.leader && <span className="badge pick">Picker</span>}
               {m.role !== "player" && <span className="badge">{m.role}</span>}
-              {m.autoplay && <span className="badge auto">AUTO</span>}
+              {m.autoplay && <span className="badge auto">{autoLabel(m.autoplay_pct)}</span>}
               {!m.connected && <span className="badge off">offline</span>}
               {m.connected && !m.ready && (
                 <span className="badge warn">{m.reason || "not ready"}</span>
@@ -624,6 +629,7 @@ function AdminPanel({ l }: { l: LobbySnap }) {
           <li key={m.mid}>
             <HexAvatar
               name={m.name}
+              src={m.avatar ?? undefined}
               size={30}
               status={m.connected ? "online" : "offline"}
             />
@@ -716,11 +722,11 @@ export default function LobbyView({ code }: { code: string }) {
         <div className="meta">
           {l.round && <span>round {l.round.id}</span>}
           <span className="mi">
-            owner <HexAvatar name={memberName(l, l.owner)} size={20} />{" "}
+            owner <HexAvatar name={memberName(l, l.owner)} src={memberAvatar(l, l.owner)} size={20} />{" "}
             {memberName(l, l.owner)}
           </span>
           <span className="mi">
-            picker <HexAvatar name={memberName(l, l.leader)} size={20} />{" "}
+            picker <HexAvatar name={memberName(l, l.leader)} src={memberAvatar(l, l.leader)} size={20} />{" "}
             {memberName(l, l.leader)}
           </span>
           <span>{PICK_LABEL[l.pick_mode]}</span>
