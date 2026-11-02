@@ -284,7 +284,7 @@ static void HandleLine(const char* line, int len) {
 enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
-    PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds
+    PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds, Glow
 };
 struct MpCmd {
     MpCmdType type;
@@ -373,6 +373,10 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
         c.b = -1; getInt("pct", &c.b);
+    } else if (strcmp(cmd, "glow") == 0) {
+        /* {cmd:glow, dir:up|down} - debug: fire the rank-change glow */
+        c.type = MpCmdType::Glow;
+        c.a = (strstr(line, "\"down\"") != nullptr) ? 0 : 1;
     } else if (strcmp(cmd, "menu_holds") == 0) {
         /* {cmd:menu_holds, init, score_a, vp, menu, nav} - results page
          * hold times (ms); -1 keeps the current value */
@@ -508,6 +512,9 @@ void OnFrame() {
             case MpCmdType::MenuHolds:
                 menu::SetResHolds(c.pvs[0], c.pvs[1], c.pvs[2],
                                   c.pvs[3], c.pvs[4]);
+                break;
+            case MpCmdType::Glow:
+                mp::lobby::TriggerRankGlow(c.a != 0);
                 break;
             default: break;
         }

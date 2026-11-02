@@ -503,6 +503,12 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
         if ((ph == 3 /*LOADING*/ || ph == 4 /*PLAYING*/ || ph == 5 /*SPEC*/) &&
             !sn.inSongSelect && sn.resultsAgeMs < 0)
             mp::lobby::DrawLeaderboard();
+        /* rank glow + race gauge also run while the board is hidden,
+         * as long as a song is playing */
+        if (sn.inSong) {
+            mp::lobby::DrawRankGlow();
+            mp::lobby::DrawGaugeRace();
+        }
         if (sn.waitingStart) mp::lobby::DrawWaiting();
         if (sn.resultsAgeMs >= 0 && sn.standingCount > 0)
             mp::lobby::DrawResultsAvatars();

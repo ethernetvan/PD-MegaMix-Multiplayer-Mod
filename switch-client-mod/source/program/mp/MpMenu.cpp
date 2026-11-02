@@ -10,10 +10,13 @@ namespace mp::menu {
  * 26-46 FPS emulators because the results-page input locks are
  * frame-based animations. s_frame ticks once per presented frame
  * (mp::OnFrame -> menu::Frame). Results values = what passed 6
- * consecutive 3-emulator auto-return rounds (90/60/100/45/15) + 6. */
+ * consecutive 3-emulator auto-return rounds (90/60/100/45/15) + 6, except
+ * VP: those rounds were all fails, and a CLEARED result's VP page (count-up)
+ * locks input longer - a leader's A at ~106 frames was eaten once - so VP
+ * keeps the old 120 until a real "VP done" signal is found. */
 static uint64_t RES_INIT_HOLD       = 96;
 static uint64_t RES_SCORE_A_HOLD    = 66;
-static uint64_t RES_VP_HOLD         = 106;
+static uint64_t RES_VP_HOLD         = 120;
 static uint64_t RES_MENU_HOLD       = 51;
 static uint64_t RES_NAV_HOLD        = 21;
 static const uint64_t PAUSE_OPEN_HOLD     = 21;

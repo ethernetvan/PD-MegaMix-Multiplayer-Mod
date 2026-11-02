@@ -1757,6 +1757,8 @@ void GetSnapshot(Snapshot* out) {
     }
     out->boardCount = s_boardCount;
     for (int i = 0; i < s_boardCount; i++) {
+        strncpy(out->board[i].cid, s_board[i].cid,
+                sizeof(out->board[i].cid) - 1);
         strncpy(out->board[i].name, s_board[i].name,
                 sizeof(out->board[i].name) - 1);
         out->board[i].score = s_board[i].score;
@@ -1784,6 +1786,9 @@ void GetSnapshot(Snapshot* out) {
     }
     out->resultsAgeMs = s_resultsShownAt > 0
         ? (int32_t)(NowMs() - s_resultsShownAt) : -1;
+    out->myPct = s_curPct;
+    out->sinceStartMs = s_launchStartMs > 0
+        ? (int32_t)(NowMs() - s_launchStartMs) : -1;
     out->inSong = strcmp(s_scene, "game") == 0;
     /* the leader waits in LOADING, followers in LAUNCHING once loaded */
     out->waitingStart = s_phase == L_LOADING ||

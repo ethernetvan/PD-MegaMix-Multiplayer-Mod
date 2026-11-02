@@ -21,6 +21,7 @@ def main():
     sub.add_parser("jump").add_argument("pv", type=int)
     sub.add_parser("autopause").add_argument("state", choices=["on", "off"])
     p = sub.add_parser("autoplay"); p.add_argument("state", choices=["on", "off"]); p.add_argument("--pct", type=int, default=None)
+    p = sub.add_parser("glow"); p.add_argument("dir", choices=["up", "down"])
     p = sub.add_parser("menu_holds")
     for k in ("init", "score_a", "vp", "menu", "nav"):
         p.add_argument("--" + k, type=int, default=-1)
@@ -95,6 +96,8 @@ def main():
         pl = {"cmd": args.cmd}
     elif args.cmd == "lobby_join":
         pl = {"cmd": "lobby_join", "code": args.code.upper()}
+    elif args.cmd == "glow":
+        pl = {"cmd": "glow", "dir": args.dir}
     if args.cid:
         pl["cid"] = args.cid
     send(pl, args.port)

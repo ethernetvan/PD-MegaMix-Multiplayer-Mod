@@ -1568,6 +1568,178 @@ void DrawBanners() {
 /* ================================================================
  * Leaderboard (in-song) + waiting + standings
  * ============================================================== */
+/* per-member race colour (stable for the room): palette[index of that
+ * cid in Snapshot.members]. The game's own fill is cyan / yellow / red by
+ * life state and the clear zone is green, so those hues come last. */
+static const ImU32 kRacePalette[8] = {
+    IM_COL32(165, 110, 255, 255), IM_COL32(255, 150, 40, 255),
+    IM_COL32(70, 140, 255, 255), IM_COL32(235, 235, 235, 255),
+    IM_COL32(170, 240, 60, 255), IM_COL32(230, 70, 255, 255),
+    IM_COL32(255, 95, 170, 255), IM_COL32(255, 220, 70, 255),
+};
+
+static ImU32 RaceColor(const Snapshot& s, const char* cid) {
+    for (int i = 0; i < s.memberCount && i < 8; i++)
+        if (strcmp(s.members[i].cid, cid) == 0)
+            return kRacePalette[i];
+    return IM_COL32(180, 180, 180, 255);
+}
+
+/* smoothed displayed pct per other-player cid; reset out of song */
+static struct { char cid[20]; float d; } s_race[8];
+static int s_raceN = 0;
+
+static ImU32 _shade(ImU32 c, float f, int a) {
+    int r = (int)((c & 0xff) * f), g = (int)(((c >> 8) & 0xff) * f),
+        b = (int)(((c >> 16) & 0xff) * f);
+    return IM_COL32(r > 255 ? 255 : r, g > 255 ? 255 : g,
+                    b > 255 ? 255 : b, a);
+}
+
+void DrawGaugeRace() {
+    Snapshot s;
+    GetSnapshot(&s);
+    if (!s.inSong || s.boardCount == 0 || OverlayOpen() ||
+        s.resultsAgeMs >= 0) { s_raceN = 0; return; }
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    if (!dl) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    float k = io.DisplaySize.y / 720.0f;
+    float dt = io.DeltaTime;
+    auto X = [&](float p) {
+        p = p < 0 ? 0 : (p > 100 ? 100 : p);
+        return (130.0f + 11.0f * p) * k;
+    };
+    /* smooth each other player's pct toward its target */
+    int n = 0;
+    float ds_[8]; ImU32 cs_[8]; bool dc_[8];
+    for (int i = 0; i < s.boardCount && n < 8; i++) {
+        const auto& b = s.board[i];
+        if (b.me) continue;
+        int j;
+        for (j = 0; j < s_raceN; j++)
+            if (strcmp(s_race[j].cid, b.cid) == 0) break;
+        if (j == s_raceN && s_raceN < 8) {
+            strncpy(s_race[j].cid, b.cid, sizeof(s_race[j].cid) - 1);
+            s_race[j].d = b.pct;
+            s_raceN++;
+        }
+        if (j < s_raceN) {
+            s_race[j].d += (b.pct - s_race[j].d) * (dt * 8.0f > 1 ? 1 : dt * 8.0f);
+            ds_[n] = s_race[j].d;
+            cs_[n] = RaceColor(s, b.cid);
+            dc_[n] = !b.connected;
+            n++;
+        }
+    }
+    /* sort by displayed pct, largest first */
+    for (int i = 0; i + 1 < n; i++)
+        for (int j = i + 1; j < n; j++)
+            if (ds_[j] > ds_[i]) {
+                float tf = ds_[i]; ds_[i] = ds_[j]; ds_[j] = tf;
+                ImU32 tc = cs_[i]; cs_[i] = cs_[j]; cs_[j] = tc;
+                bool tb = dc_[i]; dc_[i] = dc_[j]; dc_[j] = tb;
+            }
+    float myx = X(s.myPct);
+    /* lead fill over [x(myPct), x(d)] for whoever is ahead; drawing
+     * nearest-last makes each visible segment a lead over the next */
+    bool anyLead = false;
+    for (int i = 0; i < n; i++) {           /* farthest first */
+        float d = ds_[i];
+        if (d <= s.myPct + 0.05f) continue;
+        anyLead = true;
+        ImU32 c = cs_[i];
+        int a = dc_[i] ? 80 : 235;
+        ImVec2 p0(myx, 692 * k), p1(X(d), 710 * k);
+        dl->AddRectFilledMultiColor(
+            p0, p1, _shade(c, 1.35f, a), _shade(c, 1.35f, a),
+            _shade(c, 1.0f, a), _shade(c, 1.0f, a));
+        dl->AddLine(ImVec2(p0.x, p0.y), ImVec2(p1.x, p0.y),
+                    IM_COL32(255, 255, 255, dc_[i] ? 28 : 70), 1.0f);
+        dl->AddRectFilled(ImVec2(p1.x - 2 * k, p0.y), p1,
+                          _shade(c, 0.6f, a), 0);
+    }
+    /* dark seam where the local player's own fill ends */
+    if (anyLead)
+        dl->AddRectFilled(ImVec2(myx, 692 * k), ImVec2(myx + 2 * k, 710 * k),
+                          IM_COL32(0, 0, 0, 170), 0);
+    /* pointers for EVERY other player (ahead or behind) */
+    for (int i = 0; i < n; i++) {
+        float d = ds_[i];
+        ImU32 c = cs_[i];
+        int a = dc_[i] ? 102 : 255;
+        ImVec2 tip(X(d), 690 * k);
+        dl->AddTriangleFilled(
+            ImVec2(tip.x - 5 * k, 682 * k), ImVec2(tip.x + 5 * k, 682 * k),
+            tip, (c & 0x00ffffff) | ((ImU32)a << 24));
+        dl->AddTriangle(
+            ImVec2(tip.x - 5 * k, 682 * k), ImVec2(tip.x + 5 * k, 682 * k),
+            tip, IM_COL32(0, 0, 0, dc_[i] ? 64 : 160), 1.0f);
+    }
+}
+
+/* rank-change edge glow: 400 ms hold + 1500 ms cooldown, 1200 ms fade */
+static int      s_glowBaseline = -1;
+static int      s_glowCandidate = 0;
+static uint64_t s_glowCandAt = 0;
+static uint64_t s_glowLastAt = 0;
+static uint64_t s_glowStart = 0;
+static int      s_glowUp = 1;
+static uint64_t _ms() {
+    return (uint64_t)nn::os::GetSystemTick().GetInt64Value() * 1000
+           / nn::os::GetSystemTickFrequency();
+}
+
+void TriggerRankGlow(bool up) {
+    s_glowUp = up ? 1 : 0;
+    s_glowStart = _ms();
+    s_glowLastAt = s_glowStart;
+}
+
+void DrawRankGlow() {
+    Snapshot s;
+    GetSnapshot(&s);
+    if (!s.inSong) { s_glowBaseline = -1; s_glowCandidate = 0;
+                     s_glowStart = 0; return; }
+    uint64_t now = _ms();
+    int myRank = 0;
+    for (int i = 0; i < s.boardCount; i++)
+        if (s.board[i].me) { myRank = s.board[i].rank; break; }
+    if (myRank <= 0) return;
+    if (s.sinceStartMs < 8000 || s_glowBaseline < 0) {
+        s_glowBaseline = myRank; s_glowCandidate = 0; }
+    else if (myRank == s_glowBaseline) {
+        s_glowCandidate = 0;               /* jitter back: drop the candidate */
+    } else if (s_glowCandidate != myRank) {
+        s_glowCandidate = myRank; s_glowCandAt = now;
+    } else if (s_glowCandidate && myRank == s_glowCandidate &&
+               now - s_glowCandAt >= 400 &&
+               now - s_glowLastAt >= 1500) {
+        s_glowUp = myRank < s_glowBaseline ? 1 : 0;
+        s_glowStart = now; s_glowLastAt = now;
+        s_glowBaseline = myRank; s_glowCandidate = 0;
+    }
+    if (!s_glowStart) return;
+    float t = (float)(now - s_glowStart) / 1200.0f;
+    if (t >= 1.0f) { s_glowStart = 0; return; }
+    float alpha = 0.38f * (t < 0.12f ? t / 0.12f
+                                    : 1.0f - (t - 0.12f) / 0.88f);
+    if (alpha <= 0) return;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    if (!dl) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImVec2 ds = io.DisplaySize;
+    ImU32 col = s_glowUp ? IM_COL32(70, 230, 130, 255)
+                         : IM_COL32(175, 90, 255, 255);
+    int a = (int)(alpha * 255);
+    ImU32 edge = (col & 0x00ffffff) | ((ImU32)a << 24);
+    float w = ds.x * 0.10f;
+    dl->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(w, ds.y),
+                                edge, 0, 0, edge);
+    dl->AddRectFilledMultiColor(ImVec2(ds.x - w, 0), ImVec2(ds.x, ds.y),
+                                0, edge, edge, 0);
+}
+
 void DrawLeaderboard() {
     Snapshot s;
     GetSnapshot(&s);
@@ -1592,6 +1764,16 @@ void DrawLeaderboard() {
         ImVec4 c = b.me ? ImVec4(1.0f, 0.9f, 0.3f, 1)
                  : (b.connected ? ImVec4(1, 1, 1, 1)
                                 : ImVec4(0.5f, 0.5f, 0.5f, 1));
+        if (!b.me) {
+            ImU32 rc = RaceColor(s, b.cid);
+            ImGui::PushID(r);
+            ImGui::ColorButton("##rc", ImVec4(
+                (rc & 0xff) / 255.f, ((rc >> 8) & 0xff) / 255.f,
+                ((rc >> 16) & 0xff) / 255.f, 1.0f),
+                ImGuiColorEditFlags_NoTooltip, ImVec2(8 * k, 8 * k));
+            ImGui::PopID();
+            ImGui::SameLine();
+        }
         ImGui::TextColored(c, "%d %-10.10s %.1f%%", b.rank > 0 ? b.rank : r + 1,
                            b.name, (double)b.pct);
         ImVec4 lc = b.life >= 77 ? ImVec4(0.35f, 0.80f, 0.51f, 1)

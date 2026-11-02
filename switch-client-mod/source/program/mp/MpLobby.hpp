@@ -22,6 +22,9 @@ void OnPvGameFrame(PVGameData* pv);
 void OnStageResult(bool init);
 
 /* UI visibility helpers + draws (ImGui thread = same as Pump thread). */
+void DrawGaugeRace();
+void DrawRankGlow();
+void TriggerRankGlow(bool up);   /* dbg_cmd `glow up|down` */
 bool InLobby();
 bool PanelWanted();           /* song select + connected */
 void DrawPanel();
@@ -65,9 +68,11 @@ struct Snapshot {
     char     notReady[128];   /* leader warnings */
     char     unavailFor[96];  /* names the leader's pick isn't available for */
     /* board rows */
-    struct { char name[40]; int32_t score; float pct; int32_t life;
+    struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t life;
              int rank; bool connected, me; } board[8];
     int      boardCount;
+    float    myPct;           /* local fill, same value the gauge shows */
+    int32_t  sinceStartMs;    /* ms since the round's synced start, -1 none */
     bool     standingsComplete;
     struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t max_combo;
              int32_t life; int rank; bool final; bool me; bool connected;
