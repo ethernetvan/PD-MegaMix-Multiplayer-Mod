@@ -33,11 +33,22 @@ sees final standings, then returns to song select. A web page will later spectat
 - Song select: D-pad L/R = difficulty; L/R/Y = filters/sort; X or R-stick = module picker (sel busy != 0).
   A on a song → confirm panel (state 8); A again without moving = Start → state 10 → Dest. The panel ignores
   input for ~0.5s after appearing.
-- Pause menu: Resume (default) / Retry / Lag Config / Options / Return to Song List. Plus pauses and resumes.
-- Results: Clear/Not Clear → ~2s → results; A → rank/points; A → menu (RETRY default, Return to Song List below).
+- Pause menu: Resume (default) / Retry / Lag Config / Options / Return to Song List; the cursor wraps both ways
+  and opens on Resume every time. Plus, B, and A on Resume resume immediately (no countdown); Plus and B resume
+  from any item. D-pad presses within ~100 ms of the menu opening are dropped. Plus does nothing during the
+  fail sequence at life 0.
+- Results (CLEAR and NOT CLEAR alike): score page --A--> `win_vp` page --A--> 2-item menu [Retry (default),
+  Return to Song List]; Down/Up toggle, Left/Right do nothing, B doesn't close the menu. Return + A → StageResult
+  dest and pv_sel init within ~1 s. Retry (from results or pause) restarts the song with `pv->loaded` staying 1.
+- No cursor signal exists for either menu (no AET layer-name call, no PVGameData byte); the only results-page
+  signal is the AET in/loop/out call with `in = "win_vp_in"` (page 2).
 - Failing (life 0) ends the song early.
+- Song availability: `sorted_pv_lists[8*sort + 2*difficulty + edition]` in the selector (all lists of the current
+  sort mode are built at pv_sel init; edition 1 only at Extreme). pv_db contains DLC the console doesn't own.
 
 ## NEXT SESSION START HERE
+Latest state: Round 8 below; the remaining prioritized list is in `docs/NEXT_SESSION_TODO.md` (local handoff
+file). The paragraph below is historical (round 4/5).
 Items 1–7 below were implemented in commit `78ecb4e` (28/28 server tests pass, client builds, boots to song
 select) but have NOT been exercised on a device. First job: verify each on Ryujinx and the real Switch —
 MP button + overlay open/close + minimized room info, create/join from the overlay, owner pick modes across
@@ -132,12 +143,47 @@ placement, interactive bot session end-to-end.
   the real Switch so far. Root cause unknown; not an accepted emulator quirk. Next step: Ryujinx GDB stub
   stack dump of the game threads during a freeze, and an A/B with the multiplayer overlay disabled.
 
+## Round 8: results/pause menus driven blind, ties, song-select following (2026-11-02)
+Commits `815f20b`, `79e244c`, `ce0a059` (on top of `f9f16c6`).
+- **Menu model (`mp/MpMenu.cpp`).** Fed from `input::Apply` for the game's own GetNpadState polls (after blocks
+  and injects), it counts the presses the game actually receives, keeps a page/cursor model, and strips input
+  the model says can't land (presses inside a page's hold time are swallowed too, so game and model agree).
+  Results: SCORE (hold 2 s after StageResult init; A passes, 1.2 s hold) → VP on `win_vp_in` (2 s hold) → A →
+  MENU cursor 0 (1 s hold; Up/Down toggle, 350 ms hold) → A on Return → EXIT. Pause: opens at cursor 0 (350 ms
+  hold), 5 items wrapping (150 ms hold). On a tracked page the sticks are zeroed and every button the menu
+  can't use is stripped. A 4 s EXIT without a StageResult dest resyncs the model to MENU on Return.
+- **Rooms with 2+ members.** A on Retry is swallowed in both menus with a banner; in the pause menu Lag Config
+  and Options too (sub-menus would desync the count). Return to Song List from pause leaves the round and sends
+  the `final`. Safety net: after a results dest with no pv_sel init, a song clock that keeps running = a retry
+  slipped through → the client pauses and leaves via Return to Song List. Solo rooms are vanilla.
+- **Results auto-return.** When the round is over (`round_end` after the leader/owner left results, or a launch
+  while on results) the client walks SCORE → VP → MENU → Return by itself once its results screen has loaded
+  (~4–6 s), with all real input blocked meanwhile.
+- **Group pause.** The local game follows the server state through a per-frame reconciler (forced Plus, 600 ms
+  apart, one per 2 s after 5 misses). Real Plus → `pause_req`/`resume_req`; A on Resume and B → `resume_req`.
+  Real-input edges are now combined across Npad styles, which fixes one Plus press on a Pro Controller /
+  sys-botbase producing ~6 requests. Server: pause votes ignore players who already finished.
+- **Ties.** One competition-rank helper (1-2-2-4 on pct, then score) for standings and the live board. Results
+  screen: tied players share a row, hexagons side by side under one label (max 3, then +N). Web: tie card.
+- **MP Live.** Top-right below the note-rating icons; shared rank, name, % and a life bar per player.
+- **Song-select following.** Availability comes from the selector's lists, not pv_db: a song missing everywhere
+  → no jumps, `sel_ack has:false`, "You don't have <song>", a launch on it spectates; missing only at the
+  follower's difficulty → switch to the closest difficulty with a chart. Max 3 failed jumps per target. The
+  picker sees "Not available for: <names>". The per-step "Leader picked" banner is gone. This explains the
+  admin `jump 700 → got 611`: Ievan Polkka isn't in the emulator's selectable lists, so the selector stays put.
+- Verified on 2 Ryujinx instances: auto-return (incl. round_end arriving while still in the song), Retry
+  swallowed on results, owner pause/resume, B → resume_req, retry recovery (forced with `admin.py menu_cursor 1`),
+  solo-room vanilla pause and Retry, tie row + MP Live screenshots, browsing matrix (steps, held scroll, L/R, Y,
+  difficulty, A+B, quick jump), missing songs (bot picker, pv 59/700), closest-difficulty switch, picker pill.
+  Real Switch: results Retry swallowed and manual exit, follower launch + synced start.
+
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
    they leave) separately from `leader` (current song picker). Owner chooses `pick_mode`:
    `owner` (owner always picks), `assigned` (owner assigns a member), `rotate` (current behavior: rotate after
    each round). Server: `set_pick_mode {mode, cid?}` (owner only); `lobby` msg gains `owner`, `pick_mode`.
-2. **Group pause.** During a round, a real Plus press is intercepted (Plus stays blocked) and sent as
+2. *(Done; reworked in Round 8: pause-menu navigation is allowed, Retry/Lag Config/Options are swallowed.)*
+   **Group pause.** During a round, a real Plus press is intercepted (Plus stays blocked) and sent as
    `pause_req`. Owner → immediate `pause` broadcast; everyone else → a vote: banner on all clients
    "Pause vote: N/M agreed — press + to agree (Ns left)", passes when all connected players agree, expires after
    15s. On pass every client pauses itself (inject Plus only if not already paused). Resume works the same way
@@ -151,7 +197,8 @@ placement, interactive bot session end-to-end.
 4. **Hide AutoPlay.** Toggle only with ZR pressed 5 times within 3s (must not fire the existing double-ZR 2D-mode
    toggle as a side effect — decide at window end). Show nothing when off; persistent "AUTOPLAY ON" text while
    on. Force AutoPlay off and ignore the toggle while in a lobby.
-5. **Results: no auto-advance.** Remove the results auto-return; players leave results when they choose.
+5. *(Superseded: the leader/owner leaving results ends the round and moves everyone on, see Round 8.)*
+   **Results: no auto-advance.** Remove the results auto-return; players leave results when they choose.
    Unblock input on results (a RETRY then just plays solo; client marks itself not ready). Server waits for
    back_in_sel up to 90s (was 25s) before round_end; a player still in results when the next round launches
    auto-launches when they reach song select (existing LAUNCHING behavior) or is dropped by the 30s rule.
