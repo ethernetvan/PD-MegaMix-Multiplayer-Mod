@@ -384,8 +384,36 @@ bool JumpSelectorToPv(void* selPtr, int32_t pvId, bool keepDifficulty) {
     return JumpImpl(selPtr, pvId, 3, 0, !keepDifficulty, !keepDifficulty);
 }
 
+/* game fn 0x5d4740 (declared in nc/ui/pv_sel_switch.cpp): is this PvData a
+ * member of folder folder_idx for (sort_mode, difficulty, edition)? For the
+ * All folders pass pd->data2 (they aren't favorite folders). */
+static inline FUNCTION_PTR(bool, __fastcall, CheckSongPertainsGlobal,
+    0x5d4740, const void* data2, int32_t folder_idx, uint32_t folder_idx_dup,
+    int32_t sort_mode, uint32_t difficulty, int32_t edition);
+
+static int32_t AllFolderForSort(int32_t mode) {
+    switch (mode) { case 0: return 10; case 1: return 19;
+                    case 2: return 6;  case 3: return 5; }
+    return 19;
+}
+
+/* what the selector actually shows: entry must be in sorted_pv_lists AND
+ * pass the style filter AND the current sort mode's All-folder check */
+static bool EntryShown(const pvsel::PvData* pd, int32_t mode,
+                       int32_t diff, int32_t ed) {
+    if (!pd || !pd->data2 || !pd->data2->pv_db_entry) return false;
+    int32_t pvId = *pd->data2->pv_db_entry;
+    if (!pvsel::CheckSongHasStyleAvailable(pvId, diff, ed,
+            pvsel::GetSelectedStyleOrDefault()))
+        return false;
+    int32_t folder = AllFolderForSort(mode);
+    return CheckSongPertainsGlobal(pd->data2, folder, (uint32_t)folder,
+                                   mode, (uint32_t)diff, (uint32_t)ed);
+}
+
 /* Is pv in the sorted_pv_lists entry for (difficulty, edition) of the
- * selector's current sort mode? index = 8*sort + 2*difficulty + edition. */
+ * selector's current sort mode AND actually displayed there?
+ * index = 8*sort + 2*difficulty + edition. */
 bool PvSelectableAt(const void* selPtr, int32_t pv, int32_t diff, int32_t ed) {
     if (selPtr == nullptr || pv <= 0) return false;
     const char* sel = reinterpret_cast<const char*>(selPtr);
@@ -402,9 +430,24 @@ bool PvSelectableAt(const void* selPtr, int32_t pv, int32_t diff, int32_t ed) {
         const pvsel::PvData* pd = vec->begin_ + i;
         if (pd->data2 && pd->data2->pv_db_entry &&
             *pd->data2->pv_db_entry == pv)
-            return true;
+            return EntryShown(pd, mode, diff, ed);
     }
     return false;
+}
+
+/* entries that pass the display filter in one sorted_pv_lists entry -
+ * matches the "NNN/NNN songs" counter on screen */
+int32_t SelVisibleCount(const void* selPtr, int32_t diff, int32_t ed) {
+    const char* sel = reinterpret_cast<const char*>(selPtr);
+    int32_t mode = *reinterpret_cast<const int32_t*>(sel + 0x26198);
+    if (mode < 0 || mode > 3) return -1;
+    auto* vec = reinterpret_cast<const libcxx_vector_base<pvsel::PvData>*>(
+                    sel + 0x25DD0 + (uintptr_t)(8 * mode + 2 * diff + ed) * 0x18);
+    if (!vec->begin_ || vec->end_ < vec->begin_) return -1;
+    int n = (int)(vec->end_ - vec->begin_), cnt = 0;
+    for (int i = 0; i < n; i++)
+        if (EntryShown(vec->begin_ + i, mode, diff, ed)) cnt++;
+    return cnt;
 }
 
 /* Nearest (difficulty, edition) where pv is selectable:

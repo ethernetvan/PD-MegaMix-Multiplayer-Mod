@@ -10,6 +10,15 @@
 namespace AutoPlay {
 
 bool g_enabled = false;
+int32_t g_hitPct = 100;
+
+/* deterministic per target index: pct=50 hits every other note; two
+ * consoles with the same pct make the same judgments -> tie */
+static bool ShouldHit(int32_t idx) {
+    if (g_hitPct >= 100 || idx < 0) return true;
+    if (g_hitPct <= 0) return false;
+    return (int)(((int64_t)idx * g_hitPct) % 100) < g_hitPct;
+}
 
 static int32_t s_auto_down[8]   = { 0 };
 static int32_t s_auto_tapped[8] = { 0 };
@@ -112,6 +121,10 @@ void Update(PVGameArcade* game) {
     if (time_rem > 0.008f || time_rem < -0.028f)
         return;
 
+    /* a skipped chord counts as a miss; long-note ends are still released
+     * below so a held note started earlier doesn't stay down */
+    const bool hit = ShouldHit(first_target->target_index);
+
     // 4. Process initial note hit
     for (PvGameTarget* target = game->target; target != nullptr; target = target->next) {
         if (target->hit_state != 21 && target->hit_state != HitState_None)
@@ -128,6 +141,11 @@ void Update(PVGameArcade* game) {
             continue;
 
         TargetStateEx* ex = GetTargetStateEx(target);
+        bool isLongEnd = target->target_type >= TargetType_TriangleLong &&
+                         target->target_type <= TargetType_SquareLong &&
+                         ex && ex->long_end;
+        if (!hit && !isLongEnd)
+            continue;
 
         // Regular notes (0..7, 18..21)
         if ((target->target_type >= 0 && target->target_type <= 7) ||
@@ -241,6 +259,7 @@ void PostUpdate(PVGameArcade* game) {
     if (!first_target) return;
     float time_rem = first_target->flying_time_remaining;
     if (time_rem > 0.008f || time_rem < -0.028f) return;
+    bool hit = ShouldHit(first_target->target_index);
 
     for (PvGameTarget* target = game->target; target != nullptr; target = target->next) {
         if (target->hit_state != 21 && target->hit_state != HitState_None) continue;
@@ -249,6 +268,29 @@ void PostUpdate(PVGameArcade* game) {
         if (!is_same_chord) continue;
 
         TargetStateEx* ex = GetTargetStateEx(target);
+        if (!hit) {
+            /* a missed chord: skip the star-note taps but still perform
+             * the long-note release below */
+            if (target->target_type >= TargetType_TriangleLong && target->target_type <= TargetType_SquareLong) {
+                if (ex && ex->long_end) {
+                    int32_t btn_id = -1;
+                    switch (target->target_type) {
+                        case TargetType_TriangleLong: btn_id = Button_Triangle; break;
+                        case TargetType_CircleLong:   btn_id = Button_Circle;   break;
+                        case TargetType_CrossLong:    btn_id = Button_Cross;    break;
+                        case TargetType_SquareLong:   btn_id = Button_Square;   break;
+                    }
+                    if (btn_id != -1) {
+                        macro_state.buttons[btn_id].data[0].down     = false;
+                        macro_state.buttons[btn_id].data[0].up       = true;
+                        macro_state.buttons[btn_id].data[0].released = true;
+                        macro_state.raw_buttons[btn_id].data[0].down     = false;
+                        macro_state.raw_buttons[btn_id].data[0].released = true;
+                    }
+                }
+            }
+            continue;
+        }
         if (ex && ex->IsStarLikeNote() && target->target_type != 40 && target->target_type != TargetType_StarW) {
             macro_state.buttons[Button_LStick].data[0].tapped = true;
             macro_state.buttons[Button_LStick].data[0].down   = true;
@@ -327,6 +369,8 @@ void ProcessSlideHit(
         if (!is_slide) continue;
 
         if (t->flying_time_remaining <= 0.038f && t->flying_time_remaining >= -0.04f) {
+            if (!ShouldHit(t->target_index))
+                continue;               /* missed slide (and its pair) */
             s_last_hit_target = t->target_index;
 
             // Chain slide

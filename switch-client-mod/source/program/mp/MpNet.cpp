@@ -4,6 +4,7 @@
 #include "MpJson.hpp"
 #include "MpInput.hpp"
 #include "MpLobby.hpp"
+#include "../AutoPlay.hpp"
 #include "MpMenu.hpp"
 #include "../logger.hpp"
 #include "../Config.hpp"
@@ -249,7 +250,7 @@ static void HandleLine(const char* line, int len) {
 enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
-    PokeAvatar, DumpAvatar, MenuCursor, SelLists
+    PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay
 };
 struct MpCmd {
     MpCmdType type;
@@ -332,6 +333,12 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         c.type = MpCmdType::Autopause;
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
+    } else if (strcmp(cmd, "autoplay") == 0) {
+        /* {cmd:autoplay, on:bool, pct?:int} */
+        c.type = MpCmdType::Autoplay;
+        int o = mpjson::Find(line, tok, ntok, "on");
+        c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
+        c.b = -1; getInt("pct", &c.b);
     } else if (strcmp(cmd, "list_pvs") == 0) {
         c.type = MpCmdType::ListPvs;
     } else if (strcmp(cmd, "lobby_create") == 0) {
@@ -433,6 +440,14 @@ void OnFrame() {
             case MpCmdType::BlockClear: input::ClearBlocked(); break;
             case MpCmdType::Jump:     g_pendingJump.store(c.a); break;
             case MpCmdType::Autopause: g_autopauseArm.store(c.a); break;
+            case MpCmdType::Autoplay: {
+                if (c.b >= 0) {
+                    AutoPlay::g_hitPct = c.b > 100 ? 100 : (c.b < 0 ? 0 : c.b);
+                }
+                AutoPlay::g_enabled = c.a != 0;
+                lobby::ReportAutoPlay(AutoPlay::g_enabled);
+                break;
+            }
             case MpCmdType::ListPvs:  SendPvList(); break;
             case MpCmdType::LobbyCreate: lobby::CmdLobbyCreate(); break;
             case MpCmdType::LobbyJoin:   lobby::CmdLobbyJoin(c.str); break;

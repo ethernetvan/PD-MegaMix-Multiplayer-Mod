@@ -16,8 +16,12 @@ namespace SongQuickJump {
     /* Jump to pvId at an explicit difficulty/edition (no SFX). */
     bool JumpSelectorToPvAt(void* sel, int32_t pvId, int32_t diff, int32_t ed);
     /* pv present in sorted_pv_lists[8*sort + 2*diff + ed] of the
-     * selector's current sort mode. */
+     * selector's current sort mode AND actually shown (style + All
+     * folder filters applied). */
     bool PvSelectableAt(const void* sel, int32_t pv, int32_t diff, int32_t ed);
+    /* entries of that list that pass the display filter - the on-screen
+     * "NNN/NNN songs" counter for the current difficulty. */
+    int32_t SelVisibleCount(const void* sel, int32_t diff, int32_t ed);
     /* Nearest (diff, ed) where pv is selectable; same difficulty + other
      * edition first, then curDiff±k with edition 0 before 1. */
     bool ClosestSelectable(const void* sel, int32_t pv, int32_t curDiff,

@@ -20,6 +20,7 @@ def main():
     sub.add_parser("unblock")
     sub.add_parser("jump").add_argument("pv", type=int)
     sub.add_parser("autopause").add_argument("state", choices=["on", "off"])
+    p = sub.add_parser("autoplay"); p.add_argument("state", choices=["on", "off"]); p.add_argument("--pct", type=int, default=None)
     sub.add_parser("list_pvs")
     sub.add_parser("spamstop")
     sub.add_parser("lobbies")
@@ -54,6 +55,10 @@ def main():
         pl = {"cmd": "jump", "pv": args.pv}
     elif args.cmd == "autopause":
         pl = {"cmd": "autopause", "on": args.state == "on"}
+    elif args.cmd == "autoplay":
+        pl = {"cmd": "autoplay", "on": args.state == "on"}
+        if args.pct is not None:
+            pl["pct"] = max(0, min(100, args.pct))
     elif args.cmd == "list_pvs":
         pl = {"cmd": "list_pvs"}
     elif args.cmd == "lobbies":

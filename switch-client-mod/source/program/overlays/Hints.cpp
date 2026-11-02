@@ -310,6 +310,16 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
     float gw = 28.0f * s, gh = 18.0f * s;
     ImVec2 gpos(posX + w - gw - 10.0f * s, posY + 7.0f * s);
     DrawSwitchTriggerZR(drawList, font, gpos, ImVec2(gw, gh), hovered);
+    /* AUTO tag left of the ZR glyph when AutoPlay is on */
+    if (AutoPlay::g_enabled) {
+        char atag[16];
+        if (AutoPlay::g_hitPct >= 100) snprintf(atag, sizeof(atag), "AUTO");
+        else snprintf(atag, sizeof(atag), "AUTO %d%%", (int)AutoPlay::g_hitPct);
+        ImVec2 asz = font->CalcTextSizeA(baseFontSz, FLT_MAX, 0.0f, atag);
+        drawList->AddText(font, baseFontSz,
+                          ImVec2(gpos.x - asz.x - 8.0f * s, posY + 6.0f * s),
+                          IM_COL32(255, 210, 60, 255), atag);
+    }
     drawList->AddText(font, baseFontSz, ImVec2(posX + 12.0f * s, posY + 6.0f * s),
                       mpOn ? IM_COL32(255, 255, 255, 255) : IM_COL32(165, 175, 185, 200), title);
 
@@ -590,8 +600,16 @@ void ProcessInput() {
                     g_noMovie = !g_noMovie;
                     sound::PlaySelectSE();
                 }
+            } else if (s_tap_count == 3) {
+                /* partial AutoPlay: cycle the hit rate and switch it on */
+                AutoPlay::g_hitPct = AutoPlay::g_hitPct > 75 ? 75
+                    : (AutoPlay::g_hitPct > 50 ? 50
+                    : (AutoPlay::g_hitPct > 25 ? 25 : 100));
+                AutoPlay::g_enabled = true;
+                mp::lobby::ReportAutoPlay(true);
+                sound::PlaySelectSE();
             }
-            /* 3-4 presses resolve to nothing */
+            /* 4 presses resolve to nothing */
             s_tap_count = 0;
     }
 }

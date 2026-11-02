@@ -1235,9 +1235,10 @@ void OnPvSelFrame(const void* sel) {
                             if (s_slPvs[j] == id) has[nh++] = id;
                     }
                 }
+                int vis = SongQuickJump::SelVisibleCount(sel, d, e);
                 len += snprintf(buf + len, sizeof(buf) - len,
-                    "%s{\"d\":%d,\"e\":%d,\"n\":%d,\"has\":[",
-                    (d || e) ? "," : "", d, e, n);
+                    "%s{\"d\":%d,\"e\":%d,\"n\":%d,\"sel\":%d,\"has\":[",
+                    (d || e) ? "," : "", d, e, n, vis);
                 for (int i = 0; i < nh; i++)
                     len += snprintf(buf + len, sizeof(buf) - len,
                         "%s%d", i ? "," : "", has[i]);
@@ -1840,8 +1841,8 @@ void CmdResumeReq() {
 void ReportAutoPlay(bool on) {
     if (!s_code[0] && s_phase == L_NONE) return;
     char m[64];
-    snprintf(m, sizeof(m), "{\"t\":\"autoplay\",\"on\":%s}",
-             on ? "true" : "false");
+    snprintf(m, sizeof(m), "{\"t\":\"autoplay\",\"on\":%s,\"pct\":%d}",
+             on ? "true" : "false", (int)AutoPlay::g_hitPct);
     SendLine(m);
 }
 

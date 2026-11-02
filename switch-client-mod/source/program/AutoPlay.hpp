@@ -9,6 +9,7 @@ namespace diva_nc { struct vec2; }
 namespace AutoPlay {
 
 extern bool g_enabled;
+extern int32_t g_hitPct;   /* 0..100: fraction of notes AutoPlay hits */
 
 void init();
 void CheckMenuToggle();
