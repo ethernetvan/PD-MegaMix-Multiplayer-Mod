@@ -250,7 +250,7 @@ static void HandleLine(const char* line, int len) {
 enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
-    PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay
+    PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds
 };
 struct MpCmd {
     MpCmdType type;
@@ -339,6 +339,16 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
         c.b = -1; getInt("pct", &c.b);
+    } else if (strcmp(cmd, "menu_holds") == 0) {
+        /* {cmd:menu_holds, init, score_a, vp, menu, nav} - results page
+         * hold times (ms); -1 keeps the current value */
+        c.type = MpCmdType::MenuHolds;
+        static const char* k[5] = {"init", "score_a", "vp", "menu", "nav"};
+        c.pvsN = 5;
+        for (int i = 0; i < 5; i++) {
+            c.pvs[i] = -1;
+            getInt(k[i], &c.pvs[i]);
+        }
     } else if (strcmp(cmd, "list_pvs") == 0) {
         c.type = MpCmdType::ListPvs;
     } else if (strcmp(cmd, "lobby_create") == 0) {
@@ -460,6 +470,10 @@ void OnFrame() {
             case MpCmdType::DumpAvatar:  avatar::DbgDump(c.a); break;
             case MpCmdType::MenuCursor:  menu::ForceCursor(c.a); break;
             case MpCmdType::SelLists:   lobby::DbgSelLists(c.pvs, c.pvsN); break;
+            case MpCmdType::MenuHolds:
+                menu::SetResHolds(c.pvs[0], c.pvs[1], c.pvs[2],
+                                  c.pvs[3], c.pvs[4]);
+                break;
             default: break;
         }
     }

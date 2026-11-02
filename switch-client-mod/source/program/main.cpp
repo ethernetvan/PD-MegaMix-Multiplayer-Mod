@@ -39,6 +39,7 @@
 
 #include "mp/MpApi.hpp"
 #include "mp/MpNet.hpp"
+#include "mp/MpSceneHooks.hpp"
 
 #include "logger.hpp"
 
@@ -74,6 +75,11 @@ HOOK_DEFINE_TRAMPOLINE(MainHook) {
         ImGui::Init();
 
         nc::init();
+        /* MP needs the pv_sel/results hooks NC installs; when NC is off
+         * (and FT UI is not in play) the MP-only set does the same job. */
+        if (Config::mpEnabled && !Config::enableNewClassics &&
+            !(Config::enableFtUi || Config::forceFtUI))
+            mp::scenehooks::Install();
         shared_hooks::init();
 
         keyboard::init();

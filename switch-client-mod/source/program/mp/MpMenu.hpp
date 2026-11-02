@@ -29,6 +29,8 @@ enum Ev : uint32_t {
 };
 
 void BeginResults(bool guard, uint64_t now);  /* page SCORE */
+void SetResHolds(uint64_t init, uint64_t scoreA, uint64_t vp,
+                 uint64_t menu, uint64_t nav);
 void ResultsVpShown(uint64_t now);            /* ignored when P_NONE */
 void BeginPause(bool guard, uint64_t now);    /* page PAUSE, cursor 0 */
 void SetGuard(bool guard);

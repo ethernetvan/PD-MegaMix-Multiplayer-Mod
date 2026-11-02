@@ -113,13 +113,18 @@ class Server:
         client.name = hello.get("name", "?")
         client.mod = hello.get("mod", "?")
 
-        if (self.first_mod_version is None and
-                not client.mod.startswith("bot")):
-            self.first_mod_version = client.mod
-        expected = MOD_VERSION_EXPECTED or self.first_mod_version
+        # warn only if the newcomer's mod differs from EVERY other
+        # currently connected non-bot console; no warning when alone.
+        if MOD_VERSION_EXPECTED:
+            expected_set = {MOD_VERSION_EXPECTED}
+        else:
+            expected_set = {c.mod for cid, c in self.clients.items()
+                            if cid != client.cid
+                            and not c.mod.startswith("bot")}
         warn = None
-        if expected and client.mod != expected and                 not client.mod.startswith("bot"):
-            warn = f"mod version mismatch: you={client.mod} expected={expected}"
+        if expected_set and client.mod not in expected_set and                 not client.mod.startswith("bot"):
+            warn = (f"mod version mismatch: you={client.mod} "
+                    f"expected={sorted(expected_set)[0]}")
 
         rejoin = client.cid in self.known_cids
         old = self.clients.get(client.cid)

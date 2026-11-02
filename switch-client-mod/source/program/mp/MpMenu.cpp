@@ -6,11 +6,11 @@ namespace mp::menu {
 
 /* holds: how long a page ignores edges after it (or its last accepted
  * nav) appeared; nav: gap between accepted Up/Down edges. All ms. */
-static const uint64_t RES_INIT_HOLD       = 2000;
-static const uint64_t RES_SCORE_A_HOLD    = 1200;
-static const uint64_t RES_VP_HOLD         = 2000;
-static const uint64_t RES_MENU_HOLD       = 1000;
-static const uint64_t RES_NAV_HOLD        = 350;
+static uint64_t RES_INIT_HOLD       = 2000;
+static uint64_t RES_SCORE_A_HOLD    = 1200;
+static uint64_t RES_VP_HOLD         = 2000;
+static uint64_t RES_MENU_HOLD       = 1000;
+static uint64_t RES_NAV_HOLD        = 350;
 static const uint64_t PAUSE_OPEN_HOLD     = 350;
 static const uint64_t PAUSE_NAV_HOLD      = 150;
 static const uint64_t PAUSE_QUIT_TIMEOUT  = 3000;
@@ -47,6 +47,16 @@ void BeginResults(bool guard, uint64_t now) {
     s_guard = guard;
     s_cursor = 0;
     SetPage(P_RES_SCORE, now, RES_INIT_HOLD);
+}
+
+void SetResHolds(uint64_t init, uint64_t scoreA, uint64_t vp,
+                 uint64_t menu, uint64_t nav) {
+    std::lock_guard<std::mutex> lk(s_mtx);
+    if ((int64_t)init   >= 0) RES_INIT_HOLD    = init;
+    if ((int64_t)scoreA >= 0) RES_SCORE_A_HOLD = scoreA;
+    if ((int64_t)vp     >= 0) RES_VP_HOLD      = vp;
+    if ((int64_t)menu   >= 0) RES_MENU_HOLD    = menu;
+    if ((int64_t)nav    >= 0) RES_NAV_HOLD     = nav;
 }
 
 void ResultsVpShown(uint64_t now) {
