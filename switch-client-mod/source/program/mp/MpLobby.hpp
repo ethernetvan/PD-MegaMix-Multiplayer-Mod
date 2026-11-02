@@ -38,6 +38,10 @@ void CmdLobbyJoin(const char* code);
 void CmdLobbyLeave();
 void CmdSetName(const char* name);
 
+/* dbg_cmd sel_lists: dumps the 8 sorted_pv_lists of the current sort
+ * mode on the next pv_sel frame as a dbg_sel_lists message. */
+void DbgSelLists(const int32_t* pvs, int n);
+
 /* For MpUi: snapshot getters (copies; safe to call on UI thread). */
 struct MemberInfo { char cid[20]; char name[40]; bool connected, is_leader,
                     ready; char reason[24]; char role[12]; int32_t score; float pct;
@@ -57,6 +61,7 @@ struct Snapshot {
     int      loadedCount, playerCount;
     char     statusLine[96];
     char     notReady[128];   /* leader warnings */
+    char     unavailFor[96];  /* names the leader's pick isn't available for */
     /* board rows */
     struct { char name[40]; int32_t score; float pct; int32_t life;
              int rank; bool connected, me; } board[8];

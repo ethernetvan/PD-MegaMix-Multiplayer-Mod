@@ -8,6 +8,7 @@
 #include "../logger.hpp"
 #include "../overlays/SongQuickJump.hpp"
 #include "../nc/ui/customize_sel.hpp"
+#include "../nc/ui/pv_sel.hpp"
 #include "../hid.hpp"
 #include "../AutoPlay.hpp"
 #include <nn.hpp>
@@ -69,6 +70,18 @@ static int32_t s_lastJumpTarget = -1;
 static int   s_jumpVerify = 0;
 static bool  s_jumpFailedDiff = false;
 static char  s_ackSig[120] = "";
+static char  s_unavailFor[96] = "";    /* names the pick isn't available for */
+static int32_t s_slPvs[24];
+static int   s_slN = 0;
+static bool  s_slPending = false;
+static int32_t s_folLeaderPv = -1;   /* leader pv the target was resolved for */
+static int32_t s_folTarget = -1;     /* resolved jump target (-1 none) */
+static bool    s_folMissing = false; /* not selectable at any difficulty */
+static int32_t s_folTD = -1, s_folTE = -1;  /* (diff,ed) to jump to */
+static int     s_folFail = 0;        /* failed verify attempts, this target */
+static bool    s_folGaveUp = false;
+static int32_t s_folBannerPv = -1;   /* last target we bannered about */
+static int32_t s_folLastD = -1, s_folLastE = -1;
 static int64_t s_launchStartMs = 0;
 static int   s_launchStage = 0;
 static int   s_launchTries = 0;
@@ -87,6 +100,8 @@ static int64_t s_resultsShownAt = 0;   /* ms when the results screen appeared */
 static bool  s_quitting = false;         /* Return-to-Song-List from pause */
 static int64_t s_lastPauseReqMs = 0;
 static int64_t s_recLastTap = 0;         /* last pause reconciler tap */
+static int   s_recTaps = 0;              /* consecutive reconciler taps */
+static bool  s_recTarget = false;        /* last reconcile target */
 static int64_t s_blockBannerAt = 0;      /* rate limit for swallow banners */
 static int   s_prevPvPaused = 0;
 /* results auto-return driver */
@@ -286,6 +301,8 @@ static void ResetLobbyState() {
     s_code[0] = 0; s_leaderCid[0] = 0;
     s_memberCount = 0; s_boardCount = 0; s_standingCount = 0;
     s_selPv = -1; s_leaderPv = -1; s_localPv = -1;
+    s_folLeaderPv = -1; s_folTarget = -1; s_folMissing = false;
+    s_folFail = 0; s_folGaveUp = false; s_folTD = -1; s_folTE = -1;
     s_committed = false; s_amPlayer = false;
     s_loadedSent = false; s_startSeen = false;
     s_apActive = false; s_statePending = false;
@@ -301,6 +318,7 @@ static void ResetLobbyState() {
     s_standingsRound = 0;
     s_launchHandledRound = -1;   /* round numbers restart in every room */
     s_notReady[0] = 0;
+    s_unavailFor[0] = 0;
     s_ready = true; s_readyReason[0] = 0;
     s_statusLine[0] = 0;
     s_quitting = false; s_prevPvPaused = 0;
@@ -336,6 +354,8 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
     if (s_amLeader && !wasLeader) {
         /* follower -> leader: drop the latched follow target */
         s_localPv = s_leaderPv = -1;
+        s_folLeaderPv = -1; s_folTarget = -1; s_folMissing = false;
+        s_folFail = 0; s_folGaveUp = false; s_folTD = -1; s_folTE = -1;
         s_jumpFailedDiff = false;
         s_ackSig[0] = 0;
     }
@@ -547,15 +567,13 @@ static void ProcessLine(const std::string& l) {
             s_localPv = pv;
             s_jumpFailedDiff = false;
             s_ackSig[0] = 0;
-            char nm[48] = "";
-            SongQuickJump::PvName(pv, nm, sizeof(nm));
-            PushBanner("Leader picked: %s", nm[0] ? nm : s_selName);
         }
         return;
     }
     if (strcmp(t, "sel_status") == 0) {
         s_notReady[0] = 0;
-        int off = 0;
+        char unavail[96]; unavail[0] = 0;
+        int off = 0, uoff = 0;
         const char* keys[] = {"missing", "not_ready", "cant"};
         for (int k = 0; k < 3; k++) {
             int mi = mpjson::Find(line, tok, ntok, keys[k]);
@@ -571,8 +589,18 @@ static void ProcessLine(const std::string& l) {
                     mpjson::Copy(line, tok[i + j], rs, sizeof(rs));
                 off += snprintf(s_notReady + off, sizeof(s_notReady) - off,
                                 "%s%s%s; ", nm, rs[0] ? ":" : "", rs);
+                if (k != 1 && nm[0] && uoff < (int)sizeof(unavail) - 20)
+                    uoff += snprintf(unavail + uoff, sizeof(unavail) - uoff,
+                                     "%s, ", nm);
                 i = end;
             }
+        }
+        if (uoff >= 2) unavail[uoff - 2] = 0;   /* trim ", " */
+        if (strcmp(unavail, s_unavailFor) != 0) {
+            strncpy(s_unavailFor, unavail, sizeof(s_unavailFor) - 1);
+            s_unavailFor[sizeof(s_unavailFor) - 1] = 0;
+            if (s_amLeader && unavail[0])
+                PushBanner("Not available for %s", unavail);
         }
         return;
     }
@@ -614,10 +642,6 @@ static void ProcessLine(const std::string& l) {
             if (player) {
                 s_leaderPv = pv;
                 s_localPv = pv;
-                if (!SongQuickJump::PvInDb(pv) && s_selName[0]) {
-                    int32_t fb = SongQuickJump::FindPvByName(s_selName);
-                    if (fb > 0) s_localPv = fb;
-                }
                 SetPhase(L_LAUNCHING, "Leader started - finish module "
                                       "selection to join");
                 s_launchStage = 0;
@@ -718,9 +742,12 @@ static void ProcessLine(const std::string& l) {
         char nl[24] = "";
         if (i >= 0) mpjson::Copy(line, tok[i], nl, sizeof(nl));
         s_selPv = -1; s_leaderPv = -1; s_localPv = -1;
+    s_folLeaderPv = -1; s_folTarget = -1; s_folMissing = false;
+    s_folFail = 0; s_folGaveUp = false; s_folTD = -1; s_folTE = -1;
         s_committed = false; s_startSeen = false; s_loadedSent = false;
         s_jumpFailedDiff = false; s_standingsComplete = false;
         s_backInSelSent = false; s_resultInitAt = 0;
+        s_unavailFor[0] = 0;
         s_amLeader = strcmp(nl, s_myCid) == 0;
         s_roundOver = true;
         s_groupPaused = false;
@@ -1070,6 +1097,85 @@ void OnPvSelDest() {
     ApplyBlocks();
 }
 
+/* Resolve the follow target once per target/(diff,ed) change: the leader's
+ * pv if selectable at any (d,e), else a name-matched pv that is, else
+ * missing (no jumps, wrong_song). */
+static void ResolveFollow(const void* sel) {
+    s_folLeaderPv = s_localPv;
+    s_folTarget = -1; s_folMissing = false;
+    s_folFail = 0; s_folGaveUp = false; s_jumpFailedDiff = false;
+    s_folTD = -1; s_folTE = -1;
+    int32_t curD = *reinterpret_cast<const int32_t*>((const char*)sel + 0x261A0);
+    int32_t curE = *reinterpret_cast<const int32_t*>((const char*)sel + 0x261A4);
+    s_folLastD = curD; s_folLastE = curE;
+
+    auto anySelectable = [&](int32_t p) {
+        for (int d = 0; d < 4; d++)
+            for (int e = 0; e < 2; e++)
+                if (SongQuickJump::PvSelectableAt(sel, p, d, e)) return true;
+        return false;
+    };
+    int32_t pv = s_localPv;
+    if (!anySelectable(pv) && s_selName[0]) {
+        int32_t fb = SongQuickJump::FindPvByName(s_selName);
+        if (fb > 0 && anySelectable(fb)) pv = fb;
+    }
+    if (!anySelectable(pv)) {
+        s_folMissing = true;
+        if (s_folBannerPv != s_localPv) {
+            s_folBannerPv = s_localPv;
+            PushBanner("You don't have %s",
+                       s_selName[0] ? s_selName : "this song");
+        }
+        return;
+    }
+    s_folTarget = pv;
+    if (SongQuickJump::PvSelectableAt(sel, pv, curD, curE)) {
+        s_folTD = curD; s_folTE = curE;
+    } else if (SongQuickJump::ClosestSelectable(
+                   sel, pv, curD, curE, &s_folTD, &s_folTE)) {
+        static const char* DNM[] = {"EASY", "NORMAL", "HARD", "EXTREME"};
+        auto dn = [](int32_t d, int32_t e, char* out) {
+            if (e) strcpy(out, "EXTRA EXTREME");
+            else snprintf(out, 14, "%s", DNM[d >= 0 && d < 4 ? d : 0]);
+        };
+        char cn[16], nn[16];
+        dn(curD, curE, cn); dn(s_folTD, s_folTE, nn);
+        PushBanner("No %s chart for %s - switched to %s",
+                   cn, s_selName[0] ? s_selName : "this song", nn);
+    }
+}
+
+static void SendSelAck(bool has, bool ok, int32_t fbpv, const char* fbn) {
+    char sig[120];
+    snprintf(sig, sizeof(sig), "%d:%d:%d:%d:%d",
+             s_leaderPv, (int)has, (int)ok, fbpv, (int)(fbpv > 0));
+    if (!strncmp(sig, s_ackSig, sizeof(s_ackSig))) return;
+    strncpy(s_ackSig, sig, sizeof(s_ackSig) - 1);
+    char esc[80];
+    mpjson::EscapeInto(esc, sizeof(esc), fbn);
+    char m[240];
+    snprintf(m, sizeof(m),
+        "{\"t\":\"sel_ack\",\"pv\":%d,\"has\":%s,\"ok\":%s,"
+        "\"fb_pv\":%d,\"fb_name\":\"%s\"}",
+        s_leaderPv, has ? "true" : "false",
+        ok ? "true" : "false", fbpv, esc);
+    SendLine(m);
+}
+
+/* Jump to pv at the resolved (d,e): JumpSelectorToPvAt when it differs
+ * from the selector's current ones, else the keep-difficulty jump. */
+static void FollowJump(const void* sel, int32_t pv) {
+    int32_t curD = *reinterpret_cast<const int32_t*>((const char*)sel + 0x261A0);
+    int32_t curE = *reinterpret_cast<const int32_t*>((const char*)sel + 0x261A4);
+    if (s_folTD >= 0 && (s_folTD != curD || s_folTE != curE))
+        SongQuickJump::JumpSelectorToPvAt(
+            const_cast<void*>(sel), pv, s_folTD, s_folTE);
+    else
+        SongQuickJump::JumpSelectorToPv(
+            const_cast<void*>(sel), pv, true);
+}
+
 void OnPvSelFrame(const void* sel) {
     if (sel == nullptr) return;
     /* portrait prefetch: every 30 calls, warm the cache for the next
@@ -1097,6 +1203,52 @@ void OnPvSelFrame(const void* sel) {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
     s_lastSelState = state;
 
+    /* sel_lists probe: dump the 8 sorted_pv_lists of the current sort */
+    if (s_slPending) {
+        s_slPending = false;
+        int32_t sort = *reinterpret_cast<const int32_t*>(
+                          (const char*)sel + 0x26198);
+        int32_t diff = *reinterpret_cast<const int32_t*>(
+                          (const char*)sel + 0x261A0);
+        int32_t ed   = *reinterpret_cast<const int32_t*>(
+                          (const char*)sel + 0x261A4);
+        char buf[3072];
+        int len = snprintf(buf, sizeof(buf),
+            "{\"t\":\"dbg_sel_lists\",\"sort\":%d,\"diff\":%d,\"ed\":%d,"
+            "\"lists\":[", sort, diff, ed);
+        for (int d = 0; d < 4 && len > 0 && len < (int)sizeof(buf) - 60; d++) {
+            for (int e = 0; e < 2 && len < (int)sizeof(buf) - 60; e++) {
+                int idx = 8 * sort + 2 * d + e;
+                auto* vec = reinterpret_cast<
+                    const libcxx_vector_base<pvsel::PvData>*>(
+                        (const char*)sel + 0x25DD0 + (uintptr_t)idx * 0x18);
+                int n = -1;
+                int has[24]; int nh = 0;
+                if (vec && vec->begin_ && vec->end_ >= vec->begin_ &&
+                    vec->end_ - vec->begin_ < 5000) {
+                    n = (int)(vec->end_ - vec->begin_);
+                    for (int i = 0; i < n; i++) {
+                        const pvsel::PvData* pd = vec->begin_ + i;
+                        if (!pd->data2 || !pd->data2->pv_db_entry) continue;
+                        int32_t id = *pd->data2->pv_db_entry;
+                        for (int j = 0; j < s_slN && nh < 24; j++)
+                            if (s_slPvs[j] == id) has[nh++] = id;
+                    }
+                }
+                len += snprintf(buf + len, sizeof(buf) - len,
+                    "%s{\"d\":%d,\"e\":%d,\"n\":%d,\"has\":[",
+                    (d || e) ? "," : "", d, e, n);
+                for (int i = 0; i < nh; i++)
+                    len += snprintf(buf + len, sizeof(buf) - len,
+                        "%s%d", i ? "," : "", has[i]);
+                len += snprintf(buf + len, sizeof(buf) - len, "]}");
+            }
+        }
+        len += snprintf(buf + len, sizeof(buf) - len, "]}");
+        WriteLog("[MP-L] sel_lists sort=%d diff=%d ed=%d\n", sort, diff, ed);
+        SendLine(buf);
+    }
+
     /* readiness */
     const char* reason = nullptr;
     bool inCust = CustomizeSelUi::IsInCustomizeScene() ||
@@ -1104,12 +1256,13 @@ void OnPvSelFrame(const void* sel) {
     if (inCust || busy) reason = "modules";
     else if (state != 6) reason = "not_in_sel";
     else if (s_jumpFailedDiff) reason = "difficulty";
-    else if (!s_amLeader && s_localPv > 0 && selPv != s_localPv &&
-             !SongQuickJump::PvInDb(s_localPv)) reason = "wrong_song";
+    else if (!s_amLeader && s_localPv > 0 && s_folMissing)
+        reason = "wrong_song";
+    int32_t folPv = s_folTarget > 0 ? s_folTarget : s_localPv;
     bool ready = (state == 6 && !busy && !inCust &&
-                  (s_amLeader || s_localPv <= 0 || selPv == s_localPv) &&
+                  (s_amLeader || s_localPv <= 0 || selPv == folPv) &&
                   !s_jumpFailedDiff);
-    int32_t rpv = (s_amLeader || s_localPv <= 0) ? selPv : s_localPv;
+    int32_t rpv = (s_amLeader || s_localPv <= 0) ? selPv : folPv;
     if (ready != s_ready || rpv != s_readyPv ||
         strcmp(reason ? reason : "", s_readyReason) != 0) {
         s_ready = ready; s_readyPv = rpv;
@@ -1132,6 +1285,7 @@ void OnPvSelFrame(const void* sel) {
             now - s_lastSelMs >= 100) {
             s_lastSelMs = now;
             s_lastSentSel = selPv;
+            s_unavailFor[0] = 0;
             char nm[48] = "";
             SongQuickJump::PvName(selPv, nm, sizeof(nm));
             char esc[80]; mpjson::EscapeInto(esc, sizeof(esc), nm);
@@ -1166,53 +1320,45 @@ void OnPvSelFrame(const void* sel) {
         SetBlocks(MASK_ALL_NO_MINUS, false);
     }
 
+    /* follower: re-resolve when the target or our difficulty changes */
+    if (!s_amLeader && s_localPv > 0) {
+        int32_t curD = *reinterpret_cast<const int32_t*>(
+                          (const char*)sel + 0x261A0);
+        int32_t curE = *reinterpret_cast<const int32_t*>(
+                          (const char*)sel + 0x261A4);
+        if (s_localPv != s_folLeaderPv ||
+            curD != s_folLastD || curE != s_folLastE) {
+            ResolveFollow(sel);
+            if (s_folMissing)
+                SendSelAck(false, false, -1, "");
+        }
+    }
     /* follower: follow the leader's pick */
-    if (s_phase == L_SELECT && !s_amLeader && s_localPv > 0 &&
-        state == 6 && !busy && selPv != s_localPv &&
+    if (s_phase == L_SELECT && !s_amLeader && s_folTarget > 0 &&
+        !s_folGaveUp && state == 6 && !busy && selPv != s_folTarget &&
         now - s_lastJumpMs >= 150) {
-        int32_t target = s_localPv;
-        if (!SongQuickJump::PvInDb(target) && s_selName[0]) {
-            int32_t fb = SongQuickJump::FindPvByName(s_selName);
-            if (fb > 0) target = fb;
-        }
-        if (target > 0 && SongQuickJump::PvInDb(target)) {
-            s_lastJumpMs = now;
-            s_lastJumpTarget = target;
-            s_localPv = target;
-            s_jumpVerify = 4;
-            SongQuickJump::JumpSelectorToPv(
-                const_cast<void*>(sel), target, true);
-        }
+        s_lastJumpMs = now;
+        s_lastJumpTarget = s_folTarget;
+        s_jumpVerify = 4;
+        FollowJump(sel, s_folTarget);
     }
     /* jump verify + ack */
     if (s_jumpVerify > 0) {
         s_jumpVerify--;
         if (s_jumpVerify == 0) {
             bool ok = (selPv == s_lastJumpTarget);
-            s_jumpFailedDiff = !ok && state == 6;
-            bool has = SongQuickJump::PvInDb(s_leaderPv);
-            bool fb = (s_localPv != s_leaderPv);
-            int32_t fbpv = fb ? s_localPv : -1;
+            if (ok) s_jumpFailedDiff = false;
+            if (!ok && state == 6) s_folFail++;
+            if (s_folFail >= 3 && !s_folGaveUp) {
+                s_folGaveUp = true;
+                s_jumpFailedDiff = true;
+            }
+            bool has = s_folTarget > 0;
+            bool fb = (s_folTarget > 0 && s_folTarget != s_leaderPv);
+            int32_t fbpv = fb ? s_folTarget : -1;
             char fbn[48] = "";
             if (fb) SongQuickJump::PvName(fbpv, fbn, sizeof(fbn));
-            char sig[120];
-            snprintf(sig, sizeof(sig), "%d:%d:%d:%d:%d",
-                     s_leaderPv, (int)has, (int)ok, fbpv, (int)fb);
-            if (strncmp(sig, s_ackSig, sizeof(s_ackSig))) {
-                strncpy(s_ackSig, sig, sizeof(s_ackSig) - 1);
-                char esc[80];
-                mpjson::EscapeInto(esc, sizeof(esc), fbn);
-                char m[240];
-                snprintf(m, sizeof(m),
-                    "{\"t\":\"sel_ack\",\"pv\":%d,\"has\":%s,\"ok\":%s,"
-                    "\"fb_pv\":%d,\"fb_name\":\"%s\"}",
-                    s_leaderPv, has ? "true" : "false",
-                    ok ? "true" : "false", fbpv, esc);
-                SendLine(m);
-                if (!ok)    /* once per new failure, not on every retry */
-                    PushBanner("Not available at your difficulty - "
-                               "change difficulty with < >");
-            }
+            SendSelAck(has, ok, fbpv, fbn);
         }
     }
 
@@ -1220,19 +1366,30 @@ void OnPvSelFrame(const void* sel) {
     if (s_phase == L_LAUNCHING) {
         bool inCust2 = CustomizeSelUi::IsInCustomizeScene() ||
                        CustomizeSelUi::IsOpen();
-        if (s_launchStage == 0) {
+        if (s_launchStage == 0 && s_folMissing) {
+            /* the song isn't on this console: spectate instead of
+             * waiting blocked for the server's straggler drop */
+            char m[64];
+            snprintf(m, sizeof(m),
+                "{\"t\":\"launch_fail\",\"round\":%d}", s_round);
+            SendLine(m);
+            SetPhase(L_SPECTATING, "Spectating (song not available)");
+            ClearAllInput();
+            PushBanner("You don't have this song - spectating");
+        } else if (s_launchStage == 0) {
             if (state == 6 && !busy && !inCust2) {
                 s_launchBlocking = true;
                 SetBlocks(MASK_ALL_NO_MINUS, true);
-                if (selPv == s_localPv) {
+                int32_t target = s_folTarget > 0 ? s_folTarget : s_localPv;
+                if (selPv == target) {
                     input::Tap(nn::hid::A, 80, 80, true);
                     s_launchStage = 1;
                     s_launchStageAt = now;
                     s_launchTries = 0;
-                } else if (now - s_lastJumpMs >= 150) {
+                } else if (s_folTarget > 0 &&
+                           now - s_lastJumpMs >= 150) {
                     s_lastJumpMs = now;
-                    SongQuickJump::JumpSelectorToPv(
-                        const_cast<void*>(sel), s_localPv, true);
+                    FollowJump(sel, target);
                 }
             }
         } else if (s_launchStage == 1) {
@@ -1306,15 +1463,21 @@ void OnPvGameFrame(PVGameData* pv) {
      * forced Plus resumes from any menu item (probe P2). Off while the
      * start-resume is pending, while quitting, and during retry recovery */
     if (s_phase == L_PLAYING && Guarded() && pv->loaded && s_startSeen &&
-        !s_resumePending && !s_quitting && s_retryRecStage == 0 &&
-        (pv->paused != 0) != s_groupPaused &&
-        now - s_recLastTap >= 600) {
-        s_recLastTap = now;
-        DbgMenu(mp::menu::P_NONE, -1,
-                s_groupPaused ? "reconcile_pause" : "reconcile_resume");
-        WriteLog("[MP-L] reconcile: paused=%d group=%d - tap Plus\n",
-                 (int)(pv->paused != 0), (int)s_groupPaused);
-        input::Tap(nn::hid::Plus, 60, 100, true);
+        !s_resumePending && !s_quitting && s_retryRecStage == 0) {
+        bool mismatch = (pv->paused != 0) != s_groupPaused;
+        if (!mismatch || s_groupPaused != s_recTarget) s_recTaps = 0;
+        s_recTarget = s_groupPaused;
+        /* back off to one tap/2s after 5 taps without reaching the target */
+        if (mismatch &&
+            now - s_recLastTap >= (s_recTaps >= 5 ? 2000 : 600)) {
+            s_recLastTap = now;
+            s_recTaps++;
+            DbgMenu(mp::menu::P_NONE, -1,
+                    s_groupPaused ? "reconcile_pause" : "reconcile_resume");
+            WriteLog("[MP-L] reconcile: paused=%d group=%d - tap Plus\n",
+                     (int)(pv->paused != 0), (int)s_groupPaused);
+            input::Tap(nn::hid::Plus, 60, 100, true);
+        }
     }
 
     /* real Plus press -> group pause/resume req (guarded rooms; solo
@@ -1536,6 +1699,7 @@ void GetSnapshot(Snapshot* out) {
     strncpy(out->leaderCid, s_leaderCid, sizeof(out->leaderCid) - 1);
     strncpy(out->statusLine, s_statusLine, sizeof(out->statusLine) - 1);
     strncpy(out->notReady, s_notReady, sizeof(out->notReady) - 1);
+    strncpy(out->unavailFor, s_unavailFor, sizeof(out->unavailFor) - 1);
     out->selPv = s_selPv;
     strncpy(out->selName, s_selName, sizeof(out->selName) - 1);
     out->memberCount = s_memberCount;
@@ -1615,6 +1779,14 @@ void Init() {
 
 /* panel/dbg commands */
 void CmdLobbyCreate() { SendLine("{\"t\":\"lobby_create\"}"); }
+
+void DbgSelLists(const int32_t* pvs, int n) {
+    std::lock_guard<std::recursive_mutex> lk(s_mtx);
+    int m = n > 24 ? 24 : n;
+    for (int i = 0; i < m; i++) s_slPvs[i] = pvs[i];
+    s_slN = m;
+    s_slPending = true;
+}
 void CmdLobbyJoin(const char* code) {
     char m[80];
     char up[8] = "";

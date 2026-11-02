@@ -14,6 +14,7 @@
 #include "Config.hpp"
 #include "nc/diva_nc.hpp"
 #include "../nc/ui/customize_sel.hpp"
+#include "../nc/ui/pv_sel.hpp"
 #include "../logger.hpp"
 #include "../mp/MpLobby.hpp"
 
@@ -317,10 +318,11 @@ static void ExecuteSearchAndJump() {
 }
 
 /* The selector write sequence from ProcessJumpLogic, factored for reuse.
- * keepDifficulty=false reproduces the original (difficulty 3 / edition 0);
- * keepDifficulty=true (MP) preserves current difficulty/edition and skips
- * the sort-filter sound effect. Returns false if sel is null. */
-bool JumpSelectorToPv(void* selPtr, int32_t pvId, bool keepDifficulty) {
+ * diff/ed select the sorted_pv_lists entry the selector is pointed at;
+ * writeDifficulty controls whether the sel fields get written (false =
+ * preserve the selector's current ones); playSound adds the sortfilter SFX. */
+static bool JumpImpl(void* selPtr, int32_t pvId, int32_t difficulty,
+                     int32_t edition, bool writeDifficulty, bool playSound) {
     if (selPtr == nullptr || pvId <= 0) return false;
 
     uintptr_t base = exl::util::GetMainModuleInfo().m_Total.m_Start;
@@ -338,13 +340,12 @@ bool JumpSelectorToPv(void* selPtr, int32_t pvId, bool keepDifficulty) {
         case 3: all_folder = 5;  break;
     }
 
-    int32_t difficulty = 3, edition = 0;
-    if (keepDifficulty) {
-        difficulty = *reinterpret_cast<int32_t*>(sel + 0x261A0);
-        edition    = *reinterpret_cast<int32_t*>(sel + 0x261A4);
-    } else {
+    if (writeDifficulty) {
         *reinterpret_cast<int32_t*>(sel + 0x261A0) = difficulty;
         *reinterpret_cast<int32_t*>(sel + 0x261A4) = edition;
+    } else {
+        difficulty = *reinterpret_cast<int32_t*>(sel + 0x261A0);
+        edition    = *reinterpret_cast<int32_t*>(sel + 0x261A4);
     }
 
     int32_t list_idx = (8 * mode) + (2 * difficulty) + edition;
@@ -364,7 +365,7 @@ bool JumpSelectorToPv(void* selPtr, int32_t pvId, bool keepDifficulty) {
 
     *reinterpret_cast<int32_t*>(pv_info + 0x04) = pvId;
     *reinterpret_cast<int32_t*>(pv_info + 0x08) = mode;
-    if (!keepDifficulty)
+    if (writeDifficulty)
         *reinterpret_cast<int32_t*>(pv_info + 0x0C) = difficulty;
     *reinterpret_cast<int32_t*>(pv_info + 0x10) = all_folder;
 
@@ -374,9 +375,66 @@ bool JumpSelectorToPv(void* selPtr, int32_t pvId, bool keepDifficulty) {
     auto ChangeSortFilter = reinterpret_cast<ChangeSortFilter_t>(base + ADDR_CHANGE_SORT_FILTER);
     ChangeSortFilter(selPtr, 0);
 
-    if (!keepDifficulty)
+    if (playSound)
         sound::PlaySoundEffectWrapped("se_ft_music_selector_sortfilter_change_01", 1.0f);
     return true;
+}
+
+bool JumpSelectorToPv(void* selPtr, int32_t pvId, bool keepDifficulty) {
+    return JumpImpl(selPtr, pvId, 3, 0, !keepDifficulty, !keepDifficulty);
+}
+
+/* Is pv in the sorted_pv_lists entry for (difficulty, edition) of the
+ * selector's current sort mode? index = 8*sort + 2*difficulty + edition. */
+bool PvSelectableAt(const void* selPtr, int32_t pv, int32_t diff, int32_t ed) {
+    if (selPtr == nullptr || pv <= 0) return false;
+    const char* sel = reinterpret_cast<const char*>(selPtr);
+    int32_t mode = *reinterpret_cast<const int32_t*>(sel + 0x26198);
+    if (mode < 0 || mode > 3 || diff < 0 || diff > 3 || ed < 0 || ed > 1)
+        return false;
+    auto* vec = reinterpret_cast<const libcxx_vector_base<pvsel::PvData>*>(
+                    sel + 0x25DD0 + (uintptr_t)(8 * mode + 2 * diff + ed) * 0x18);
+    if (!vec->begin_ || vec->end_ < vec->begin_ ||
+        vec->end_ - vec->begin_ > 5000)
+        return false;
+    int n = (int)(vec->end_ - vec->begin_);
+    for (int i = 0; i < n; i++) {
+        const pvsel::PvData* pd = vec->begin_ + i;
+        if (pd->data2 && pd->data2->pv_db_entry &&
+            *pd->data2->pv_db_entry == pv)
+            return true;
+    }
+    return false;
+}
+
+/* Nearest (difficulty, edition) where pv is selectable:
+ * same difficulty + other edition first, then difficulties curDiff±k
+ * (edition 0 before edition 1 at each), clamped to 0..3. */
+bool ClosestSelectable(const void* selPtr, int32_t pv, int32_t curDiff,
+                       int32_t curEd, int32_t* outDiff, int32_t* outEd) {
+    int32_t cand[14][2];
+    int nc = 0;
+    cand[nc][0] = curDiff; cand[nc][1] = 1 - curEd; nc++;
+    for (int k = 1; k <= 3; k++) {
+        for (int dir = -1; dir <= 1; dir += 2) {
+            int32_t d = curDiff + k * dir;
+            if (d < 0 || d > 3) continue;
+            for (int e = 0; e < 2; e++) {
+                cand[nc][0] = d; cand[nc][1] = e; nc++;
+            }
+        }
+    }
+    for (int i = 0; i < nc; i++) {
+        if (PvSelectableAt(selPtr, pv, cand[i][0], cand[i][1])) {
+            *outDiff = cand[i][0]; *outEd = cand[i][1];
+            return true;
+        }
+    }
+    return false;
+}
+
+bool JumpSelectorToPvAt(void* selPtr, int32_t pvId, int32_t diff, int32_t ed) {
+    return JumpImpl(selPtr, pvId, diff, ed, true, false);
 }
 
 static void ProcessJumpLogic() {

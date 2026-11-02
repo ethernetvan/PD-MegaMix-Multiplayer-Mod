@@ -370,6 +370,24 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
             ImVec2(rx, y + ts2.y + 8 * s), IM_COL32(18, 22, 26, 210), 8 * s);
         drawList->AddText(font, fsz, ImVec2(rx - ts2.x - 8 * s, y + 4 * s),
             IM_COL32(255, 235, 170, 255), line);
+
+        /* leader: second pill listing who can't play the pick */
+        if (sn.connected && meLeader && sn.unavailFor[0]) {
+            float y2 = y + ts2.y + 8 * s + 4.0f * s;
+            char line2[140];
+            snprintf(line2, sizeof(line2), "Not available for: %.96s",
+                     sn.unavailFor);
+            int l2 = (int)strlen(line2);
+            while (l2 > 0 && font->CalcTextSizeA(fsz, FLT_MAX, 0, line2).x > maxW) {
+                do { l2--; } while (l2 > 0 && ((unsigned char)line2[l2] & 0xC0) == 0x80);
+                snprintf(line2 + l2, sizeof(line2) - l2, "..");   /* UTF-8 safe trim */
+            }
+            ImVec2 ts3 = font->CalcTextSizeA(fsz, FLT_MAX, 0, line2);
+            drawList->AddRectFilled(ImVec2(rx - ts3.x - 16 * s, y2),
+                ImVec2(rx, y2 + ts3.y + 8 * s), IM_COL32(18, 22, 26, 210), 8 * s);
+            drawList->AddText(font, fsz, ImVec2(rx - ts3.x - 8 * s, y2 + 4 * s),
+                IM_COL32(255, 170, 70, 255), line2);
+        }
     }
 
     /* tap the badge -> open the MP overlay */

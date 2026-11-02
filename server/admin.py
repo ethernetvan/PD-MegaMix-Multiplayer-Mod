@@ -31,6 +31,7 @@ def main():
     sub.add_parser("avatar_poke").add_argument("module", type=int)
     sub.add_parser("avatar_dump").add_argument("module", type=int)
     sub.add_parser("menu_cursor").add_argument("v", type=int)
+    p = sub.add_parser("sel_lists"); p.add_argument("pvs", type=int, nargs="+")
     ap.add_argument("--cid", default=None)
     ap.add_argument("--port", type=int, default=7790)
     args = ap.parse_args()
@@ -73,6 +74,8 @@ def main():
         pl = {"cmd": "dump_avatar", "module": args.module}
     elif args.cmd == "menu_cursor":
         pl = {"cmd": "menu_cursor", "v": args.v}
+    elif args.cmd == "sel_lists":
+        pl = {"cmd": "sel_lists", "pvs": args.pvs}
     if args.cid:
         pl["cid"] = args.cid
     send(pl, args.port)

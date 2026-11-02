@@ -249,7 +249,7 @@ static void HandleLine(const char* line, int len) {
 enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
-    PokeAvatar, DumpAvatar, MenuCursor
+    PokeAvatar, DumpAvatar, MenuCursor, SelLists
 };
 struct MpCmd {
     MpCmdType type;
@@ -257,6 +257,8 @@ struct MpCmd {
     int32_t   a, b;      /* hold/gap, hz/secs, pv */
     int32_t   count;
     char      str[40];
+    int32_t   pvs[24];
+    int32_t   pvsN;
 };
 
 static MpCmd     s_cmdQ[16];
@@ -368,6 +370,20 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         /* {cmd:menu_cursor, v:N} - force the blind menu model's cursor */
         c.type = MpCmdType::MenuCursor;
         c.a = 0; getInt("v", &c.a);
+    } else if (strcmp(cmd, "sel_lists") == 0) {
+        /* {cmd:sel_lists, pvs:[...]} - dump the 8 sorted_pv_lists of the
+         * current sort mode and which requested pvs are in each */
+        c.type = MpCmdType::SelLists;
+        c.pvsN = 0;
+        int ai = mpjson::Find(line, tok, ntok, "pvs");
+        if (ai >= 0 && tok[ai].type == JSMN_ARRAY) {
+            int i = ai + 1;
+            while (i < ntok && c.pvsN < 24 && tok[i].type == JSMN_PRIMITIVE) {
+                int v;
+                if (mpjson::ToInt(line, tok[i], &v)) c.pvs[c.pvsN++] = v;
+                i++;
+            }
+        }
     } else {
         return;
     }
@@ -428,6 +444,7 @@ void OnFrame() {
             case MpCmdType::PokeAvatar:  avatar::DbgPoke(c.a); break;
             case MpCmdType::DumpAvatar:  avatar::DbgDump(c.a); break;
             case MpCmdType::MenuCursor:  menu::ForceCursor(c.a); break;
+            case MpCmdType::SelLists:   lobby::DbgSelLists(c.pvs, c.pvsN); break;
             default: break;
         }
     }

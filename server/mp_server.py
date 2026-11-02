@@ -187,7 +187,7 @@ class Server:
                 elif t == "dbg_autopause":
                     log(f"AUTOPAUSE '{client.name}' {msg}")
                 else:
-                    log(f"MSG '{client.name}' {line[:200].decode(errors='replace')}")
+                    log(f"MSG '{client.name}' {line[:520].decode(errors='replace')}")
         except (ConnectionResetError, BrokenPipeError):
             pass
         finally:
