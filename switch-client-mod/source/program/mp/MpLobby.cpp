@@ -84,6 +84,7 @@ static bool  s_backInSelSent = false;
 static int64_t s_resultInitAt = 0;
 static int64_t s_resultsShownAt = 0;   /* ms when the results screen appeared */
 static bool  s_retryWarned = false;
+static bool  s_resLoadDropped = false;   /* saw pv->loaded==0 since results */
 static int   s_retStage = 0;
 static int64_t s_retStageAt = 0;
 static int64_t s_stateLastMs = 0;
@@ -262,7 +263,14 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
         if (gi2 >= 0) s_groupPaused = line[tok[gi2].start] == 't'; }
     int32_t rd = 0; gi("round", &rd); s_round = rd;
     int32_t spv = -1; if (gi("sel_pv", &spv)) s_selPv = spv;
+    bool wasLeader = s_amLeader;
     s_amLeader = strcmp(s_leaderCid, s_myCid) == 0;
+    if (s_amLeader && !wasLeader) {
+        /* follower -> leader: drop the latched follow target */
+        s_localPv = s_leaderPv = -1;
+        s_jumpFailedDiff = false;
+        s_ackSig[0] = 0;
+    }
 
     s_memberCount = 0;
     int mi = mpjson::Find(line, tok, ntok, "members");
@@ -879,17 +887,18 @@ void OnPvSelFrame(const void* sel) {
     if (inCust || busy) reason = "modules";
     else if (state != 6) reason = "not_in_sel";
     else if (s_jumpFailedDiff) reason = "difficulty";
-    else if (s_localPv > 0 && selPv != s_localPv &&
+    else if (!s_amLeader && s_localPv > 0 && selPv != s_localPv &&
              !SongQuickJump::PvInDb(s_localPv)) reason = "wrong_song";
     bool ready = (state == 6 && !busy && !inCust &&
-                  (s_localPv <= 0 || selPv == s_localPv) &&
+                  (s_amLeader || s_localPv <= 0 || selPv == s_localPv) &&
                   !s_jumpFailedDiff);
-    int32_t rpv = s_localPv > 0 ? s_localPv : selPv;
+    int32_t rpv = (s_amLeader || s_localPv <= 0) ? selPv : s_localPv;
     if (ready != s_ready || rpv != s_readyPv ||
-        (!ready && reason && strcmp(reason, s_readyReason))) {
+        strcmp(reason ? reason : "", s_readyReason) != 0) {
         s_ready = ready; s_readyPv = rpv;
-        if (reason) strncpy(s_readyReason, reason, sizeof(s_readyReason) - 1);
-        else s_readyReason[0] = 0;
+        strncpy(s_readyReason, reason ? reason : "",
+                sizeof(s_readyReason) - 1);
+        s_readyReason[sizeof(s_readyReason) - 1] = 0;
         s_readyDirty = true;
     }
 
@@ -1111,12 +1120,17 @@ void OnPvGameFrame(PVGameData* pv) {
         }
     }
 
-    /* landed in a retry while in RESULTS -> report once per round */
-    if (s_phase == L_RESULTS && pv->loaded && pv->percentage == 0.0f &&
-        pv->score == 0 && s_resultInitAt > 0 && !s_retryWarned) {
-        s_retryWarned = true;
-        WriteLog("[MP-L] WARN: song reloaded during RESULTS (retry hit)\n");
-        SendLine("{\"t\":\"dbg_warn\",\"w\":\"retry_during_results\"}");
+    /* landed in a retry while in RESULTS -> report once per round.
+       real reload signal: loaded dropped to 0 then came back while
+       the results screen was up (not merely a 0-score round). */
+    if (s_phase == L_RESULTS && s_resultInitAt > 0 && !s_selActive) {
+        if (!pv->loaded)
+            s_resLoadDropped = true;
+        else if (s_resLoadDropped && !s_retryWarned) {
+            s_retryWarned = true;
+            WriteLog("[MP-L] WARN: song reloaded during RESULTS (retry hit)\n");
+            SendLine("{\"t\":\"dbg_warn\",\"w\":\"retry_during_results\"}");
+        }
     }
 
     if (s_phase == L_PLAYING && s_statePending == false &&
@@ -1143,6 +1157,7 @@ void OnStageResult(bool init) {
         SetPhase(L_RESULTS, "Round over - waiting in results");
         s_resultInitAt = NowMs();
         s_retryWarned = false;
+        s_resLoadDropped = false;
         s_retStage = 0; s_retStageAt = 0;
         input::ResetAll();     /* drop queued taps/spam: an A here = RETRY */
         SetBlocks(MASK_ALL_NO_MINUS, false);
