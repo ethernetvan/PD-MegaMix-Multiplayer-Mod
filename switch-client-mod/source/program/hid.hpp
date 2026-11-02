@@ -12,7 +12,8 @@ namespace mp::input {
     void BeginBypass();
     void EndBypass();
     void Apply(::nn::hid::NpadHandheldState* st,
-               ::nn::hid::NpadHandheldState* navOut = nullptr);
+               ::nn::hid::NpadHandheldState* navOut = nullptr,
+               int src = 3);
     void NavUpdate(const ::nn::hid::NpadHandheldState& st);
 }
 

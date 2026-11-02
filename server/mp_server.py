@@ -34,7 +34,7 @@ def log(msg):
 def compact_dbg(msg):
     keys = ["f", "loaded", "paused", "score", "combo", "max_combo", "life",
             "pct", "scoring", "type", "diff", "pv", "byte2",
-            "ps", "ip", "iv", "pe", "res"]
+            "ps", "ip", "iv", "pe", "res", "st"]
     parts = [f"{k}={msg[k]}" for k in keys if k in msg]
     if "jc" in msg:
         parts.append(f"jc={msg['jc']}")

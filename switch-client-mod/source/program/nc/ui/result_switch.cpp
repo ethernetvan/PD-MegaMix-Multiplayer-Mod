@@ -7,6 +7,8 @@
 #include "result.hpp"
 #include "../../ModLoader.hpp"
 #include "../../mp/MpNet.hpp"
+#include "../../mp/MpMenu.hpp"
+#include <nn.hpp>
 #include <unordered_set>
 
 static std::unordered_set<void*> patched_scene_controllers;
@@ -64,6 +66,14 @@ HOOK_DEFINE_TRAMPOLINE(CAetControllerInLoopOutSetLayerHook) {
 		if (in_str) patched_in.assign(in_str->c_str(), in_str->length());
 		if (loop_str) patched_lp.assign(loop_str->c_str(), loop_str->length());
 		if (out_str) patched_out.assign(out_str->c_str(), out_str->length());
+
+		/* the results "win_vp" page is the only menu-progress signal the
+		 * game gives us - feed the blind menu model */
+		if (in_str && util::StartsWith(in_str->c_str(), "win_vp_in")) {
+			uint64_t ms = (uint64_t)nn::os::GetSystemTick().GetInt64Value()
+				* 1000 / nn::os::GetSystemTickFrequency();
+			mp::menu::ResultsVpShown(ms);
+		}
 
 		bool did_patch_names = false;
 

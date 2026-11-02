@@ -4,6 +4,7 @@
 #include "MpJson.hpp"
 #include "MpInput.hpp"
 #include "MpLobby.hpp"
+#include "MpMenu.hpp"
 #include "../logger.hpp"
 #include "../Config.hpp"
 #include "../nc/diva_nc.hpp"
@@ -248,7 +249,7 @@ static void HandleLine(const char* line, int len) {
 enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
-    PokeAvatar, DumpAvatar
+    PokeAvatar, DumpAvatar, MenuCursor
 };
 struct MpCmd {
     MpCmdType type;
@@ -363,6 +364,10 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
     } else if (strcmp(cmd, "dump_avatar") == 0) {
         c.type = MpCmdType::DumpAvatar;
         c.a = -1; getInt("module", &c.a);
+    } else if (strcmp(cmd, "menu_cursor") == 0) {
+        /* {cmd:menu_cursor, v:N} - force the blind menu model's cursor */
+        c.type = MpCmdType::MenuCursor;
+        c.a = 0; getInt("v", &c.a);
     } else {
         return;
     }
@@ -422,6 +427,7 @@ void OnFrame() {
             case MpCmdType::PeekAvatar:  avatar::DbgPeek(); break;
             case MpCmdType::PokeAvatar:  avatar::DbgPoke(c.a); break;
             case MpCmdType::DumpAvatar:  avatar::DbgDump(c.a); break;
+            case MpCmdType::MenuCursor:  menu::ForceCursor(c.a); break;
             default: break;
         }
     }

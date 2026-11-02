@@ -1,4 +1,5 @@
 #include "MpInput.hpp"
+#include "MpMenu.hpp"
 #include <nn.hpp>
 #include <mutex>
 #include <cstring>
@@ -20,7 +21,13 @@ static uint64_t    s_blocked = 0;
 static bool        s_zeroSticks = false;
 static int         s_bypassDepth = 0;   /* set while our own UI polls pad */
 static uint64_t    s_bypassTid = 0;
-static uint64_t    s_prevReal = 0;      /* real (pre-mask) buttons last Apply */
+/* per-source real (pre-mask) buttons + last-seen ms: Apply runs once per
+ * GetNpadState hook (Handheld/FullKey/JoyDual) and only some sources carry
+ * a given button, so a single shared prev makes a held button look like a
+ * fresh edge on every poll. OR the sources seen within 250 ms instead. */
+static uint64_t    s_srcReal[3] = {0, 0, 0};
+static uint64_t    s_srcRealMs[3] = {0, 0, 0};
+static uint64_t    s_prevRealComb = 0;
 static uint64_t    s_realEdges = 0;     /* latched rising edges, real input */
 static uint64_t    s_navHeld = 0;       /* nav: real|inject, pre-block */
 static uint64_t    s_navPrev = 0;
@@ -155,9 +162,13 @@ void ResetAll() {
     s_spam.active = false;
 }
 
-void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut) {
+/* src: 0=Handheld hook, 1=FullKey hook, 2=JoyDual hook, 3=merged path
+ * (GetMergedNpadState - feeds our own UI: no real-edge latch, no Filter). */
+void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut,
+           int src) {
     if (st == nullptr) return;
     uint64_t now = NowTick();
+    uint64_t nowMs = now * 1000 / nn::os::GetSystemTickFrequency();
     uint64_t inject = 0;
     uint64_t injectForce = 0;
     uint64_t blocked = 0;
@@ -167,9 +178,17 @@ void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut) {
         std::lock_guard<std::mutex> lk(s_mtx);
         if (s_bypassDepth > 0 && s_bypassTid == CurTid())
             return;                        /* our own UI poll sees real input */
-        /* latch real-input rising edges before masking */
-        s_realEdges |= st->buttons & ~s_prevReal;
-        s_prevReal = st->buttons;
+        /* latch real-input rising edges before masking (one physical
+         * press = one edge, whichever sources report it) */
+        if (src >= 0 && src <= 2) {
+            s_srcReal[src] = st->buttons;
+            s_srcRealMs[src] = nowMs;
+            uint64_t comb = 0;
+            for (int i = 0; i < 3; i++)
+                if (nowMs - s_srcRealMs[i] <= 250) comb |= s_srcReal[i];
+            s_realEdges |= comb & ~s_prevRealComb;
+            s_prevRealComb = comb;
+        }
         blocked = s_blocked;
         zeroLs = s_zeroSticks;
 
@@ -213,7 +232,12 @@ void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut) {
     if (zeroLs) {
         st->analogStickL[0] = 0; st->analogStickL[1] = 0;
         st->analogStickR[0] = 0; st->analogStickR[1] = 0;
+        st->buttons &= ~0xFF0000ULL;   /* stick-direction button bits too */
     }
+    /* menu model sees post-block buttons for the game's own calls only */
+    if (src >= 0 && src <= 2)
+        menu::Filter(src, &st->buttons, st->analogStickL, st->analogStickR,
+                     nowMs);
 }
 
 struct BtnName { const char* name; uint64_t bit; };

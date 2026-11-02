@@ -524,12 +524,14 @@ class LobbyManager:
             return
         if cid not in lobby.round.players:
             return
+        m = self._member(lobby, cid)
+        if m is not None and m.final is not None:
+            return                     # already finished: no say in pause
         kind = "pause" if pause else "resume"
         if lobby.group_paused == pause:
             # already in the requested state: resync the requester only
             self._send(cid, {"t": kind, "by": "", "sync": True})
             return
-        m = self._member(lobby, cid)
         if (m is not None and m.pause_req_kind == kind and
                 now - m.pause_req_at < 0.5):
             return                     # same kind repeated within 0.5 s
@@ -559,7 +561,8 @@ class LobbyManager:
                 self._send_pause_vote(lobby, now)
         need = {c for c in lobby.round.players
                 if self._member(lobby, c) is not None and
-                self._member(lobby, c).connected}
+                self._member(lobby, c).connected and
+                self._member(lobby, c).final is None}
         if v["agreed"] >= need and len(need) > 0:
             lobby.vote = None
             lobby.group_paused = pause
@@ -583,7 +586,8 @@ class LobbyManager:
             return
         need = sum(1 for c in lobby.round.players
                    if self._member(lobby, c) is not None and
-                   self._member(lobby, c).connected)
+                   self._member(lobby, c).connected and
+                   self._member(lobby, c).final is None)
         msg = {"t": "pause_vote", "kind": v["kind"],
                "agreed": sorted(v["agreed"]), "need": need,
                "ends_in": max(0, int(v["ends_at"] - now))}

@@ -586,6 +586,37 @@ class T4(unittest.TestCase):
         v = self.msgs(t="pause_vote")
         self.assertTrue(v[0][1].get("expired"))
 
+    def test_pause_vote_ignores_finished(self):
+        # three players; c already sent a final -> need = the other two
+        self.lm.on_hello("c", "c", "v1", 100.0)
+        lb = self._mk()
+        self.lm.on_message("c", {"t": "lobby_join", "code": lb.code}, 100.0)
+        self.lm.on_message("a", {"t": "start_req", "pv": 1, "name": "s"}, 101.0)
+        for c in "abc":
+            self.lm.on_message(c, {"t": "loaded", "round": 1}, 102.0)
+        self.lm.tick(103.0); self.msgs()
+        lb.owner_cid = "zzz"   # no immediate-owner path; everyone votes
+        self.lm.on_message("c", {"t": "final", "round": 1, "score": 5,
+                                 "pct": 10.0, "max_combo": 0,
+                                 "jc": [0, 0, 0, 0, 0], "life": 0}, 104.0)
+        self.msgs()
+        # finished player's reqs are ignored
+        self.lm.on_message("c", {"t": "resume_req", "round": 1}, 104.5)
+        self.assertFalse(self.msgs(t="pause_vote"))
+        self.assertFalse(self.msgs(t="resume"))
+        # pause via the two unfinished players
+        self.lm.on_message("b", {"t": "pause_req", "round": 1}, 105.0)
+        v = self.msgs(t="pause_vote")
+        self.assertEqual(v[0][1]["need"], 2)
+        self.lm.on_message("a", {"t": "pause_req", "round": 1}, 105.5)
+        self.assertEqual(len(self.msgs(t="pause")), 3)   # passed
+        # resume: only the two unfinished players needed again
+        self.lm.on_message("b", {"t": "resume_req", "round": 1}, 106.0)
+        v = self.msgs(t="pause_vote")
+        self.assertEqual(v[0][1]["need"], 2)
+        self.lm.on_message("a", {"t": "resume_req", "round": 1}, 106.5)
+        self.assertEqual(len(self.msgs(t="resume")), 3)  # passed
+
 
 class T5(unittest.TestCase):
     """scene reporting, leader/owner round end, owner succession,
@@ -756,10 +787,10 @@ class T5(unittest.TestCase):
         self.assertTrue(self.msgs(t="pause"))    # vote passed (need=2)
 
     def test_stale_suspended_while_paused_and_resume_bump(self):
-        for c in "ab": self.mk(c)
-        lb = self._mk(2)
-        rid = self._playing(lb)
-        self._final("a", rid, 50, 100)           # starts the stale timer
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        rid = self._playing(lb, players="abc")
+        self._final("c", rid, 50, 100)           # starts the stale timer
         mb = self.lm._member(lb, "b")
         mb.last_activity = 10.0                  # long dead
         lb.group_paused = True
