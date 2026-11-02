@@ -559,7 +559,7 @@ void DrawResultsAvatars() {
         for (; raw[j] && j < (int)sizeof(nm) - 1; j++) {
             unsigned char ch = (unsigned char)raw[j];
             if (ch > 126 || ch < 32) { ascii = false; break; }
-            nm[j] = (ch >= 'a' && ch <= 'z') ? (char)(ch - 32) : (char)ch;
+            nm[j] = (char)ch;
         }
         nm[j] = 0;
         if (!ascii) snprintf(nm, sizeof(nm), "%s", raw);   /* keep it, base font */
