@@ -33,12 +33,11 @@ bug to this file.
   against the other connected consoles; `admin.py menu_holds ...` debug knob (no tuning run yet).
 
 ### Still open, in order
-1. **Physical Switch (needs the user):** the console went to sleep / its sysmodules stopped answering around
-   05:22. Wake it, close the game, then restore `sdmc:/MikuMikuSwitchPlugin/config.toml` from
-   `mm-re/tmp/nx/config.toml.final` (ports 7777/7778; read back and diff) and `nx.py deploy` the latest build.
-   (`config.toml.final` was overwritten by mistake in session 3 and rebuilt from `config.toml.pre_s5` with the
-   ports set to 7777/7778; the test copy pointing at 37777 is `config.toml.s5test`. The console still has the
-   37777 test config and the `ce0a059` build.)
+1. **Physical Switch: DONE at the end of session 3.** `config.toml.final` (server `10.169.0.37`, ports
+   7777/7778) is back on the console (read back identical) and the `7836bb3` build is deployed (`subsdk9` md5
+   `7f9d2b50c7059e39e4e55534eb520f18`, same as the main Ryujinx install). The test server and cut-proxy are
+   stopped. (`config.toml.final` was overwritten by mistake in session 3 and rebuilt from `config.toml.pre_s5`
+   with the ports set to 7777/7778; the test copy pointing at 37777 is `config.toml.s5test`.)
 2. **Pause on real hardware (needs a human hand):** sys-botbase `click PLUS/MINUS/HOME` never reach the game, so
    none of these were checked on the console: one physical Plus press -> exactly one `pause_req`; owner Plus
    pauses/resumes everyone; A on Resume and B send `resume_req`; Retry / Lag Config / Options swallowed; Up + A
@@ -66,6 +65,25 @@ bug to this file.
 8. FT UI (`ft_ui` / `force_ft_ui`) has no MP hooks at all (PS4-style selector/results); MP needs the Switch UI.
 9. Lag Config / Options stay swallowed in guarded rooms: probed, entering/leaving them gives no signal (no DBG
    field, no AET layer call), so the blind count can't follow them.
+10. **Web frontend: show the real profile pictures (user request).** Every web avatar is still a
+    `HexAvatar` gradient placeholder (`web/src/components/HexAvatar.tsx` already takes a `src` prop). The server
+    knows each member's module (`avatar {module}`, Round 7) but the web snapshot doesn't carry it, and the
+    portraits are game assets (`SPR_SEL_MD%03dCMN`), so they can't be committed to the repo. Likely route: the
+    client uploads its own decoded portrait (the `MpAvatar` readback that `avatar_dump` already writes) and the
+    bridge serves it per `mid` (e.g. `GET /api/avatar/<mid>.png`, cached by module id). Fallback: a one-time
+    local extraction into an uncommitted cache dir. Show it everywhere a `HexAvatar` appears (Overview, lobby
+    members, live board, standings, owner/picker chips) and keep the placeholder for unknown or custom modules.
+11. **AutoPlay must be CLEARLY shown on the web frontend and on the Switch client (user request).** Today:
+    - the client sends `autoplay {on, pct}`, but `lobby.py` keeps only the bool and drops `pct`;
+    - the web shows only a small "AUTO" badge in member and standings rows, and standings use the member's
+      *current* flag rather than whether AutoPlay was on during that round;
+    - in game, only the local song-select badge says `AUTO` / `AUTO N%`; the MP Live board, results hexagons,
+      member list and room panel show nothing for other players (the "Known gap" in `MULTIPLAYER_STATUS.md`).
+    To do: keep `pct` on the server and latch "AutoPlay was used" per member per round (any time between
+    launch and final); send it in board, standings and members, plus web and lobby snapshots. Make it
+    unmistakable everywhere: a prominent `AUTO` / `AUTO 50%` tag on web rows, the tie card and results; on the
+    client, the live board, results hexagons/names and the room member list; and a persistent in-song
+    indicator for the local player. Add a server unit test for the latch and the `pct` field.
 
 ### Environment at the end of session 3
 - Test server **s13** (detached, ports 37777/37778/37790/38080, `mm-re/tmp/s13_server.log`, `live_server.log`
