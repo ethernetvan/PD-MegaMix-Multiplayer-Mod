@@ -13,7 +13,7 @@ namespace mp::input {
     void EndBypass();
     void Apply(::nn::hid::NpadHandheldState* st,
                ::nn::hid::NpadHandheldState* navOut = nullptr,
-               int src = 3);
+               int src = 3, uint32_t npadId = 0x20);
     void NavUpdate(const ::nn::hid::NpadHandheldState& st);
 }
 
@@ -137,7 +137,7 @@ namespace nn::hid {
                 mp::input::EndBypass();
                 keyboard::Inject(&merged);
                 NpadHandheldState navPre;
-                mp::input::Apply(&merged, &navPre);
+                mp::input::Apply(&merged, &navPre, 3, CONTROLLER_PLAYER_1);
                 mp::input::NavUpdate(navPre);
                 cached_state = merged;
                 return merged;
@@ -161,7 +161,7 @@ namespace nn::hid {
         keyboard::Inject(&merged);
         {
             NpadHandheldState navPre;
-            mp::input::Apply(&merged, &navPre);
+            mp::input::Apply(&merged, &navPre, 3, CONTROLLER_PLAYER_1);
             mp::input::NavUpdate(navPre);
         }
 

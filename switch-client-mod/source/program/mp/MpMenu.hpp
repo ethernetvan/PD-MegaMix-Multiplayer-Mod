@@ -36,8 +36,9 @@ void ExitFallback(uint64_t now);              /* EXIT timeout: MENU on Return */
 void End();                                   /* page NONE */
 void ForceCursor(int c);                      /* debug (dbg_cmd menu_cursor) */
 
-/* Post-block buttons + sticks from input::Apply, src 0..2 only. */
-void Filter(int src, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
+/* Post-block buttons + sticks from input::Apply; slot = src*9 + npadId
+ * (0..26, per style x controller slot). */
+void Filter(int slot, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
             uint64_t now);
 
 uint32_t ConsumeEvents();

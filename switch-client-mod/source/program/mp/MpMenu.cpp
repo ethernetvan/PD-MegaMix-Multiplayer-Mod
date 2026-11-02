@@ -32,8 +32,8 @@ static uint64_t    s_readyAt = 0;
 static uint64_t    s_pageSince = 0;
 static uint32_t    s_events = 0;
 static uint64_t    s_suppress = 0;   /* buttons stripped until released */
-static uint64_t    s_srcHeld[3] = {0, 0, 0};
-static uint64_t    s_srcMs[3] = {0, 0, 0};
+static uint64_t    s_srcHeld[27] = {};  /* per (style, controller slot) */
+static uint64_t    s_srcMs[27] = {};
 static uint64_t    s_prevCombined = 0;
 
 static void SetPage(Page p, uint64_t now, uint64_t hold) {
@@ -109,15 +109,15 @@ Status Get(uint64_t now) {
     return s;
 }
 
-void Filter(int src, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
+void Filter(int slot, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
             uint64_t now) {
-    if (buttons == nullptr || src < 0 || src > 2) return;
+    if (buttons == nullptr || slot < 0 || slot > 26) return;
     std::lock_guard<std::mutex> lk(s_mtx);
 
-    s_srcHeld[src] = *buttons;
-    s_srcMs[src] = now;
+    s_srcHeld[slot] = *buttons;
+    s_srcMs[slot] = now;
     uint64_t held = 0;
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 27; i++)
         if (now - s_srcMs[i] <= SRC_WINDOW) held |= s_srcHeld[i];
     uint64_t edges = held & ~s_prevCombined;
     s_prevCombined = held;

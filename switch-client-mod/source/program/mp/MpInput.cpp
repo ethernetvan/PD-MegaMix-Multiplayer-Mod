@@ -25,8 +25,12 @@ static uint64_t    s_bypassTid = 0;
  * GetNpadState hook (Handheld/FullKey/JoyDual) and only some sources carry
  * a given button, so a single shared prev makes a held button look like a
  * fresh edge on every poll. OR the sources seen within 250 ms instead. */
-static uint64_t    s_srcReal[3] = {0, 0, 0};
-static uint64_t    s_srcRealMs[3] = {0, 0, 0};
+/* per-(style, controller-slot) real-input state: 3 styles x 9 slots
+ * (ids 0..7 plus one slot for the handheld id 0x20). Two controllers of
+ * the same style must not share a slot - an idle one would overwrite the
+ * pressed one's state and every re-appearance would look like a new edge. */
+static uint64_t    s_srcReal[27] = {};
+static uint64_t    s_srcRealMs[27] = {};
 static uint64_t    s_prevRealComb = 0;
 static uint64_t    s_realEdges = 0;     /* latched rising edges, real input */
 static uint64_t    s_navHeld = 0;       /* nav: real|inject, pre-block */
@@ -165,7 +169,7 @@ void ResetAll() {
 /* src: 0=Handheld hook, 1=FullKey hook, 2=JoyDual hook, 3=merged path
  * (GetMergedNpadState - feeds our own UI: no real-edge latch, no Filter). */
 void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut,
-           int src) {
+           int src, uint32_t npadId) {
     if (st == nullptr) return;
     uint64_t now = NowTick();
     uint64_t nowMs = now * 1000 / nn::os::GetSystemTickFrequency();
@@ -173,6 +177,9 @@ void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut,
     uint64_t injectForce = 0;
     uint64_t blocked = 0;
     bool zeroLs = false;
+    /* ids 0..7 map to slots 0..7 of this style; anything else (handheld
+     * 0x20, player_n_plus, unknown) folds into slot 8 */
+    int slot = src * 9 + (npadId <= 7 ? (int)npadId : 8);
 
     {
         std::lock_guard<std::mutex> lk(s_mtx);
@@ -181,10 +188,10 @@ void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut,
         /* latch real-input rising edges before masking (one physical
          * press = one edge, whichever sources report it) */
         if (src >= 0 && src <= 2) {
-            s_srcReal[src] = st->buttons;
-            s_srcRealMs[src] = nowMs;
+            s_srcReal[slot] = st->buttons;
+            s_srcRealMs[slot] = nowMs;
             uint64_t comb = 0;
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 27; i++)
                 if (nowMs - s_srcRealMs[i] <= 250) comb |= s_srcReal[i];
             s_realEdges |= comb & ~s_prevRealComb;
             s_prevRealComb = comb;
@@ -236,7 +243,7 @@ void Apply(nn::hid::NpadHandheldState* st, nn::hid::NpadHandheldState* navOut,
     }
     /* menu model sees post-block buttons for the game's own calls only */
     if (src >= 0 && src <= 2)
-        menu::Filter(src, &st->buttons, st->analogStickL, st->analogStickR,
+        menu::Filter(slot, &st->buttons, st->analogStickL, st->analogStickR,
                      nowMs);
 }
 

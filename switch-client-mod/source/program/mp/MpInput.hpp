@@ -47,10 +47,12 @@ void     NavClear();                  /* drop latched edges */
 /* Call from keyboard.cpp ApplyInjections (end), all GetNpadState hooks.
  * When navOut is non-null it receives the state with inject applied but
  * BEFORE the block mask and stick zeroing (used only by the merged path).
- * src: 0=Handheld hook, 1=FullKey hook, 2=JoyDual hook, 3=merged path. */
+ * src: 0=Handheld hook, 1=FullKey hook, 2=JoyDual hook, 3=merged path.
+ * npadId: the controller slot id the state was polled for (ids 0..7 for
+ * FullKey/JoyDual, 0x20 for Handheld); the merged path passes a fixed key. */
 void Apply(nn::hid::NpadHandheldState* st,
            nn::hid::NpadHandheldState* navOut,
-           int src);
+           int src, uint32_t npadId);
 
 /* "A,B,Plus" -> bitmask (nn::hid::Button bits). */
 uint64_t MaskFromNames(const char* names);

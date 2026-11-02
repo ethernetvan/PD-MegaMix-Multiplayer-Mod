@@ -194,7 +194,7 @@ namespace keyboard {
     }
 
     static inline void ApplyInjections(nn::hid::NpadHandheldState* state,
-                                       int src) {
+                                       int src, const uint32_t& id) {
         if (!state) return;
 
         Inject(state);
@@ -203,27 +203,27 @@ namespace keyboard {
             TouchSlider::Update(state);
         }
 
-        mp::input::Apply(state, nullptr, src);
+        mp::input::Apply(state, nullptr, src, id);
     }
 
     HOOK_DEFINE_TRAMPOLINE(GetNpadStateHandheldHook) {
         static void Callback(nn::hid::NpadHandheldState* state, const uint32_t& id) {
             Orig(state, id);
-            ApplyInjections(state, 0);
+            ApplyInjections(state, 0, id);
         }
     };
 
     HOOK_DEFINE_TRAMPOLINE(GetNpadStateFullKeyHook) {
         static void Callback(nn::hid::NpadHandheldState* state, const uint32_t& id) {
             Orig(state, id);
-            ApplyInjections(state, 1);
+            ApplyInjections(state, 1, id);
         }
     };
 
     HOOK_DEFINE_TRAMPOLINE(GetNpadStateJoyDualHook) {
         static void Callback(nn::hid::NpadHandheldState* state, const uint32_t& id) {
             Orig(state, id);
-            ApplyInjections(state, 2);
+            ApplyInjections(state, 2, id);
         }
     };
 
