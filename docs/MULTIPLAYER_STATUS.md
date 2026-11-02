@@ -177,6 +177,17 @@ Commits `815f20b`, `79e244c`, `ce0a059` (on top of `f9f16c6`).
   difficulty, A+B, quick jump), missing songs (bot picker, pv 59/700), closest-difficulty switch, picker pill.
   Real Switch: results Retry swallowed and manual exit, follower launch + synced start.
 
+### Round 8 addendum (commits `9a9afea`, `cae89dc`, `7836bb3`)
+- Ranking: tied players share the LOWEST position of their group (two tied for first are both 2nd; 1st + two
+  tied for 2nd -> 1, 3, 3) on standings, live boards and the web; winner styling stays on the top group.
+- Results screen: a tie is one connected cluster about one hexagon in size (2 = diagonal pair r=30, 3+ =
+  triangle r=26, 4+ shows a "+" in the third slot); names stacked one per line, local player first, 4+ ends with
+  "and X others"; rows below a tie move down. Web: tie card.
+- "Waiting for players" popup shows for every member; in-song banners are small at the top-left; followers keep
+  full input in the module picker / customize.
+- Partial AutoPlay cheat for testing: ZR x3 in song select cycles 100/75/50/25 %, `admin.py autoplay on --pct N`.
+- MP works with `new_classics = false` (MpSceneHooks); FT UI is still unsupported.
+
 ## OPEN WORK (user requests, in priority order)
 1. **Lobby roles + song-pick mode.** Track `owner` (lobby creator; passes to the next member in join order if
    they leave) separately from `leader` (current song picker). Owner chooses `pick_mode`:
