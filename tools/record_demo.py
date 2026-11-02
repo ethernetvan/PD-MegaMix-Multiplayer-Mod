@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """record_demo.py - record a scripted MegaMix multiplayer demo video.
 
-Boots the game in Ryujinx (fullscreen, monitor 0), screen-records it with
-ffmpeg (ddagrab + dshow audio), drives a scripted tour of the multiplayer
-UI plus one live round against bots, and produces a captioned, chaptered
-MP4.
+Boots the game in Ryujinx WINDOWED on the SECOND monitor (DISPLAY6,
+x=1920; never fullscreen, never the primary monitor), screen-records just
+the game area with ffmpeg (ddagrab + dshow audio), drives a scripted tour
+of the multiplayer UI plus one live round against bots, and produces a
+captioned, chaptered MP4. It does NOT kill other Ryujinx instances (the
+ryu_multi test roots use a separate data dir and are left alone).
 
 Self-contained: needs only Python 3.13 stdlib + ffmpeg/ffprobe on PATH.
 
@@ -37,10 +39,152 @@ RYUJINX_LOGS = r"C:\Users\cl672\Documents\Juegos\Ryujinx\Logs"
 NSP = r"C:\Users\cl672\Documents\Juegos\switchgames\Hatsune_Miku_Merged.nsp"
 SD_ROOT = os.path.join(os.environ.get("APPDATA", ""), "Ryujinx", "sdcard")
 CONFIG_TOML = os.path.join(SD_ROOT, "MikuMikuSwitchPlugin", "config.toml")
+CONFIG_JSON = os.path.join(os.environ.get("APPDATA", ""), "Ryujinx",
+                           "Config.json")
 OUT_DIR = r"C:\Users\cl672\Documents\daniel-gdrive\pdmm"
 WORK_ROOT = os.path.join(tempfile.gettempdir(), "megamix_demo")
 
 AUDIO_DEV = "Stereo Mix (Realtek(R) Audio)"
+
+
+def second_monitor():
+    """(left, top, width, height) of the first NON-primary display, or
+    raise DemoError. Windows only."""
+    import ctypes
+    from ctypes import wintypes
+    u32 = ctypes.windll.user32
+    mons = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+                        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    def _cb(h, hdc, rect, lp):
+        r = rect.contents
+        mons.append((h, (r.left, r.top, r.right, r.bottom)))
+        return True
+
+    u32.EnumDisplayMonitors(0, 0, _cb, 0)
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    for h, _ in mons:
+        mi = MONITORINFO(); mi.cbSize = ctypes.sizeof(mi)
+        u32.GetMonitorInfoW(h, ctypes.byref(mi))
+        if not (mi.dwFlags & 1):            # MONITORINFOF_PRIMARY = 1
+            r = mi.rcMonitor
+            return r.left, r.top, r.right - r.left, r.bottom - r.top
+    raise DemoError("no second monitor found - the emulator must run on "
+                    "\\.\\DISPLAY6, not the primary display")
+
+
+def main_root_ryujinx_pids():
+    """PIDs of Ryujinx.exe instances WITHOUT a -r/--root-data-dir arg
+    (i.e. running on the main data root). ryu_multi instances pass -r
+    and are never considered."""
+    try:
+        import subprocess as _sp
+        out = _sp.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='Ryujinx.exe'\" "
+             "| Select-Object ProcessId,CommandLine | "
+             "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"],
+            capture_output=True, text=True, timeout=20).stdout or ""
+    except Exception:
+        return []
+    pids = []
+    for ln in out.splitlines():
+        ln = ln.strip()
+        if not ln or "|" not in ln:
+            continue
+        pid_s, cmd = ln.split("|", 1)
+        if " -r " not in cmd and "--root-data-dir" not in cmd:
+            try:
+                pids.append(int(pid_s))
+            except ValueError:
+                pass
+    return pids
+
+
+def ryu_window_client_rect(pid, timeout=30):
+    """Wait up to `timeout` s for a top-level window owned by `pid`, then
+    return its CLIENT rect in screen coordinates (left, top, w, h)."""
+    import ctypes
+    from ctypes import wintypes
+    u32 = ctypes.windll.user32
+    try:
+        u32.SetProcessDpiAwarenessContext(
+            ctypes.c_void_p(-4))      # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    except Exception:
+        pass
+
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _cb(h, p):
+        cp = wintypes.DWORD(0)
+        u32.GetWindowThreadProcessId(h, ctypes.byref(cp))
+        if cp.value == pid and u32.IsWindowVisible(h) \
+                and u32.GetWindowTextLengthW(h) > 0:
+            found.append(h)
+        return True
+
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        found.clear()
+        u32.EnumWindows(_cb, 0)
+        if found:
+            r = wintypes.RECT()
+            u32.GetClientRect(found[0], ctypes.byref(r))
+            pt = wintypes.POINT(0, 0)
+            u32.ClientToScreen(found[0], ctypes.byref(pt))
+            return pt.x, pt.y, r.right - r.left, r.bottom - r.top
+        time.sleep(0.5)
+    return None
+
+
+def _mon_dpi(monitor_left):
+    """DPI of the monitor starting at `monitor_left` (x coordinate)."""
+    import ctypes
+    u32 = ctypes.windll.user32
+    pt = ctypes.wintypes.POINT(monitor_left + 8, 8)
+    h = u32.MonitorFromPoint(pt, 2)      # MONITOR_DEFAULTTONEAREST
+    dx = ctypes.wintypes.UINT(0); dy = ctypes.wintypes.UINT(0)
+    try:
+        ctypes.windll.shcore.GetDpiForMonitor(h, 0,
+                                            ctypes.byref(dx),
+                                            ctypes.byref(dy))
+        return dx.value
+    except Exception:
+        return 96
+
+
+def game_capture_rect(client, mon_dpi):
+    """(x, y, w, h) in screen coords of the 16:9 game render area inside a
+    Ryujinx client rect, leaving the status bar out. All values even."""
+    x, y, w, h = client
+    bar = round(29 * mon_dpi / 96)         # STATUS_BAR_H scaled
+    rw = w // 2 * 2
+    rh = (int(round(w * 9 / 16))) // 2 * 2
+    rx = x // 2 * 2
+    ry = (y + (h - bar - rh)) // 2 * 2
+    return rx, ry, rw, rh
+
+
+def ddagrab_probe(ffmpeg):
+    """{output_idx: (w, h)} by capturing one frame per output 0..3."""
+    out = {}
+    for idx in range(4):
+        r = subprocess.run(
+            [ffmpeg, "-hide_banner", "-f", "lavfi", "-i",
+             f"ddagrab=output_idx={idx}:framerate=1"
+             ",hwdownload,format=bgra",
+             "-frames:v", "1", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=15)
+        m = re.search(r"(\d{3,5})x(\d{3,5})", r.stderr or "")
+        if r.returncode == 0 and m:
+            out[idx] = (int(m.group(1)), int(m.group(2)))
+    return out
 
 # ----------------------------- 720p UI coordinates --------------------------
 MP_BADGE = (1180, 92)
@@ -274,11 +418,27 @@ class Recorder:
 
     def _argv(self, with_audio):
         d = self.d
-        a = [d.ffmpeg, "-hide_banner", "-y",
-             "-f", "lavfi", "-i",
-             f"ddagrab=output_idx={d.monitor}:framerate={d.fps}"
-             f":draw_mouse=0,hwdownload,format=bgra",
-             "-thread_queue_size", "1024"]
+        if d.grabber == "gdigrab":
+            # absolute virtual-desktop coords; gdigrab accepts x >= 1920
+            a = [d.ffmpeg, "-hide_banner", "-y",
+                 "-f", "gdigrab", "-framerate", str(d.fps),
+                 "-draw_mouse", "0",
+                 "-offset_x", str(d.rect[0]),
+                 "-offset_y", str(d.rect[1]),
+                 "-video_size", f"{d.rect[2]}x{d.rect[3]}",
+                 "-i", "desktop",
+                 "-thread_queue_size", "1024"]
+        else:
+            # offset_x/offset_y are relative to that monitor's origin
+            ox = d.rect[0] - d.mon[0]
+            oy = d.rect[1] - d.mon[1]
+            a = [d.ffmpeg, "-hide_banner", "-y",
+                 "-f", "lavfi", "-i",
+                 f"ddagrab=output_idx={d.out_idx}:framerate={d.fps}"
+                 f":offset_x={ox}:offset_y={oy}"
+                 f":video_size={d.rect[2]}x{d.rect[3]}"
+                 f":draw_mouse=0,hwdownload,format=bgra",
+                 "-thread_queue_size", "1024"]
         if with_audio:
             a += ["-f", "dshow", "-audio_buffer_size", "50",
                   "-i", f"audio={d.audio_device}",
@@ -369,7 +529,13 @@ class Demo:
         self.port = a.port_base
         self.disc_port = a.port_base + 1
         self.admin_port = a.port_base + 13
-        self.monitor = a.monitor
+        self.monitor = a.monitor          # explicit ddagrab output_idx (override)
+        self.crop_arg = a.crop
+        self.mon = None                   # second monitor (left,top,w,h)
+        self.out_idx = None               # ddagrab output matching self.mon
+        self.grabber = "ddagrab"          # or "gdigrab" (no matching output)
+        self.rect = None                  # screen-coord capture rect
+        self.cfg_json_backup = None
         self.fps = a.fps
         self.audio_device = a.audio_device
         self.no_audio = a.no_audio
@@ -494,11 +660,14 @@ class Demo:
             f"{self.port}/{self.disc_port}/{self.admin_port})")
 
     def kill_ryujinx(self):
-        r = subprocess.run(["taskkill", "/IM", "Ryujinx.exe", "/F"],
-                           capture_output=True, text=True)
-        if "SUCCESS" in ((r.stdout or "") + (r.stderr or "")):
-            warn("killed a running Ryujinx.exe (required before launch)")
-            time.sleep(2)
+        """Never kills - only fails if a MAIN-root Ryujinx is running
+        (the ryu_multi test roots pass -r and are ignored)."""
+        pids = main_root_ryujinx_pids()
+        if pids:
+            raise DemoError(
+                f"Ryujinx.exe already running on the main data root "
+                f"(pid {pids}) - close your own Ryujinx first; the "
+                f"recorder will not kill it")
 
     # ---------------------------------------------------- config.toml
     def patch_config(self):
@@ -550,6 +719,20 @@ class Demo:
         self.client_cid = m.group(1) if m else None
         log(f"config.toml patched (server :{self.port}, "
             f"discovery :{self.disc_port}, cid={self.client_cid})")
+        # windowed second-monitor placement via Config.json window_startup
+        with open(CONFIG_JSON, "rb") as f:
+            self.cfg_json_backup = f.read()
+        cfg = json.loads(self.cfg_json_backup.decode("utf-8"))
+        cfg["window_startup"] = {
+            "window_maximized": False,
+            "window_position_x": self.mon[0],
+            "window_position_y": self.mon[1],
+            "window_size_width": 1280,
+            "window_size_height": 800,
+        }
+        with open(CONFIG_JSON, "w", encoding="utf-8", newline="") as f:
+            json.dump(cfg, f, indent=2)
+        log(f"Config.json window_startup -> {self.mon}")
 
     def restore_config(self):
         if not self.cfg_patched or self.cfg_backup is None:
@@ -562,6 +745,15 @@ class Demo:
                 return
         self.cfg_patched = False
         log("config.toml restored byte-identical")
+        if self.cfg_json_backup is not None:
+            with open(CONFIG_JSON, "wb") as f:
+                f.write(self.cfg_json_backup)
+            with open(CONFIG_JSON, "rb") as f:
+                if f.read() != self.cfg_json_backup:
+                    warn("Config.json restore verification FAILED")
+                    return
+            self.cfg_json_backup = None
+            log("Config.json restored byte-identical")
 
     # ---------------------------------------------------- processes
     def start_server(self):
@@ -582,21 +774,73 @@ class Demo:
             f"/admin:{self.admin_port}")
 
     def launch_ryujinx(self):
-        for i in range(5, 0, -1):
-            print(f"  *** going fullscreen on monitor {self.monitor} "
-                  f"in {i}s - do not use that display ***", flush=True)
-            time.sleep(1)
+        print("  *** Ryujinx will open WINDOWED on the SECOND monitor "
+              "- do not use that display ***", flush=True)
         self._spawn_ryu()
 
     def _spawn_ryu(self):
         pre = newest_ryu_log()
         self.ryu_log_marker = pre[0] if pre else None
         self.ryu = subprocess.Popen(
-            [self.ryujinx, "--fullscreen", self.nsp],
+            [self.ryujinx, self.nsp],           # windowed, never fullscreen
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.track(self.ryu, "Ryujinx")
         self.ryu_launch_at = time.time()
-        log("Ryujinx launched (fullscreen)")
+        log(f"Ryujinx launched (windowed, second monitor "
+            f"{self.mon})")
+        self._setup_capture_rect()
+
+    def _setup_capture_rect(self):
+        """ddagrab output for the second monitor + the game capture rect."""
+        # --crop overrides the measured rect entirely
+        if self.crop_arg:
+            self.rect = tuple(int(v) for v in
+                              self.crop_arg.split(","))
+            if len(self.rect) != 4:
+                raise DemoError("--crop must be X,Y,W,H")
+            log(f"capture rect from --crop: {self.rect}")
+        else:
+            cli = ryu_window_client_rect(self.ryu.pid)
+            if cli is None:
+                warn("Ryujinx window not found in 30 s - "
+                     "capturing the whole monitor")
+                self.rect = (self.mon[0], self.mon[1],
+                             self.mon[2] // 2 * 2,
+                             self.mon[3] // 2 * 2)
+            else:
+                dpi = _mon_dpi(self.mon[0])
+                self.rect = game_capture_rect(cli, dpi)
+                log(f"client {cli} dpi {dpi} -> rect {self.rect}")
+        # ddagrab output_idx: --monitor wins; else auto-pick the output
+        # matching the second monitor's size; else gdigrab (DISPLAY6 is
+        # not a DXGI output of the adapter ddagrab uses on this PC)
+        if self.monitor is not None:
+            self.out_idx = self.monitor
+            self.grabber = "ddagrab"
+            log(f"ddagrab output_idx={self.out_idx} (--monitor)")
+        else:
+            probes = ddagrab_probe(self.ffmpeg)
+            msize = (self.mon[2], self.mon[3])
+            match = [i for i, sz in probes.items() if sz == msize]
+            if match:
+                self.out_idx = match[0]
+                self.grabber = "ddagrab"
+                log(f"ddagrab probes {probes} -> output_idx="
+                    f"{self.out_idx}")
+            else:
+                self.grabber = "gdigrab"
+                warn(f"no ddagrab output matches {msize} ({probes}); "
+                     f"falling back to gdigrab on screen coords "
+                     f"{self.rect}")
+        # save a PNG of the capture region for review
+        try:
+            from PIL import ImageGrab
+            x, y, w, h = self.rect
+            ImageGrab.grab(all_screens=True).crop(
+                (x, y, x + w, y + h)).save(
+                os.path.join(self.workdir, "crop_preview.png"))
+        except Exception as e:
+            warn(f"crop preview failed: {e}")
 
     def _ryu_log_progress(self):
         """(path, size) of our instance's log or None if not created yet."""
@@ -1185,6 +1429,8 @@ class Demo:
         log(f"workdir: {self.workdir}")
         self.preflight()
         self.kill_ryujinx()
+        self.mon = second_monitor()
+        log(f"second monitor: {self.mon}")
         self.patch_config()
         try:
             self.start_server()
@@ -1213,8 +1459,13 @@ def main():
                          "(default 37777/37778/37790)")
     ap.add_argument("--ryujinx", default=RYUJINX_EXE)
     ap.add_argument("--nsp", default=NSP)
-    ap.add_argument("--monitor", type=int, default=0,
-                    help="ddagrab output_idx (fullscreen monitor)")
+    ap.add_argument("--monitor", type=int, default=None,
+                    help="ddagrab output_idx override (default: auto-pick "
+                         "the output matching the second monitor)")
+    ap.add_argument("--crop", default=None, metavar="X,Y,W,H",
+                    help="capture rect override in screen coordinates "
+                         "(default: the game render area of the "
+                         "Ryujinx window on the second monitor)")
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--audio-device", default=AUDIO_DEV)
     ap.add_argument("--no-audio", action="store_true")
