@@ -32,9 +32,8 @@ def load_pvs():
             if not ln or ln.startswith("#"):
                 continue
             parts = ln.split(None, 1)
-            if parts[0].isdigit():
-                out.append((int(parts[0]),
-                            parts[1] if len(parts) > 1 else parts[0]))
+            if parts[0].isdigit() and len(parts) > 1 and parts[1]:
+                out.append((int(parts[0]), parts[1]))
     except OSError:
         pass
     return out or [(p, f"PV{p}") for p in BASE_PVS]
@@ -57,11 +56,21 @@ class Bot:
         self.w = None
         self._song_task = None
         self.ready = True
+        self.paused = False        # paused inside a round, clock held
+        self.scene = None          # last reported scene: sel | game | results
+        self.sel_pv = 0            # current pick for `start`
+        self.sel_name = ""
+        self.open_vote = None      # (kind, round) while a vote is open
         self.final_round = -1    # last round we sent `final` for
         self.back_round = -1     # last round we sent `back_in_sel` for
 
     def send(self, m):
         self.w.write((json.dumps(m) + "\n").encode())
+
+    def set_scene(self, where):
+        if where != self.scene:
+            self.scene = where
+            self.send({"t": "scene", "where": where})
 
     async def _reconnect(self):
         try:
@@ -137,6 +146,8 @@ class Bot:
                   f"mode={m.get('pick_mode')} :: {self.members_line(m)}")
             if self.a.create:
                 print(f"LOBBY_CODE {self.code}", flush=True)
+            if self.scene is None:
+                self.set_scene("sel")
         elif t == "lobby_left":
             print(f"-- lobby_left {m.get('reason')}")
             self.code = None
@@ -163,6 +174,8 @@ class Bot:
             print(f"-- start r{m['round']} dropped={m.get('dropped')}")
             if self.auto and self.cid not in m.get("dropped", []):
                 self.playing = True
+                self.paused = False
+                self.set_scene("game")
         elif t == "board":
             top = ", ".join(f"{e['name']}={e['score']}"
                             for e in m.get("e", [])[:3])
@@ -171,15 +184,22 @@ class Bot:
             print(f"-- {m['kind']} vote {len(m.get('agreed', []))}/"
                   f"{m['need']} ends_in={m.get('ends_in')}"
                   f"{' EXPIRED' if m.get('expired') else ''}")
+            self.open_vote = (None if m.get("expired")
+                              else (m["kind"], self.round))
             if self.auto and not m.get("expired") and \
                     self.cid not in m.get("agreed", []):
-                self.send({"t": f"{m['kind']}_req", "round": self.round})
+                if self.a.vote == "instant":
+                    self.send({"t": f"{m['kind']}_req", "round": self.round})
+                elif self.a.vote == "delay":
+                    asyncio.ensure_future(
+                        self._vote_later(m["kind"], self.round))
         elif t in ("pause", "resume"):
             print(f"-- {t} by {m.get('by')}")
+            self.open_vote = None
             if t == "pause":
-                self.playing = False
+                self.paused = True
             elif self.auto:
-                self.playing = True
+                self.paused = False
         elif t == "event":
             print(f"-- event {m.get('kind')} {m.get('name')} {m.get('value', '')}")
         elif t == "standings":
@@ -192,9 +212,13 @@ class Bot:
                 self.back_round = m["round"]
                 await asyncio.sleep(2)
                 self.send({"t": "back_in_sel", "round": m["round"]})
+                self.set_scene("sel")
         elif t == "round_end":
             print(f"-- round_end r{m['round']} next={m.get('next_leader')}")
             self.playing = False
+            self.paused = False
+            self.open_vote = None
+            self.set_scene("sel")
             if self.auto and m.get("next_leader") == self.cid:
                 await self._leader_pick()
         elif t == "error":
@@ -211,26 +235,40 @@ class Bot:
 
     async def _leader_pick(self):
         await asyncio.sleep(1)
+        self.pv_idx += 1                  # next named song every round
         pv, name = self.pvs[self.pv_idx % len(self.pvs)]
+        self.sel_pv, self.sel_name = pv, name
         self.send({"t": "sel", "pv": pv, "name": name})
         print(f">> sel {pv} '{name}'")
         await asyncio.sleep(self.a.start_after)
-        self.send({"t": "start_req", "pv": pv, "name": name})
-        print(f">> start_req {pv}")
+        self.send({"t": "start_req", "pv": self.sel_pv,
+                   "name": self.sel_name})
+        print(f">> start_req {self.sel_pv}")
+
+    async def _vote_later(self, kind, rnd):
+        await asyncio.sleep(self.a.vote_delay)
+        if self.open_vote == (kind, rnd):
+            self.send({"t": f"{kind}_req", "round": rnd})
+            print(f">> {kind}_req r{rnd} (after {self.a.vote_delay:.1f}s)")
 
     async def _play_song(self):
-        score, combo = 0, 0
-        end = time.time() + self.a.song_secs
-        while self.playing and time.time() < end:
-            score += random.randint(400, 900)
-            combo += random.randint(1, 4)
-            life = 127 if random.random() > 0.05 else random.randint(10, 60)
-            self.send({"t": "state", "round": self.round, "score": score,
-                       "combo": combo, "pct": min(100.0, score / 3000.0),
-                       "life": life})
+        score, combo, elapsed = 0, 0, 0.0
+        last = time.time()
+        while self.playing and elapsed < self.a.song_secs:
+            now = time.time()
+            if not self.paused:
+                elapsed += now - last
+                score += random.randint(400, 900)
+                combo += random.randint(1, 4)
+                life = 127 if random.random() > 0.05 else random.randint(10, 60)
+                self.send({"t": "state", "round": self.round, "score": score,
+                           "combo": combo, "pct": min(100.0, score / 3000.0),
+                           "life": life})
+            last = now
             await asyncio.sleep(0.2)
         if self.playing:
             self.playing = False
+            self.set_scene("results")
             self.send({"t": "final", "round": self.round, "score": score,
                        "pct": min(100.0, score / 3000.0), "max_combo": combo,
                        "jc": [5, 10, 8, 4, 2], "life": 80})
@@ -294,11 +332,13 @@ class Bot:
         elif c == "next":
             self.pv_idx += 1
             pv, name = self.pvs[self.pv_idx % len(self.pvs)]
+            self.sel_pv, self.sel_name = pv, name
             self.send({"t": "sel", "pv": pv, "name": name})
             print(f">> sel {pv} '{name}'")
         elif c == "prev":
             self.pv_idx -= 1
             pv, name = self.pvs[self.pv_idx % len(self.pvs)]
+            self.sel_pv, self.sel_name = pv, name
             self.send({"t": "sel", "pv": pv, "name": name})
             print(f">> sel {pv} '{name}'")
         elif c == "pick" and arg:
@@ -307,6 +347,7 @@ class Bot:
                         if q == str(pv) or q in n.lower()), None)
             if hit:
                 pv, name = hit
+                self.sel_pv, self.sel_name = pv, name
                 self.send({"t": "sel", "pv": pv, "name": name})
                 print(f">> sel {pv} '{name}'")
             else:
@@ -314,7 +355,8 @@ class Bot:
         elif c == "reconnect":
             asyncio.ensure_future(self._reconnect())
         elif c == "start":
-            pv, name = self.pvs[self.pv_idx % len(self.pvs)]
+            pv, name = (self.sel_pv, self.sel_name) if self.sel_pv \
+                else self.pvs[self.pv_idx % len(self.pvs)]
             self.send({"t": "start_req", "pv": pv, "name": name})
             print(f">> start_req {pv}")
         else:
@@ -340,6 +382,11 @@ def main():
     ap.add_argument("--load-delay", type=float, default=3)
     ap.add_argument("--song-secs", type=float, default=60)
     ap.add_argument("--fail-at", type=float, default=0)
+    ap.add_argument("--vote", choices=["delay", "never", "instant"],
+                    default="delay",
+                    help="how auto bots answer pause/resume votes")
+    ap.add_argument("--vote-delay", type=float, default=3.0,
+                    help="seconds to wait before agreeing an open vote")
     ap.add_argument("--module", type=int, default=0,
                     help="avatar module id (Shared Set A slot 1); 0 = Miku")
     a = ap.parse_args()
