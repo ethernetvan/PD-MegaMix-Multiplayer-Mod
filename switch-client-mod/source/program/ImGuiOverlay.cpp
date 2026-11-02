@@ -499,7 +499,7 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
         if (mp::lobby::PanelWanted()) mp::lobby::DrawPanel();
         /* in-round boxes never cover song select (spectators wait there) */
         if ((ph == 3 /*LOADING*/ || ph == 4 /*PLAYING*/ || ph == 5 /*SPEC*/) &&
-            !sn.inSongSelect)
+            !sn.inSongSelect && sn.resultsAgeMs < 0)
             mp::lobby::DrawLeaderboard();
         if (ph == 3) mp::lobby::DrawWaiting();
         if (sn.resultsAgeMs >= 0 && sn.standingCount > 0)

@@ -85,8 +85,12 @@ static int64_t s_resultInitAt = 0;
 static int64_t s_resultsShownAt = 0;   /* ms when the results screen appeared */
 static bool  s_retryWarned = false;
 static bool  s_resLoadDropped = false;   /* saw pv->loaded==0 since results */
-static int   s_retStage = 0;
-static int64_t s_retStageAt = 0;
+static char  s_scene[12] = "other";
+static int32_t s_playedRound = 0;        /* round actually played this boot */
+static int32_t s_finalSentRound = 0;
+static bool  s_roundOver = false;        /* round_end seen */
+static bool  s_autoReturn = false;       /* drive results->song-list later */
+static int32_t s_standingsRound = 0;
 static int64_t s_stateLastMs = 0;
 static bool  s_statePending = false;
 static int64_t s_destCheckAt = -1;
@@ -144,6 +148,18 @@ static uint64_t NowMs() {
 }
 
 static void SendLine(const char* m) { mp::Enqueue(m); }
+
+static void ReportScene() {
+    char m[64];
+    snprintf(m, sizeof(m), "{\"t\":\"scene\",\"where\":\"%s\"}", s_scene);
+    SendLine(m);
+}
+static void SetScene(const char* w) {
+    if (strcmp(s_scene, w) == 0) return;
+    strncpy(s_scene, w, sizeof(s_scene) - 1);
+    s_scene[sizeof(s_scene) - 1] = 0;
+    if (s_code[0]) ReportScene();
+}
 
 static void PushBanner(const char* fmt, ...) {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
@@ -235,6 +251,9 @@ static void ResetLobbyState() {
     s_standingsComplete = false; s_backInSelSent = false;
     s_resultInitAt = 0; s_retryWarned = false;
     s_resultsShownAt = 0;
+    s_playedRound = 0; s_finalSentRound = 0;
+    s_roundOver = false; s_autoReturn = false;
+    s_standingsRound = 0;
     s_launchHandledRound = -1;   /* round numbers restart in every room */
     s_notReady[0] = 0;
     s_ready = true; s_readyReason[0] = 0;
@@ -338,6 +357,8 @@ static void HandleBoard(const char* line, jsmntok_t* tok, int ntok) {
 static void HandleStandings(const char* line, jsmntok_t* tok, int ntok) {
     int mi = mpjson::Find(line, tok, ntok, "e");
     if (mi < 0 || tok[mi].type != JSMN_ARRAY) return;
+    {   int32_t v; int ri = mpjson::Find(line, tok, ntok, "round");
+        if (ri >= 0 && mpjson::ToInt(line, tok[ri], &v)) s_standingsRound = v; }
     s_standingCount = 0;
     int i = mi + 1;
     while (i < ntok && s_standingCount < 8 && tok[i].type == JSMN_OBJECT) {
@@ -414,6 +435,7 @@ static void ProcessLine(const std::string& l) {
         if (s_code[0]) { s_expectLobby = true; s_expectLobbyAt = NowMs() + 3000; }
         if (s_inLobbyDirty()) s_readyDirty = true;
         ReportAutoPlay(AutoPlay::g_enabled);
+        ReportScene();
         avatar::OnWelcome();
         return;
     }
@@ -433,6 +455,7 @@ static void ProcessLine(const std::string& l) {
         s_expectLobby = false;
         if (s_phase == L_NONE || s_phase == L_DROPPED) {
             ReportAutoPlay(AutoPlay::g_enabled);
+            ReportScene();
             SetPhase(strcmp(s_serverPhase, "SELECT") == 0
                      ? L_SELECT : L_SPECTATING,
                      s_amLeader ? "You're the leader - pick a song"
@@ -504,14 +527,26 @@ static void ProcessLine(const std::string& l) {
         if (s_launchHandledRound == rd) return;
         s_launchHandledRound = rd;
         s_round = rd;
-        s_standingCount = 0;   /* don't show last round's standings */
+        s_roundOver = false;
         int32_t pv = 0; i = mpjson::Find(line, tok, ntok, "pv");
         if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) pv = v;
         s_selPv = pv;
-        if (s_amLeader || s_committed) {
+        if (s_resultsShownAt == 0)
+            s_standingCount = 0;   /* don't show last round's standings */
+        if (s_committed) {
             s_amPlayer = true;
             SetPhase(L_LOADING, "Loading...");
             SetBlocks(MASK_ALL_NO_MINUS, false);
+        } else if (s_resultsShownAt > 0 ||
+                   (!s_selActive && !CustomizeSelUi::IsInCustomizeScene())) {
+            /* away from song select: can't join this round */
+            s_amPlayer = false;
+            SetPhase(L_SPECTATING, "Spectating this round");
+            char m[64];
+            snprintf(m, sizeof(m), "{\"t\":\"launch_fail\",\"round\":%d}", rd);
+            SendLine(m);
+            PushBanner("Round started while you were away - spectating");
+            if (s_resultsShownAt > 0) s_autoReturn = true;
         } else {
             bool player = true;
             int pi = mpjson::Find(line, tok, ntok, "players");
@@ -560,6 +595,7 @@ static void ProcessLine(const std::string& l) {
         s_resumePending = true;
         s_resumeTries = 0;
         s_resumeLastMs = 0;
+        s_playedRound = rd;
         if (dropped) {
             SetPhase(L_DROPPED, "Dropped - playing solo");
             ClearAllInput();
@@ -580,9 +616,15 @@ static void ProcessLine(const std::string& l) {
         for (int q = 0; q < s_memberCount; q++)
             if (strcmp(s_members[q].cid, by) == 0) {
                 strncpy(nm, s_members[q].name, sizeof(nm) - 1); break; }
-        PushBanner("%s by %s", p ? "Paused" : "Resumed",
-                   nm[0] ? nm : by);
-        if (p) {
+        bool sync = false;
+        {   int si = mpjson::Find(line, tok, ntok, "sync");
+            if (si >= 0 && line[tok[si].start] == 't') sync = true; }
+        if (!sync)
+            PushBanner("%s by %s", p ? "Paused" : "Resumed",
+                       nm[0] ? nm : by);
+        if (sync) {
+            ApplyBlocks();           /* state only: no banner, no taps */
+        } else if (p) {
             /* pause ourselves if not already paused */
             if (!s_gamePaused) input::Tap(nn::hid::Plus, 60, 100, true);
             ApplyBlocks();
@@ -635,15 +677,15 @@ static void ProcessLine(const std::string& l) {
         s_jumpFailedDiff = false; s_standingsComplete = false;
         s_backInSelSent = false; s_resultInitAt = 0;
         s_amLeader = strcmp(nl, s_myCid) == 0;
-        if (s_phase == L_RESULTS) {
-            /* still on results: run the results->song-list recipe
-               A -> 1.5s -> A -> 1.5s -> Down -> 0.4s -> A */
-            s_retStage = 0; s_retStageAt = NowMs();
-            s_phase = L_RESULTS;   /* keep phase for the driver below */
-            s_resultInitAt = 1;    /* re-arm the driver */
-        } else {
+        s_roundOver = true;
+        if (s_selActive) {
             SetPhase(L_SELECT, s_amLeader ? "You're the leader - pick a song"
                                           : "Back in lobby - next round");
+        } else {
+            /* on results / in the song / loading: never become an
+               L_SELECT follower away from song select */
+            SetPhase(L_RESULTS, "Round over");
+            s_autoReturn = true;
         }
         ApplyBlocks();
         if (s_amLeader) PushBanner("You're the leader - pick a song");
@@ -665,6 +707,7 @@ static void ProcessLine(const std::string& l) {
         else if (strcmp(k, "left") == 0) PushBanner("%s left", nm);
         else if (strcmp(k, "disconnected") == 0) PushBanner("%s disconnected", nm);
         else if (strcmp(k, "reconnected") == 0) PushBanner("%s reconnected", nm);
+        else if (strcmp(k, "owner") == 0) PushBanner("%s is now the room owner", nm);
         return;
     }
 }
@@ -676,13 +719,14 @@ static bool s_inLobbyDirty() {
 }
 
 static void ApplyBlocks() {
-    if (s_phase == L_SELECT && !s_amLeader)
+    if (s_phase == L_SELECT && !s_amLeader && s_selActive)
         SetBlocks(MASK_FOLLOWER, true);
     else if (s_phase == L_LOADING ||
              (s_phase == L_LAUNCHING && s_launchBlocking))
         SetBlocks(MASK_ALL_NO_MINUS, false);
-    else if (s_phase == L_RESULTS)
-        SetBlocks(0, false);                  /* results: user navigates */
+    else if (s_resultsShownAt > 0 && NowMs() - s_resultsShownAt < 1500)
+        /* swallow stray autopilot As right after results: A = RETRY */
+        SetBlocks(MASK_ALL_NO_MINUS, false);
     else if (s_phase == L_PLAYING) {
         if (s_groupPaused)
             SetBlocks(nn::hid::Plus | nn::hid::A | nn::hid::B | nn::hid::X |
@@ -791,6 +835,16 @@ void Pump() {
         }
     }
 
+    /* post-results input-guard expiry (doesn't depend on pv frames) */
+    if (s_resultsShownAt > 0) {
+        bool g = now - s_resultsShownAt < 1500;
+        static bool s_wasGuard = false;
+        if (g != s_wasGuard) { s_wasGuard = g; ApplyBlocks(); }
+    }
+    /* module customize opened from song select still counts as song select */
+    if (!s_selActive && s_code[0] && CustomizeSelUi::IsInCustomizeScene())
+        SetScene("sel");
+
     if (s_expectLobby && s_code[0] && now > s_expectLobbyAt) {
         s_expectLobby = false;
         ResetLobbyState();
@@ -803,7 +857,7 @@ void Pump() {
         bool inCust = CustomizeSelUi::IsInCustomizeScene() ||
                       CustomizeSelUi::IsOpen();
         if (s_phase == L_SELECT && !s_committed && !s_selActive && !inCust &&
-            s_code[0])
+            s_code[0] && strcmp(s_scene, "other") == 0)
             SendLine("{\"t\":\"lobby_leave\"}");
     }
 
@@ -845,12 +899,17 @@ void Pump() {
 void OnPvSelInit() {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
     s_selActive = true;
+    s_autoReturn = false;
+    SetScene("sel");
+    ApplyBlocks();
 }
 void OnPvSelDest() {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
     s_selActive = false;
     s_overlayOpen = false;
-    s_destCheckAt = NowMs() + 1500;
+    SetScene("other");
+    s_destCheckAt = NowMs() + 8000;
+    ApplyBlocks();
 }
 
 void OnPvSelFrame(const void* sel) {
@@ -902,6 +961,13 @@ void OnPvSelFrame(const void* sel) {
         s_readyDirty = true;
     }
 
+    /* reached song select after a round_end while away -> back to SELECT */
+    if (s_phase == L_RESULTS && s_roundOver) {
+        SetPhase(L_SELECT, s_amLeader ? "You're the leader - pick a song"
+                                      : "Back in lobby - next round");
+        ApplyBlocks();
+    }
+
     /* leader: send sel on pv change */
     if (s_phase == L_SELECT && s_amLeader && state == 6 && !busy) {
         if (selPv != -2 && selPv != s_lastSentSel &&
@@ -918,8 +984,8 @@ void OnPvSelFrame(const void* sel) {
         }
     }
 
-    /* leader: commit on 8->10 */
-    if (s_phase == L_SELECT && s_amLeader && prevSt == 8 && state == 10 &&
+    /* leader: commit on any entry into state 10 */
+    if (s_phase == L_SELECT && s_amLeader && prevSt != 10 && state == 10 &&
         !s_committed) {
         s_committed = true;
         int32_t pv = selPv;
@@ -1050,6 +1116,10 @@ void OnPvGameFrame(PVGameData* pv) {
     uint64_t now = NowMs();
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
 
+    /* scene reporting */
+    if (pv->loaded && s_resultsShownAt == 0 && !s_selActive)
+        SetScene("game");
+
     s_curScore = pv->score;
     s_curCombo = pv->combo;
     s_curPct = pv->percentage;
@@ -1141,15 +1211,20 @@ void OnPvGameFrame(PVGameData* pv) {
 
 void OnStageResult(bool init) {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
-    if (init && s_code[0]) s_resultsShownAt = NowMs();
-    if (init && s_phase == L_PLAYING) {
+    if (init) {
+        SetScene("results");
+        if (s_code[0]) s_resultsShownAt = NowMs();
+    }
+    if (init && s_code[0] && s_playedRound > 0 &&
+        s_finalSentRound != s_playedRound) {
+        s_finalSentRound = s_playedRound;
         PVGameData* pv = GetPVGameData();
         if (pv) {
             char m[256];
             snprintf(m, sizeof(m),
                 "{\"t\":\"final\",\"round\":%d,\"score\":%d,\"pct\":%.2f,"
                 "\"max_combo\":%d,\"jc\":[%d,%d,%d,%d,%d],\"life\":%d}",
-                s_round, pv->score, (double)pv->percentage, pv->max_combo,
+                s_playedRound, pv->score, (double)pv->percentage, pv->max_combo,
                 pv->judge_count[0], pv->judge_count[1], pv->judge_count[2],
                 pv->judge_count[3], pv->judge_count[4], pv->life);
             SendLine(m);
@@ -1158,12 +1233,16 @@ void OnStageResult(bool init) {
         s_resultInitAt = NowMs();
         s_retryWarned = false;
         s_resLoadDropped = false;
-        s_retStage = 0; s_retStageAt = 0;
         input::ResetAll();     /* drop queued taps/spam: an A here = RETRY */
-        SetBlocks(MASK_ALL_NO_MINUS, false);
+        ApplyBlocks();
     } else if (!init) {
         if (s_phase == L_RESULTS) s_resultInitAt = 0;
         s_resultsShownAt = 0;
+        s_autoReturn = false;
+        SetScene("other");
+        /* new round's standings replace the ones on the results screen */
+        if (s_launchHandledRound > s_standingsRound) s_standingCount = 0;
+        ApplyBlocks();
     }
 }
 
