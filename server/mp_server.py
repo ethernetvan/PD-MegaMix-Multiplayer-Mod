@@ -176,7 +176,7 @@ class Server:
                            "lobby_leave", "kick", "sel", "sel_ack", "start_req",
                            "launch_fail", "loaded", "state", "final",
                            "back_in_sel", "ready", "set_pick_mode", "autoplay",
-                           "pause_req", "resume_req", "avatar"):
+                           "pause_req", "resume_req", "avatar", "scene"):
                     self.lobby.on_message(client.cid, msg, time.time())
                     await self.drain_outbox()
                 elif t == "dbg_pvs":

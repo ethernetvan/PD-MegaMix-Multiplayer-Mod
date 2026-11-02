@@ -585,3 +585,191 @@ class T4(unittest.TestCase):
         self.lm.tick(122.0)
         v = self.msgs(t="pause_vote")
         self.assertTrue(v[0][1].get("expired"))
+
+
+class T5(unittest.TestCase):
+    """scene reporting, leader/owner round end, owner succession,
+       competition ranking, pause dedupe (items 7-13)."""
+    def setUp(self):
+        self.lm = LobbyManager()
+
+    def msgs(self, cid=None, t=None):
+        out = self.lm.outbox; self.lm.outbox = []
+        return [(c, m) for c, m in out
+                if (cid is None or c == cid) and (t is None or m.get("t") == t)]
+
+    def mk(self, cid, mod="v1"):
+        self.lm.on_hello(cid, cid, mod, 100.0)
+
+    def _mk(self, n=2):
+        self.lm.on_message("a", {"t": "lobby_create"}, 100.0)
+        code = next(iter(self.lm.lobbies))
+        for c in "bcdef"[:n - 1]:
+            self.lm.on_message(c, {"t": "lobby_join", "code": code}, 100.0)
+        return self.lm.lobbies[code]
+
+    def _playing(self, lb, players="ab"):
+        rid = lb.seq + 1
+        self.lm.on_message("a", {"t": "start_req", "pv": 1, "name": "s"}, 101.0)
+        for c in players:
+            self.lm.on_message(c, {"t": "loaded", "round": rid}, 102.0)
+        self.lm.tick(103.0)
+        self.msgs()
+        return rid
+
+    def _final(self, c, rid, pct, score):
+        self.lm.on_message(c, {"t": "final", "round": rid, "score": score,
+                               "pct": pct, "max_combo": 0,
+                               "jc": [0, 0, 0, 0, 0], "life": 0}, 104.0)
+
+    # ---- 7/8: scene -> spectator at launch
+    def test_scene_spectator(self):
+        for c in "abcd": self.mk(c)
+        lb = self._mk(4)
+        self.lm.on_message("b", {"t": "scene", "where": "results"}, 100.0)
+        self.lm.on_message("d", {"t": "scene", "where": "other"}, 100.0)
+        self.lm.on_message("b", {"t": "scene", "where": "bogus"}, 100.0)
+        self.assertEqual(self.lm._member(lb, "b").scene, "results")
+        self.lm.on_message("a", {"t": "start_req", "pv": 1, "name": "s"}, 101.0)
+        r = lb.round
+        self.assertEqual(r.players, ["a", "c"])   # c: unknown scene = sel
+        self.assertEqual(r.spectators, ["b", "d"])
+
+    # ---- 10: leader/owner back_in_sel ends the round
+    def test_leader_back_results_immediate(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._final("a", rid, 50, 100); self._final("b", rid, 40, 90)
+        self.assertEqual(lb.phase, "RESULTS")
+        self.msgs()
+        self.lm.on_message("a", {"t": "back_in_sel", "round": rid}, 105.0)
+        self.assertTrue(self.msgs(t="round_end"))
+        self.assertEqual(lb.phase, "SELECT")
+
+    def test_leader_back_playing_deferred(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._final("a", rid, 50, 100)
+        self.lm.on_message("a", {"t": "back_in_sel", "round": rid}, 104.5)
+        self.assertEqual(lb.phase, "PLAYING")       # b still playing
+        self.assertTrue(lb.round.leader_back)
+        self.msgs()
+        self._final("b", rid, 40, 90)
+        self.assertEqual(lb.phase, "SELECT")        # round_end on completion
+        self.assertTrue(self.msgs(t="round_end"))
+
+    def test_bot_leader_back_only_marks(self):
+        self.mk("a", "botmod x"); self.mk("b")
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._final("a", rid, 50, 100); self._final("b", rid, 40, 90)
+        self.assertEqual(lb.phase, "RESULTS")
+        self.msgs()
+        self.lm.on_message("a", {"t": "back_in_sel", "round": rid}, 105.0)
+        self.assertFalse(self.msgs(t="round_end"))  # bot: no round end
+        self.assertTrue(self.lm._member(lb, "a").back_in_sel)
+        self.assertEqual(lb.phase, "RESULTS")
+
+    def test_follower_back_does_not_end(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._final("a", rid, 50, 100); self._final("b", rid, 40, 90)
+        self.msgs()
+        self.lm.on_message("b", {"t": "back_in_sel", "round": rid}, 105.0)
+        self.assertFalse(self.msgs(t="round_end"))
+        self.assertTrue(self.lm._member(lb, "b").back_in_sel)
+
+    # ---- 11: owner succession + rejoin grace
+    def test_owner_succession_skips_bot(self):
+        self.mk("a"); self.mk("b", "bot1"); self.mk("c")
+        lb = self._mk(3)
+        self.assertEqual(lb.owner_cid, "a")
+        self.lm.on_message("a", {"t": "lobby_leave"}, 101.0)
+        self.assertEqual(lb.owner_cid, "c")         # bot b skipped
+        ev = [m for _, m in self.msgs(t="event") if m["kind"] == "owner"]
+        self.assertTrue(ev)
+        self.assertFalse([m for _, m in self.msgs(t="event")
+                          if m["kind"] == "leader"])
+
+    def test_owner_grace_rejoin(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        self.lm.on_message("a", {"t": "lobby_leave"}, 101.0)
+        self.assertEqual(lb.owner_cid, "b")
+        self.lm.on_message("a", {"t": "lobby_join", "code": lb.code}, 104.0)
+        self.assertEqual(lb.owner_cid, "a")         # restored within 120s
+        self.assertIsNone(lb.prev_owner)
+
+    def test_owner_grace_expired(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        self.lm.on_message("a", {"t": "lobby_leave"}, 101.0)
+        self.assertEqual(lb.owner_cid, "b")
+        self.lm.on_message("a", {"t": "lobby_join", "code": lb.code}, 222.0)
+        self.assertEqual(lb.owner_cid, "b")         # grace expired
+
+    # ---- 12: competition ranking
+    def test_ties_1_2_2_4(self):
+        for c in "abcd": self.mk(c)
+        lb = self._mk(4)
+        rid = self._playing(lb, "abcd")
+        self._final("a", rid, 90, 100)
+        self._final("b", rid, 90, 50)
+        self._final("c", rid, 90, 50)
+        self._final("d", rid, 80, 200)
+        rows, complete = self.lm._standings(lb, 104.0)
+        self.assertEqual([r["rank"] for r in rows], [1, 2, 2, 4])
+
+    # ---- 13: pause dedupe + stale
+    def test_pause_same_state_sync_only(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self.lm.on_message("a", {"t": "pause_req", "round": rid}, 104.0)
+        self.assertEqual(len(self.msgs(t="pause")), 2)
+        # b asks pause while paused -> only b gets a sync reply
+        self.lm.on_message("b", {"t": "pause_req", "round": rid}, 105.0)
+        self.assertEqual(self.msgs("b", "pause"),
+                         [("b", {"t": "pause", "by": "", "sync": True})])
+        self.assertFalse(self.msgs("a", "pause"))
+        # resume while already resumed -> same deal
+        self.lm.on_message("a", {"t": "resume_req", "round": rid}, 106.0)
+        self.msgs()
+        self.lm.on_message("b", {"t": "resume_req", "round": rid}, 107.0)
+        self.assertEqual(self.msgs("b", "resume"),
+                         [("b", {"t": "resume", "by": "", "sync": True})])
+
+    def test_pause_dup_within_half_sec_ignored(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        lb.owner_cid = "zzz"         # both members go through the vote path
+        self.lm.on_message("b", {"t": "pause_req", "round": rid}, 104.0)
+        self.lm.on_message("b", {"t": "pause_req", "round": rid}, 104.2)
+        v = self.msgs(t="pause_vote")
+        self.assertEqual(len(v), 2)   # one broadcast to both; dup ignored
+        # different kind within 0.5s is not deduped
+        self.lm.on_message("a", {"t": "pause_req", "round": rid}, 104.3)
+        self.assertTrue(self.msgs(t="pause"))    # vote passed (need=2)
+
+    def test_stale_suspended_while_paused_and_resume_bump(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._final("a", rid, 50, 100)           # starts the stale timer
+        mb = self.lm._member(lb, "b")
+        mb.last_activity = 10.0                  # long dead
+        lb.group_paused = True
+        rows, complete = self.lm._standings(lb, 200.0)
+        self.assertFalse([r for r in rows if r["cid"] == "b"][0]["final"])
+        self.assertFalse(complete)               # b not stale-complete
+        lb.group_paused = False
+        rows, _ = self.lm._standings(lb, 200.0)
+        self.assertTrue([r for r in rows if r["cid"] == "b"][0]["final"])
+        # owner resume bumps last_activity of players who had one
+        lb.group_paused = True
+        self.lm.on_message("a", {"t": "resume_req", "round": rid}, 201.0)
+        self.assertEqual(mb.last_activity, 201.0)

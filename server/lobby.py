@@ -8,6 +8,11 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       start_req {pv, name} (leader, SELECT only); launch_fail {round};
       loaded {round}; state {round, score, combo, pct, life};
       final {round, score, pct, max_combo, jc:[5], life}; back_in_sel {round};
+      scene {where: sel|results|game|other}; leader/owner back_in_sel in
+      RESULTS ends the round for everyone (in PLAYING it ends when the
+      standings complete); a member off song select at launch becomes a
+      spectator; owner leaving hands ownership to the first connected
+      non-bot member and rejoining within 120s restores it;
       avatar {module} (Shared Set A slot-1 module id, -1 unknown; any time).
 S->C: welcome/error/pong (existing);
       lobby {code, phase, leader, you, round, sel_pv,
@@ -45,7 +50,8 @@ class Member:
     __slots__ = ("cid", "name", "connected", "role", "loaded", "final",
                  "back_in_sel", "state", "prev_combo_bucket", "low_life_armed",
                  "disconnect_at", "last_activity",
-                 "ready", "ready_reason", "ready_pv", "autoplay")
+                 "ready", "ready_reason", "ready_pv", "autoplay",
+                 "scene", "pause_req_at", "pause_req_kind")
 
     def __init__(self, cid, name):
         self.cid = cid
@@ -64,12 +70,16 @@ class Member:
         self.ready_reason = ""
         self.ready_pv = -1
         self.autoplay = False
+        self.scene = None         # sel|results|game|other, None = unknown ("sel")
+        self.pause_req_at = 0.0
+        self.pause_req_kind = ""
 
 
 class Round:
     __slots__ = ("id", "pv", "name", "leader", "players", "spectators",
                  "dropped", "launch_at", "leader_loaded_at", "started",
-                 "first_final_at", "complete_at", "complete_announced")
+                 "first_final_at", "complete_at", "complete_announced",
+                 "leader_back")
 
     def __init__(self, rid, pv, name, leader):
         self.id = rid
@@ -85,6 +95,7 @@ class Round:
         self.first_final_at = None
         self.complete_at = None
         self.complete_announced = False
+        self.leader_back = False
 
 
 class Lobby:
@@ -108,6 +119,7 @@ class Lobby:
         self.pending_leader = None
         self.last_board_at = 0.0
         self.board_dirty = False
+        self.prev_owner = None    # (cid, deadline) rejoin grace
 
     def effective_leader(self):
         if self.pick_mode == "owner":
@@ -130,6 +142,7 @@ class LobbyManager:
         self._rng = random.Random()
         self._client_names = {}     # cid -> display name (all clients)
         self._client_modules = {}   # cid -> avatar module id (all clients)
+        self._bots = set()          # cids whose mod starts with "bot"
 
     # ------------------------------------------------- helpers
     def _lobby_of(self, cid):
@@ -187,6 +200,10 @@ class LobbyManager:
     # ------------------------------------------------- connection events
     def on_hello(self, cid, name, mod, now):
         self._client_names[cid] = name
+        if mod and mod.startswith("bot"):
+            self._bots.add(cid)
+        else:
+            self._bots.discard(cid)
         lobby = self._lobby_of(cid)
         if lobby is None:
             return
@@ -253,6 +270,8 @@ class LobbyManager:
             self._final(cid, msg, now)
         elif t == "back_in_sel":
             self._back_in_sel(cid, msg, now)
+        elif t == "scene":
+            self._scene(cid, msg, now)
         elif t == "ready":
             self._ready(cid, msg, now)
         elif t == "set_pick_mode":
@@ -326,6 +345,11 @@ class LobbyManager:
         m.role = "player" if lobby.phase == "SELECT" else "spectator"
         lobby.members.append(m)
         self.by_cid[cid] = lobby
+        if (lobby.prev_owner is not None and
+                lobby.prev_owner[0] == cid and now < lobby.prev_owner[1]):
+            lobby.owner_cid = cid
+            lobby.prev_owner = None
+            self._event(lobby, "owner", cid, m.name)
         self.log(f"lobby {lobby.code}: {cid} joined")
         self._broadcast_lobby(lobby)
         self._event(lobby, "joined", cid, m.name)
@@ -367,9 +391,13 @@ class LobbyManager:
             self.log(f"lobby {lobby.code} closed (empty)")
             return
         if lobby.owner_cid == cid:
-            lobby.owner_cid = lobby.members[0].cid
-            self._event(lobby, "leader", lobby.owner_cid,
-                        lobby.members[0].name)
+            lobby.prev_owner = (cid, now + 120.0)
+            non_bots = [m for m in lobby.members
+                        if m.cid not in self._bots]
+            new_owner = (next((m for m in non_bots if m.connected), None) or
+                         (non_bots[0] if non_bots else lobby.members[0]))
+            lobby.owner_cid = new_owner.cid
+            self._event(lobby, "owner", lobby.owner_cid, new_owner.name)
         if was_leader:
             new_leader = lobby.members[idx % len(lobby.members)]
             lobby.leader_cid = new_leader.cid
@@ -497,21 +525,38 @@ class LobbyManager:
         if cid not in lobby.round.players:
             return
         kind = "pause" if pause else "resume"
+        if lobby.group_paused == pause:
+            # already in the requested state: resync the requester only
+            self._send(cid, {"t": kind, "by": "", "sync": True})
+            return
+        m = self._member(lobby, cid)
+        if (m is not None and m.pause_req_kind == kind and
+                now - m.pause_req_at < 0.5):
+            return                     # same kind repeated within 0.5 s
+        if m is not None:
+            m.pause_req_at = now
+            m.pause_req_kind = kind
         if lobby.owner_cid == cid:
             # owner: immediate
             lobby.vote = None
             lobby.group_paused = pause
             self._broadcast(lobby, {"t": kind, "by": cid})
             self.log(f"lobby {lobby.code}: {kind} by owner {cid}")
+            if not pause:
+                self._bump_activity(lobby, now)
             return
         # vote: single open vote; a req while open counts as agreeing
         v = lobby.vote
         if v is None or v["kind"] != kind or now >= v["ends_at"]:
-            v = {"kind": kind, "agreed": {cid}, "ends_at": now + PAUSE_VOTE_S}
+            v = {"kind": kind, "agreed": {cid},
+                 "ends_at": now + PAUSE_VOTE_S}
             lobby.vote = v
+            self._send_pause_vote(lobby, now)
         else:
+            prev = len(v["agreed"])
             v["agreed"].add(cid)
-        self._send_pause_vote(lobby, now)
+            if len(v["agreed"]) > prev:   # agreed set grew
+                self._send_pause_vote(lobby, now)
         need = {c for c in lobby.round.players
                 if self._member(lobby, c) is not None and
                 self._member(lobby, c).connected}
@@ -520,6 +565,17 @@ class LobbyManager:
             lobby.group_paused = pause
             self._broadcast(lobby, {"t": kind, "by": cid})
             self.log(f"lobby {lobby.code}: {kind} vote passed")
+            if not pause:
+                self._bump_activity(lobby, now)
+
+    def _bump_activity(self, lobby, now):
+        r = lobby.round
+        if r is None:
+            return
+        for p in r.players:
+            pm = self._member(lobby, p)
+            if pm is not None and pm.last_activity is not None:
+                pm.last_activity = now
 
     def _send_pause_vote(self, lobby, now, expired=False):
         v = lobby.vote
@@ -534,6 +590,14 @@ class LobbyManager:
         if expired:
             msg["expired"] = True
         self._broadcast(lobby, msg)
+
+    def _scene(self, cid, msg, now):
+        m = self._member(self._lobby_of(cid), cid)
+        if m is None:
+            return
+        w = msg.get("where")
+        if w in ("sel", "results", "game", "other"):
+            m.scene = w
 
     def _ready(self, cid, msg, now):
         lobby = self._lobby_of(cid)
@@ -569,6 +633,9 @@ class LobbyManager:
             if m.cid == lobby.leader():
                 players.append(m.cid)
             elif not m.connected:
+                spectators.append(m.cid)
+            elif (m.scene or "sel") != "sel":
+                # away from song select can't join the round
                 spectators.append(m.cid)
             elif a is None:                                  # optimistic no-ack
                 players.append(m.cid)
@@ -729,7 +796,7 @@ class LobbyManager:
             stale = (r.first_final_at is not None and
                      m.last_activity is not None and
                      now - m.last_activity >= 30.0 and f is None and
-                     m.connected)
+                     m.connected and not lobby.group_paused)
             rows.append({"cid": m.cid, "name": m.name,
                          "score": f["score"] if f else m.state.get("score", 0),
                          "pct": f["pct"] if f else m.state.get("pct", 0.0),
@@ -738,8 +805,14 @@ class LobbyManager:
                          "final": f is not None or not m.connected or stale,
                          "connected": m.connected})
         rows.sort(key=lambda x: (-x["pct"], -x["score"]))
+        rank = 0
+        prev_key = None
         for i, row in enumerate(rows):
-            row["rank"] = i + 1
+            key = (round(row["pct"], 2), row["score"])
+            if key != prev_key:
+                rank = i + 1
+                prev_key = key
+            row["rank"] = rank
         complete = all(row["final"] for row in rows) if rows else True
         return rows, complete
 
@@ -761,14 +834,12 @@ class LobbyManager:
             lobby.phase = "RESULTS"
             self.log(f"lobby {lobby.code}: r{r.id} standings complete")
             self._send_standings(lobby, now)
+            if r.leader_back:
+                self.log(f"lobby {lobby.code}: r{r.id} leader back, "
+                         f"round ended with last final")
+                self._round_end(lobby, now)
 
     def _back_in_sel(self, cid, msg, now):
-        lobby0 = self._lobby_of(cid)
-        if (lobby0 is not None and lobby0.owner_cid == cid and
-                lobby0.phase == "RESULTS"):
-            self.log(f"lobby {lobby0.code}: owner back_in_sel -> round_end")
-            self._round_end(lobby0, now)
-            return
         lobby = self._lobby_of(cid)
         if lobby is None or lobby.round is None:
             return
@@ -777,6 +848,19 @@ class LobbyManager:
         m = self._member(lobby, cid)
         if m:
             m.back_in_sel = True
+        # round leader or owner back on song select ends the round for all;
+        # a bot's back_in_sel only marks itself
+        if cid in self._bots:
+            return
+        r = lobby.round
+        if cid != r.leader and cid != lobby.owner_cid:
+            return
+        if lobby.phase == "RESULTS":
+            self.log(f"lobby {lobby.code}: r{r.id} leader/owner "
+                     f"back_in_sel -> round_end")
+            self._round_end(lobby, now)
+        elif lobby.phase == "PLAYING":
+            r.leader_back = True
 
     def _round_end(self, lobby, now, rotate=True):
         r = lobby.round
