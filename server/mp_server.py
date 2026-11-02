@@ -203,38 +203,42 @@ class Server:
                 pass
 
     async def admin_handle(self, reader, writer):
-        while True:
-            line = await reader.readline()
-            if not line:
-                break
-            try:
-                msg = json.loads(line.strip())
-            except Exception:
-                writer.write(b"bad json\n")
-                await writer.drain()
-                continue
-            cid = msg.get("cid")
-            if msg.get("cmd") in ("lobbies", "kick", "set_leader"):
-                res = self.lobby.on_admin(msg, time.time())
-                await self.drain_outbox()
-                writer.write((json.dumps(res) + "\n").encode())
-                await writer.drain()
-                continue
-            msg.pop("cid", None)
-            msg["t"] = "dbg_cmd"
-            targets = ([self.clients[cid]] if cid in self.clients
-                       else list(self.clients.values()))
-            n = 0
-            for c in targets:
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
                 try:
-                    c.writer.write((json.dumps(msg) + "\n").encode())
-                    await c.writer.drain()
-                    n += 1
+                    msg = json.loads(line.strip())
                 except Exception:
-                    pass
-            log(f"ADMIN {msg.get('cmd')}: forwarded to {n} client(s)")
-            writer.write(f"ok {n} clients\n".encode())
-            await writer.drain()
+                    writer.write(b"bad json\n")
+                    await writer.drain()
+                    continue
+                cid = msg.get("cid")
+                if msg.get("cmd") in ("lobbies", "kick", "set_leader"):
+                    res = self.lobby.on_admin(msg, time.time())
+                    await self.drain_outbox()
+                    writer.write((json.dumps(res) + "\n").encode())
+                    await writer.drain()
+                    continue
+                msg.pop("cid", None)
+                msg["t"] = "dbg_cmd"
+                targets = ([self.clients[cid]] if cid in self.clients
+                           else list(self.clients.values()))
+                n = 0
+                for c in targets:
+                    try:
+                        c.writer.write((json.dumps(msg) + "\n").encode())
+                        await c.writer.drain()
+                        n += 1
+                    except Exception:
+                        pass
+                log(f"ADMIN {msg.get('cmd')}: forwarded to {n} client(s)")
+                writer.write(f"ok {n} clients\n".encode())
+                await writer.drain()
+        except (ConnectionResetError, ConnectionAbortedError,
+                BrokenPipeError):
+            pass
         try:
             writer.close()
         except Exception:
