@@ -1848,6 +1848,7 @@ void DrawCountdown() {
     /* the band + dim are constant for the whole countdown: fade in over
      * its first 200 ms, hold, fade out together with "GO!" - only the
      * digits animate */
+    if (s.countdownAgeMs < 0 && s.goMs < 0) return;   /* nothing showing */
     float bandA = s.countdownAgeMs >= 0
         ? (s.countdownAgeMs < 200 ? s.countdownAgeMs / 200.0f : 1.0f)
         : (s.goMs >= 450 ? 1.0f - (s.goMs - 450) / 350.0f : 1.0f);

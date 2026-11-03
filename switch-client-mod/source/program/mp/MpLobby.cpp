@@ -1879,10 +1879,13 @@ void GetSnapshot(Snapshot* out) {
     out->myPct = s_curPct;
     out->sinceStartMs = s_launchStartMs > 0
         ? (int32_t)(NowMs() - s_launchStartMs) : -1;
-    out->countdownMs = s_countdownEndMs > 0
-        ? (int32_t)(s_countdownEndMs - NowMs()) : -1;
-    if (out->countdownMs < 0) out->countdownMs = s_countdownEndMs > 0 ? 0 : -1;
-    out->countdownAgeMs = s_countdownEndMs > 0
+    /* a countdown whose `start` never came (round cancelled, we left, or
+     * we're back in song select) must not linger */
+    bool cdLive = s_countdownEndMs > 0 && !s_selActive &&
+                  (int64_t)NowMs() < s_countdownEndMs + 4000;
+    out->countdownMs = cdLive ? (int32_t)(s_countdownEndMs - NowMs()) : -1;
+    if (cdLive && out->countdownMs < 0) out->countdownMs = 0;
+    out->countdownAgeMs = cdLive
         ? (int32_t)(NowMs() - s_countdownStartMs) : -1;
     out->goMs = s_goAt > 0 ? (int32_t)(NowMs() - s_goAt) : -1;
     if (out->goMs > 800) out->goMs = -1;
