@@ -422,6 +422,33 @@ class CountdownTests(unittest.TestCase):
         self.assertNotIn("countdown", types)
 
 
+class ReArmTests(unittest.TestCase):
+    def setUp(self):
+        self.m = LobbyManager()
+        self.ev = []
+        self.m._event = lambda lb, kind, cid, name, val: self.ev.append((kind, val))
+        lb = Lobby("ABCD"); self.m.lobbies["ABCD"] = lb; lb.phase = "PLAYING"
+        m = Member("a", "a"); lb.members.append(m)
+        self.m.by_cid["a"] = lb
+        r = Round(1, 700, "s", "a"); r.players = ["a"]; lb.round = r
+        self.lb, self.m_m, self.r = lb, m, r
+    def _state(self, score=0, combo=0, life=100, pct=0.0):
+        self.m._state("a", {"round": 1, "score": score, "combo": combo,
+                            "pct": pct, "life": life}, 0.0)
+    def test_combo_rearm_after_break(self):
+        self._state(combo=100); self.assertIn(("combo", 100), self.ev)
+        self.ev.clear()
+        self._state(combo=3)   # break
+        self._state(combo=50)
+        self.assertIn(("combo", 50), self.ev)  # fired again
+    def test_low_life_rearm(self):
+        self._state(life=30); self.assertIn(("low_life", 30), self.ev)
+        self.ev.clear()
+        self._state(life=70)   # recover
+        self._state(life=35)
+        self.assertIn(("low_life", 35), self.ev)  # fired again
+
+
 if __name__ == "__main__":
     unittest.main()
 

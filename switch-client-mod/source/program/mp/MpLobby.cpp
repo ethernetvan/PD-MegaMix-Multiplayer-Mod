@@ -196,6 +196,7 @@ static void SetScene(const char* w) {
 }
 
 static int64_t  s_countdownEndMs = 0;   /* >0 = a countdown is ticking */
+static int64_t  s_countdownStartMs = 0; /* ms the countdown began */
 static int64_t  s_goAt = 0;             /* ms the round's start arrived */
 static int      s_notifyStyle = 0;      /* 0 avatars, 1 text, 2 off */
 
@@ -729,7 +730,10 @@ static void ProcessLine(const std::string& l) {
             mpjson::Copy(line, tok[i], num, sizeof(num));
             secs = strtod(num, nullptr);
         }
-        if (secs > 0) s_countdownEndMs = NowMs() + (int64_t)(secs * 1000);
+        if (secs > 0) {
+            s_countdownEndMs = NowMs() + (int64_t)(secs * 1000);
+            s_countdownStartMs = NowMs();
+        }
         return;
     }
     if (strcmp(t, "start") == 0) {
@@ -1878,6 +1882,8 @@ void GetSnapshot(Snapshot* out) {
     out->countdownMs = s_countdownEndMs > 0
         ? (int32_t)(s_countdownEndMs - NowMs()) : -1;
     if (out->countdownMs < 0) out->countdownMs = s_countdownEndMs > 0 ? 0 : -1;
+    out->countdownAgeMs = s_countdownEndMs > 0
+        ? (int32_t)(NowMs() - s_countdownStartMs) : -1;
     out->goMs = s_goAt > 0 ? (int32_t)(NowMs() - s_goAt) : -1;
     if (out->goMs > 800) out->goMs = -1;
     out->inSong = strcmp(s_scene, "game") == 0;

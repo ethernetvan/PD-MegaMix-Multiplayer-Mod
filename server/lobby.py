@@ -779,6 +779,10 @@ class LobbyManager:
         prev_bucket = m.prev_combo_bucket
         prev_life = m.state.get("life", 0)
         m.state = {"score": score, "combo": combo, "pct": pct, "life": life}
+        # a combo break re-arms the buckets: 50/100/... fire again
+        if combo < m.prev_combo_bucket * 50:
+            m.prev_combo_bucket = combo // 50
+            prev_bucket = m.prev_combo_bucket
         if combo >= 50 and combo // 50 > prev_bucket:
             m.prev_combo_bucket = combo // 50
             self._event(lobby, "combo", cid, m.name, combo)

@@ -1764,53 +1764,70 @@ void DrawRankGlow() {
                                 0, edge, edge, 0);
 }
 
-/* game-style text: glow + navy outline + emboldened gradient fill +
- * italic skew, all under one alpha. Records vtx0 first so only the
- * vertices this call adds get skewed/tinted. */
+struct GameTextStyle {
+    ImU32 top, mid, loTop, bot;   /* glossy fill stops */
+    ImU32 dark;                   /* dark outer stroke colour */
+    float darkK;                  /* dark stroke radius beyond bold, in k */
+    ImU32 glow; float glowA;      /* faint outer glow (glowA 0 = none) */
+};
+
+/* game-style display text ("EXCELLENT" look): drop shadow, dark stroke,
+ * white stroke, two-tone glossy fill, italic skew - all under `alpha`. */
 static void DrawGameText(ImDrawList* dl, ImFont* f, float size,
-                         ImVec2 center, const char* txt,
-                         ImU32 top, ImU32 bottom, ImU32 outline,
-                         float outlineW, ImU32 glow, float italic,
-                         float alpha) {
-    int vtx0 = dl->VtxBuffer.Size;
+                         ImVec2 center, const char* txt, float k,
+                         const GameTextStyle& st,
+                         float italic, float alpha) {
     ImVec2 ts = f->CalcTextSizeA(size, FLT_MAX, 0, txt);
     ImVec2 p(center.x - ts.x / 2, center.y - ts.y / 2);
-    int aGlow = (int)(alpha * 0.25f * 255);
-    int aOutline = (int)(alpha * 255);
-    /* outer glow: 12 offsets at outlineW*2.2 */
-    for (int i = 0; i < 12; i++) {
-        float th = i * 6.2831853f / 12;
-        dl->AddText(f, size, ImVec2(p.x + cosf(th) * outlineW * 2.2f,
-                                    p.y + sinf(th) * outlineW * 2.2f),
-                    (glow & 0x00ffffff) | ((ImU32)aGlow << 24), txt);
+    float boldR = 2.2f * k, whiteR = boldR + 3.0f * k,
+          darkR = boldR + st.darkK * k;
+    int vtx0 = dl->VtxBuffer.Size;
+
+    auto ring = [&](ImVec2 at, float r, int n, ImU32 col, int a) {
+        ImU32 c = (col & 0x00ffffff) | ((ImU32)a << 24);
+        for (int i = 0; i < n; i++) {
+            float th = i * 6.2831853f / n;
+            dl->AddText(f, size,
+                        ImVec2(at.x + cosf(th) * r, at.y + sinf(th) * r),
+                        c, txt);
+        }
+    };
+
+    /* 1) drop shadow: the dark-stroked silhouette offset (5k, 6k) */
+    ring(ImVec2(p.x + 5 * k, p.y + 6 * k), darkR, 24, st.dark,
+         (int)(alpha * 0.45f * 255));
+    /* 2) optional faint outer glow (GO! only) */
+    if (st.glowA > 0)
+        ring(p, darkR * 1.6f, 12, st.glow, (int)(st.glowA * alpha * 255));
+    /* 3) dark stroke, then 4) white stroke inside it */
+    ring(p, darkR, 24, st.dark, (int)(alpha * 255));
+    ring(p, whiteR, 24, IM_COL32(255, 255, 255, 255), (int)(alpha * 255));
+    /* 5) glossy fill: two passes clipped at the 52% split so the gloss
+     * line runs through the middle */
+    float splitY = p.y + ts.y * 0.52f;
+    for (int half = 0; half < 2; half++) {
+        ImVec2 c0(p.x - whiteR - 2, half ? splitY : p.y - whiteR - 2);
+        ImVec2 c1(p.x + ts.x + whiteR + 2,
+                  half ? p.y + ts.y + whiteR + 2 : splitY);
+        dl->PushClipRect(c0, c1, true);
+        int vf0 = dl->VtxBuffer.Size;
+        ring(p, boldR, 8, IM_COL32(255, 255, 255, 255), 255);   /* embolden */
+        dl->AddText(f, size, p, IM_COL32(255, 255, 255, 255), txt);
+        int vf1 = dl->VtxBuffer.Size;
+        ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+            dl, vf0, vf1,
+            ImVec2(p.x, half ? splitY : p.y),
+            ImVec2(p.x, half ? p.y + ts.y : splitY),
+            half ? st.loTop : st.top, half ? st.bot : st.mid);
+        dl->PopClipRect();
     }
-    /* outline: 16 offsets at outlineW */
-    for (int i = 0; i < 16; i++) {
-        float th = i * 6.2831853f / 16;
-        dl->AddText(f, size, ImVec2(p.x + cosf(th) * outlineW,
-                                    p.y + sinf(th) * outlineW),
-                    (outline & 0x00ffffff) | ((ImU32)aOutline << 24), txt);
-    }
-    /* emboldened fill: the text + 4 small offsets, then a vertical
-     * gradient across just those vertices */
-    int vtxFill0 = dl->VtxBuffer.Size;
-    static const float off[4][2] = {
-        {0.8f, 0}, {0, 0.8f}, {-0.8f, 0}, {0, -0.8f}};
-    for (auto& o : off)
-        dl->AddText(f, size, ImVec2(p.x + o[0], p.y + o[1]),
-                    IM_COL32(255, 255, 255, 255), txt);
-    dl->AddText(f, size, p, IM_COL32(255, 255, 255, 255), txt);
-    int vtxFill1 = dl->VtxBuffer.Size;
-    ImGui::ShadeVertsLinearColorGradientKeepAlpha(
-        dl, vtxFill0, vtxFill1, p, ImVec2(p.x, p.y + ts.y), top, bottom);
-    /* italic skew + alpha into every vertex added above */
+    /* italic skew + global alpha over everything added above */
     int aMul = (int)(alpha * 255);
     for (int i = vtx0; i < dl->VtxBuffer.Size; i++) {
         ImDrawVert& v = dl->VtxBuffer[i];
         v.pos.x += (center.y - v.pos.y) * italic;
         ImU32 a = (v.col >> 24) & 0xff;
-        v.col = (v.col & 0x00ffffff)
-                | ((ImU32)((a * aMul) / 255) << 24);
+        v.col = (v.col & 0x00ffffff) | ((ImU32)((a * aMul) / 255) << 24);
     }
 }
 
@@ -1828,52 +1845,54 @@ void DrawCountdown() {
     float bandH = 170 * k;
     ImVec2 b0(0, ctr.y - bandH * 0.5f), b1(io.DisplaySize.x,
                                          ctr.y + bandH * 0.5f);
+    /* the band + dim are constant for the whole countdown: fade in over
+     * its first 200 ms, hold, fade out together with "GO!" - only the
+     * digits animate */
+    float bandA = s.countdownAgeMs >= 0
+        ? (s.countdownAgeMs < 200 ? s.countdownAgeMs / 200.0f : 1.0f)
+        : (s.goMs >= 450 ? 1.0f - (s.goMs - 450) / 350.0f : 1.0f);
+    if (bandA > 0) {
+        dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
+                          IM_COL32(0, 0, 0, (int)(90 * bandA)));
+        dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, (int)(110 * bandA)));
+        int line = s.goMs >= 0 && s.goMs < 150 ? 255 : (int)(255 * bandA);
+        dl->AddLine(b0, ImVec2(b1.x, b0.y),
+                    IM_COL32(57, 197, 187, line), 3 * k);
+        dl->AddLine(ImVec2(b0.x, b1.y), b1,
+                    IM_COL32(57, 197, 187, line), 3 * k);
+    }
     if (s.countdownMs >= 0) {
         int n = (s.countdownMs + 999) / 1000;
         if (n < 1) n = 1;
-        /* pop-in 200 ms (scale 1.5 -> 1.0, alpha 0 -> 1), then hold, and
-         * fade the last 150 ms of each number */
+        /* only the digit animates: pop-in 200 ms (scale 1.5 -> 1.0,
+         * alpha 0 -> 1), then fade the last 150 ms */
         int frac = s.countdownMs % 1000;
         float pop = frac > 800 ? 1.0f - (float)(frac - 800) / 200.0f : 0.0f;
         float fade = frac < 150 ? (float)frac / 150.0f : 1.0f;
         float scale = 1.0f + 0.5f * pop;
         float a = (1.0f - pop) * fade;
-        dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 90));
-        /* full-width band + teal edge lines */
-        dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, (int)(110 * a)));
-        dl->AddLine(b0, ImVec2(b1.x, b0.y),
-                    IM_COL32(57, 197, 187, (int)(a * 255)), 3 * k);
-        dl->AddLine(ImVec2(b0.x, b1.y), b1,
-                    IM_COL32(57, 197, 187, (int)(a * 255)), 3 * k);
         char buf[8]; snprintf(buf, sizeof(buf), "%d", n);
-        DrawGameText(dl, f, f->FontSize * scale, ctr, buf,
-                     IM_COL32(255, 255, 255, 255),
-                     IM_COL32(175, 240, 255, 255),
-                     IM_COL32(18, 28, 58, 255), 6 * k,
-                     IM_COL32(57, 197, 187, 255), 0.18f, a);
+        GameTextStyle st = {
+            IM_COL32(255, 255, 255, 255), IM_COL32(205, 240, 255, 255),
+            IM_COL32(150, 215, 255, 255), IM_COL32(95, 175, 255, 255),
+            IM_COL32(18, 22, 55, 255), 7.0f,
+            IM_COL32(57, 197, 187, 255), 0.0f};
+        DrawGameText(dl, f, f->FontSize * scale, ctr, buf, k, st,
+                     0.18f, a);
     } else if (s.goMs >= 0) {
         float t = (float)s.goMs;          /* 0..800 ms */
         if (t > 800.0f) return;
-        /* burst: 0.8 -> 1.12 over 150 ms, settle to 1.0; hold to 450,
-         * fade out by 800 */
         float scale = t < 150 ? 0.8f + 0.32f * (t / 150.0f)
                     : t < 450 ? 1.12f - 0.12f * ((t - 150) / 300.0f)
                               : 1.0f;
         float a = t < 450 ? 1.0f : 1.0f - (t - 450) / 350.0f;
-        dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
-                          IM_COL32(0, 0, 0, (int)(90 * a)));
-        dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, (int)(110 * a)));
-        /* band flashes brighter during the burst then fades */
-        int line = t < 150 ? 255 : (int)(255 * a);
-        dl->AddLine(b0, ImVec2(b1.x, b0.y),
-                    IM_COL32(57, 197, 187, line), 3 * k);
-        dl->AddLine(ImVec2(b0.x, b1.y), b1,
-                    IM_COL32(57, 197, 187, line), 3 * k);
+        GameTextStyle st = {
+            IM_COL32(215, 255, 250, 255), IM_COL32(120, 245, 235, 255),
+            IM_COL32(40, 200, 205, 255), IM_COL32(15, 150, 185, 255),
+            IM_COL32(18, 22, 55, 255), 8.0f,
+            IM_COL32(255, 255, 255, 255), 0.25f};
         DrawGameText(dl, f, f->FontSize * 1.25f * scale, ctr, "GO!",
-                     IM_COL32(120, 255, 240, 255),
-                     IM_COL32(20, 165, 190, 255),
-                     IM_COL32(18, 28, 58, 255), 7 * k,
-                     IM_COL32(255, 255, 255, 255), 0.18f, a);
+                     k, st, 0.18f, a);
     }
 }
 

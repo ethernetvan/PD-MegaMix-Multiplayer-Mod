@@ -84,6 +84,7 @@ struct Snapshot {
     float    myPct;           /* local fill, same value the gauge shows */
     int32_t  sinceStartMs;    /* ms since the round's synced start, -1 none */
     int32_t  countdownMs;     /* ms left in the pre-start countdown, -1 none */
+    int32_t  countdownAgeMs;  /* ms since the countdown began, -1 none */
     int32_t  goMs;            /* ms since the start, -1 when > 800 or none */
     bool     standingsComplete;
     struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t max_combo;
