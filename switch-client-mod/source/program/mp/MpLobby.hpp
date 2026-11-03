@@ -25,6 +25,16 @@ void OnStageResult(bool init);
 void DrawGaugeRace();
 void DrawRankGlow();
 void TriggerRankGlow(bool up);   /* dbg_cmd `glow up|down` */
+void DrawCountdown();
+void DrawPopups();
+struct Popup { char kind[16], cid[20], name[40]; int32_t value;
+               uint64_t bornAt; };
+const Popup* Popups(int* count);
+void PushPopup(const char* kind, const char* cid, const char* name,
+               int32_t value);
+void PopupTest();                /* dbg_cmd `popup_test` */
+int  NotifyStyle();              /* 0 avatars, 1 text, 2 off */
+void SetNotifyStyle(int st);
 bool InLobby();
 bool PanelWanted();           /* song select + connected */
 void DrawPanel();
@@ -73,6 +83,8 @@ struct Snapshot {
     int      boardCount;
     float    myPct;           /* local fill, same value the gauge shows */
     int32_t  sinceStartMs;    /* ms since the round's synced start, -1 none */
+    int32_t  countdownMs;     /* ms left in the pre-start countdown, -1 none */
+    int32_t  goMs;            /* ms since the start, -1 when > 800 or none */
     bool     standingsComplete;
     struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t max_combo;
              int32_t life; int rank; bool final; bool me; bool connected;

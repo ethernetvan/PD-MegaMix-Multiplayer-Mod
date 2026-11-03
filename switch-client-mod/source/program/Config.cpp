@@ -45,6 +45,7 @@ int Config::mpDiscoveryPort = 7778;
 std::string Config::mpPlayerName = "Player";
 bool Config::mpShowStatus = false;
 std::string Config::mpClientId = "";
+std::string Config::mpNotifyStyle = "avatars";
 
 // Graphics
 bool Config::disableAdp = false;
@@ -314,6 +315,8 @@ static void SaveConfig(const std::string& path) {
     tomlContent += "player_name = \"" + EscapeTomlString(Config::mpPlayerName) + "\"\n";
     tomlContent += "# Debug only: tiny connection-state chip in the bottom-left corner\n";
     tomlContent += "debug_status_chip = " + std::string(Config::mpShowStatus ? "true" : "false") + "\n";
+    tomlContent += "# Multiplayer player notifications: \"avatars\" (portrait popups), \"text\" (banners) or \"off\"\n";
+    tomlContent += "notify_style = \"" + EscapeTomlString(Config::mpNotifyStyle) + "\"\n";
     tomlContent += "# Auto-generated stable client id; do not edit\n";
     tomlContent += "client_id = \"" + Config::mpClientId + "\"\n\n";
 
@@ -449,6 +452,8 @@ bool Config::init() {
             mpPlayerName = config["multiplayer"]["player_name"].value_or("Player");
             mpShowStatus = config["multiplayer"]["debug_status_chip"].value_or(false);
             mpClientId = config["multiplayer"]["client_id"].value_or("");
+            mpNotifyStyle = config["multiplayer"]["notify_style"].value_or("avatars");
+            if (mpNotifyStyle != "text" && mpNotifyStyle != "off") mpNotifyStyle = "avatars";
 
             enableFtUi = config["leftover"]["ft_ui"].value_or(false);
         }

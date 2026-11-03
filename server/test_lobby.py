@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import unittest
-from lobby import LobbyManager
+from lobby import LobbyManager, Lobby, Member, Round
 
 
 class T(unittest.TestCase):
@@ -372,6 +372,54 @@ class T(unittest.TestCase):
             self.lm.on_message("a", msg, 100.0)
             self.assertEqual(m.autoplay_pct, want, msg)
             self.assertTrue(m.autoplay)
+
+
+class CountdownTests(unittest.TestCase):
+    """--countdown N: countdown broadcast, then start at +N s."""
+    def setUp(self):
+        self.m = LobbyManager(countdown=3.0)
+        self.sent = []
+        self.m._send = lambda cid, msg: self.sent.append((cid, msg))
+        self.m._broadcast = lambda lb, msg: self.sent.append(("*", msg))
+        self.m._broadcast_lobby = lambda lb: None
+    def _mk(self):
+        lb = Lobby("ABCD")
+        self.m.lobbies["ABCD"] = lb
+        for cid in ("a", "b"):
+            m = Member(cid, cid)
+            m.loaded = True
+            lb.members.append(m)
+        r = Round(1, 700, "song", "a")
+        r.players = ["a", "b"]
+        lb.round = r
+        return lb, r
+    def test_countdown_then_start(self):
+        lb, r = self._mk()
+        self.m._do_start(lb, 100.0, [])
+        types = [m["t"] for _, m in self.sent]
+        self.assertIn("countdown", types)
+        self.assertNotIn("start", types)     # no start before +3s
+        cd = next(m for _, m in self.sent if m["t"] == "countdown")
+        self.assertEqual(cd["secs"], 3.0)
+        self.sent.clear()
+        self.m._tick_lobby(lb, 102.0)
+        self.assertNotIn("start", [m["t"] for _, m in self.sent])
+        self.m._tick_lobby(lb, 103.0)
+        self.assertIn("start", [m["t"] for _, m in self.sent])
+    def test_no_start_if_round_ends(self):
+        lb, r = self._mk()
+        self.m._do_start(lb, 100.0, [])
+        lb.round = None                    # round cancelled mid-countdown
+        self.sent.clear()
+        self.m._tick_lobby(lb, 103.0)
+        self.assertNotIn("start", [m["t"] for _, m in self.sent])
+    def test_zero_countdown_unchanged(self):
+        self.m.countdown = 0.0
+        lb, r = self._mk()
+        self.m._do_start(lb, 100.0, [])
+        types = [m["t"] for _, m in self.sent]
+        self.assertIn("start", types)
+        self.assertNotIn("countdown", types)
 
 
 if __name__ == "__main__":

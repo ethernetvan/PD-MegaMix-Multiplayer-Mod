@@ -509,7 +509,9 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
             mp::lobby::DrawRankGlow();
             mp::lobby::DrawGaugeRace();
         }
-        if (sn.waitingStart) mp::lobby::DrawWaiting();
+        mp::lobby::DrawPopups();
+        mp::lobby::DrawCountdown();
+        if (sn.waitingStart && sn.countdownMs < 0) mp::lobby::DrawWaiting();
         if (sn.resultsAgeMs >= 0 && sn.standingCount > 0)
             mp::lobby::DrawResultsAvatars();
         else if ((ph == 6 || ph == 5) && !sn.inSongSelect)

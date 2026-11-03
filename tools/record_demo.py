@@ -74,8 +74,15 @@ def second_monitor():
         if not (mi.dwFlags & 1):            # MONITORINFOF_PRIMARY = 1
             r = mi.rcMonitor
             return r.left, r.top, r.right - r.left, r.bottom - r.top
-    raise DemoError("no second monitor found - the emulator must run on "
-                    "\\.\\DISPLAY6, not the primary display")
+    # single-monitor fallback: only one display, use it (user OK'd 2026-11-02)
+    if mons:
+        h, _ = mons[0]
+        mi = MONITORINFO(); mi.cbSize = ctypes.sizeof(mi)
+        u32.GetMonitorInfoW(h, ctypes.byref(mi))
+        r = mi.rcMonitor
+        log("single monitor - using the primary display for the emulator")
+        return r.left, r.top, r.right - r.left, r.bottom - r.top
+    raise DemoError("no monitor found")
 
 
 def main_root_ryujinx_pids():

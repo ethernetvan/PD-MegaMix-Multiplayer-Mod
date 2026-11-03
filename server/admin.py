@@ -22,6 +22,8 @@ def main():
     sub.add_parser("autopause").add_argument("state", choices=["on", "off"])
     p = sub.add_parser("autoplay"); p.add_argument("state", choices=["on", "off"]); p.add_argument("--pct", type=int, default=None)
     p = sub.add_parser("glow"); p.add_argument("dir", choices=["up", "down"])
+    p = sub.add_parser("notify_style"); p.add_argument("style", choices=["avatars", "text", "off"])
+    sub.add_parser("popup_test")
     p = sub.add_parser("menu_holds")
     for k in ("init", "score_a", "vp", "menu", "nav"):
         p.add_argument("--" + k, type=int, default=-1)
@@ -70,6 +72,12 @@ def main():
         pl = {"cmd": "menu_holds", "init": args.init,
               "score_a": args.score_a, "vp": args.vp,
               "menu": args.menu, "nav": args.nav}
+    elif args.cmd == "glow":
+        pl = {"cmd": "glow", "dir": args.dir}
+    elif args.cmd == "notify_style":
+        pl = {"cmd": "notify_style", "style": args.style}
+    elif args.cmd == "popup_test":
+        pl = {"cmd": "popup_test"}
     elif args.cmd == "list_pvs":
         pl = {"cmd": "list_pvs"}
     elif args.cmd == "lobbies":

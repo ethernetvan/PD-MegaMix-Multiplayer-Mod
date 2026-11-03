@@ -68,7 +68,7 @@ class Client:
 
 
 class Server:
-    def __init__(self, port, disc_port, admin_port=7790):
+    def __init__(self, port, disc_port, admin_port=7790, countdown=0.0):
         self.port = port
         self.disc_port = disc_port
         self.admin_port = admin_port
@@ -79,7 +79,8 @@ class Server:
         self._avatar_gate = UploadGate()
         self._avatar_logged = set()   # (cid, reason) already logged
         self.web = None
-        self.lobby = LobbyManager(log=lambda m: log(f"LOBBY {m}"))
+        self.lobby = LobbyManager(log=lambda m: log(f"LOBBY {m}"),
+                                  countdown=countdown)
 
     def table(self):
         if not self.clients:
@@ -359,12 +360,16 @@ def main():
                     help="admin token (default: random each start)")
     ap.add_argument("--lobby-max", type=int, default=8,
                     help="max members per lobby (consoles support 8)")
+    ap.add_argument("--countdown", type=float, default=3.0,
+                    help="seconds of 3-2-1 countdown before each round "
+                         "start (0 disables)")
     args = ap.parse_args()
 
     global MOD_VERSION_EXPECTED
     MOD_VERSION_EXPECTED = args.mod_version_expected
 
-    srv = Server(args.port, args.discovery_port, args.admin_port)
+    srv = Server(args.port, args.discovery_port, args.admin_port,
+                 countdown=args.countdown)
     srv.lobby.max_members = args.lobby_max
     if args.web_port:
         srv.web = WebBridge(srv, args.web_host, args.web_port,

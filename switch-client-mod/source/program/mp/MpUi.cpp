@@ -9,6 +9,7 @@
 
 namespace ImGui { extern bool g_imguiHasFocus; }
 #include "imgui/imgui.h"
+#include "imgui/imgui_internal.h"
 #include <cstring>
 #include <cstdio>
 #include <cmath>
@@ -840,9 +841,32 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     u.dl->AddRect(pa, pb, stc, pillH * 0.5f, 0, 1.4f);
     u.TextCentered(pa, pb, st, 1.3f, stc);
 
+    /* Notifications segmented control: Avatars | Text | Off */
+    {
+        int st = NotifyStyle();
+        const char* seg[3] = { "Avatars", "Text", "Off" };
+        float sw = 118 * u.k, sh = 38 * u.k, sx0 = a.x + 30 * u.k;
+        u.TextLeft(ImVec2(sx0, top + 24 * u.k),
+                   ImVec2(sx0 + 190 * u.k, top + 24 * u.k + sh),
+                   "Notifications:", 1.25f, kMuted);
+        for (int i = 0; i < 3; i++) {
+            ImVec2 sa(sx0 + 190 * u.k + i * (sw + 4 * u.k), top + 24 * u.k),
+                   sb(sa.x + sw, sa.y + sh);
+            int fi = u.Focus(sa, sb, true);
+            bool hov = u.FHover(fi), cur = st == i;
+            u.dl->AddRectFilled(sa, sb,
+                cur ? kAccent : (hov ? kCardHov : kCard), 10 * u.k);
+            if (hov) u.Ring(sa, sb, 10 * u.k);
+            else u.dl->AddRect(sa, sb, kLine, 10 * u.k, 0, 1.2f);
+            u.TextCentered(sa, sb, seg[i], 1.3f,
+                           cur ? IM_COL32(20, 20, 20, 255) : kText);
+            if (u.FActivated(fi)) { sound::PlayEnterSE(); SetNotifyStyle(i); }
+        }
+    }
+
     /* three cards */
     float gap = 22 * u.k;
-    float cy0 = top + 24 * u.k, cy1 = pa.y - 22 * u.k;
+    float cy0 = top + 84 * u.k, cy1 = pa.y - 22 * u.k;
     float cw = (b.x - a.x - 2 * 30 * u.k - 2 * gap) / 3.0f;
     struct Card { const char* label; bool enabled; } cards[3] = {
         { "EDIT NAME", true }, { "CREATE ROOM", online }, { "JOIN ROOM", online } };
@@ -1738,6 +1762,199 @@ void DrawRankGlow() {
                                 edge, 0, 0, edge);
     dl->AddRectFilledMultiColor(ImVec2(ds.x - w, 0), ImVec2(ds.x, ds.y),
                                 0, edge, edge, 0);
+}
+
+/* game-style text: glow + navy outline + emboldened gradient fill +
+ * italic skew, all under one alpha. Records vtx0 first so only the
+ * vertices this call adds get skewed/tinted. */
+static void DrawGameText(ImDrawList* dl, ImFont* f, float size,
+                         ImVec2 center, const char* txt,
+                         ImU32 top, ImU32 bottom, ImU32 outline,
+                         float outlineW, ImU32 glow, float italic,
+                         float alpha) {
+    int vtx0 = dl->VtxBuffer.Size;
+    ImVec2 ts = f->CalcTextSizeA(size, FLT_MAX, 0, txt);
+    ImVec2 p(center.x - ts.x / 2, center.y - ts.y / 2);
+    int aGlow = (int)(alpha * 0.25f * 255);
+    int aOutline = (int)(alpha * 255);
+    /* outer glow: 12 offsets at outlineW*2.2 */
+    for (int i = 0; i < 12; i++) {
+        float th = i * 6.2831853f / 12;
+        dl->AddText(f, size, ImVec2(p.x + cosf(th) * outlineW * 2.2f,
+                                    p.y + sinf(th) * outlineW * 2.2f),
+                    (glow & 0x00ffffff) | ((ImU32)aGlow << 24), txt);
+    }
+    /* outline: 16 offsets at outlineW */
+    for (int i = 0; i < 16; i++) {
+        float th = i * 6.2831853f / 16;
+        dl->AddText(f, size, ImVec2(p.x + cosf(th) * outlineW,
+                                    p.y + sinf(th) * outlineW),
+                    (outline & 0x00ffffff) | ((ImU32)aOutline << 24), txt);
+    }
+    /* emboldened fill: the text + 4 small offsets, then a vertical
+     * gradient across just those vertices */
+    int vtxFill0 = dl->VtxBuffer.Size;
+    static const float off[4][2] = {
+        {0.8f, 0}, {0, 0.8f}, {-0.8f, 0}, {0, -0.8f}};
+    for (auto& o : off)
+        dl->AddText(f, size, ImVec2(p.x + o[0], p.y + o[1]),
+                    IM_COL32(255, 255, 255, 255), txt);
+    dl->AddText(f, size, p, IM_COL32(255, 255, 255, 255), txt);
+    int vtxFill1 = dl->VtxBuffer.Size;
+    ImGui::ShadeVertsLinearColorGradientKeepAlpha(
+        dl, vtxFill0, vtxFill1, p, ImVec2(p.x, p.y + ts.y), top, bottom);
+    /* italic skew + alpha into every vertex added above */
+    int aMul = (int)(alpha * 255);
+    for (int i = vtx0; i < dl->VtxBuffer.Size; i++) {
+        ImDrawVert& v = dl->VtxBuffer[i];
+        v.pos.x += (center.y - v.pos.y) * italic;
+        ImU32 a = (v.col >> 24) & 0xff;
+        v.col = (v.col & 0x00ffffff)
+                | ((ImU32)((a * aMul) / 255) << 24);
+    }
+}
+
+void DrawCountdown() {
+    Snapshot s;
+    GetSnapshot(&s);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    if (!dl) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    float k = io.DisplaySize.y / 720.0f;
+    ImVec2 ctr(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.42f);
+    ImFont* f = FontLoader::Countdown()
+              ? FontLoader::Countdown()
+              : (FontLoader::Big() ? FontLoader::Big() : ImGui::GetFont());
+    float bandH = 170 * k;
+    ImVec2 b0(0, ctr.y - bandH * 0.5f), b1(io.DisplaySize.x,
+                                         ctr.y + bandH * 0.5f);
+    if (s.countdownMs >= 0) {
+        int n = (s.countdownMs + 999) / 1000;
+        if (n < 1) n = 1;
+        /* pop-in 200 ms (scale 1.5 -> 1.0, alpha 0 -> 1), then hold, and
+         * fade the last 150 ms of each number */
+        int frac = s.countdownMs % 1000;
+        float pop = frac > 800 ? 1.0f - (float)(frac - 800) / 200.0f : 0.0f;
+        float fade = frac < 150 ? (float)frac / 150.0f : 1.0f;
+        float scale = 1.0f + 0.5f * pop;
+        float a = (1.0f - pop) * fade;
+        dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 90));
+        /* full-width band + teal edge lines */
+        dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, (int)(110 * a)));
+        dl->AddLine(b0, ImVec2(b1.x, b0.y),
+                    IM_COL32(57, 197, 187, (int)(a * 255)), 3 * k);
+        dl->AddLine(ImVec2(b0.x, b1.y), b1,
+                    IM_COL32(57, 197, 187, (int)(a * 255)), 3 * k);
+        char buf[8]; snprintf(buf, sizeof(buf), "%d", n);
+        DrawGameText(dl, f, f->FontSize * scale, ctr, buf,
+                     IM_COL32(255, 255, 255, 255),
+                     IM_COL32(175, 240, 255, 255),
+                     IM_COL32(18, 28, 58, 255), 6 * k,
+                     IM_COL32(57, 197, 187, 255), 0.18f, a);
+    } else if (s.goMs >= 0) {
+        float t = (float)s.goMs;          /* 0..800 ms */
+        if (t > 800.0f) return;
+        /* burst: 0.8 -> 1.12 over 150 ms, settle to 1.0; hold to 450,
+         * fade out by 800 */
+        float scale = t < 150 ? 0.8f + 0.32f * (t / 150.0f)
+                    : t < 450 ? 1.12f - 0.12f * ((t - 150) / 300.0f)
+                              : 1.0f;
+        float a = t < 450 ? 1.0f : 1.0f - (t - 450) / 350.0f;
+        dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize,
+                          IM_COL32(0, 0, 0, (int)(90 * a)));
+        dl->AddRectFilled(b0, b1, IM_COL32(0, 0, 0, (int)(110 * a)));
+        /* band flashes brighter during the burst then fades */
+        int line = t < 150 ? 255 : (int)(255 * a);
+        dl->AddLine(b0, ImVec2(b1.x, b0.y),
+                    IM_COL32(57, 197, 187, line), 3 * k);
+        dl->AddLine(ImVec2(b0.x, b1.y), b1,
+                    IM_COL32(57, 197, 187, line), 3 * k);
+        DrawGameText(dl, f, f->FontSize * 1.25f * scale, ctr, "GO!",
+                     IM_COL32(120, 255, 240, 255),
+                     IM_COL32(20, 165, 190, 255),
+                     IM_COL32(18, 28, 58, 255), 7 * k,
+                     IM_COL32(255, 255, 255, 255), 0.18f, a);
+    }
+}
+
+void DrawPopups() {
+    int n; const Popup* pp = Popups(&n);
+    if (n == 0) return;
+    Snapshot s;
+    GetSnapshot(&s);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    if (!dl) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    float k = io.DisplaySize.y / 720.0f;
+    uint64_t now = _ms();
+    /* live popups only, newest first, at most 3 */
+    const Popup* live[3]; float lage[3]; int nlive = 0;
+    for (int i = n - 1; i >= 0 && nlive < 3; i--) {
+        float age = (float)(now - pp[i].bornAt);
+        if (age > 3000.0f) continue;
+        live[nlive] = &pp[i]; lage[nlive] = age; nlive++;
+    }
+    static const struct { const char* k; const char* tag; ImU32 c; } T[] = {
+        {"combo", "COMBO %d", IM_COL32(255, 201, 51, 255)},
+        {"low_life", "DANGER", IM_COL32(255, 85, 85, 255)},
+        {"joined", "JOINED", IM_COL32(70, 230, 130, 255)},
+        {"left", "LEFT", IM_COL32(150, 150, 150, 255)},
+        {"disconnected", "OFFLINE", IM_COL32(150, 150, 150, 255)},
+        {"reconnected", "BACK", IM_COL32(70, 230, 130, 255)},
+        {"leader", "PICKER", IM_COL32(57, 197, 187, 255)},
+        {"owner", "OWNER", IM_COL32(57, 197, 187, 255)},
+    };
+    for (int shown = 0; shown < nlive; shown++) {
+        const Popup& p = *live[shown];
+        float age = lage[shown];
+        float a = age < 200 ? age / 200.0f
+                : age > 2600 ? (3000.0f - age) / 400.0f : 1.0f;
+        float x = s.inSong ? 10 * k
+                  : (io.DisplaySize.x - 300 * k) * 0.5f;
+        float y = s.inSong ? (140 + shown * 58) * k
+                  : (60 + shown * 58) * k;
+        x -= (1.0f - a) * 60 * k;
+        /* module by cid */
+        int32_t mod = -1;
+        for (int m = 0; m < s.memberCount; m++)
+            if (strcmp(s.members[m].cid, p.cid) == 0) { mod = s.members[m].module; break; }
+        Ui u; u.dl = dl; u.font = ImGui::GetFont(); u.k = k;
+        u.fs = ImGui::GetFont()->FontSize;
+        DrawAvatar(u, ImVec2(x + 26 * k, y + 26 * k), 24 * k, mod,
+                   false, true, false);
+        char tag[48]; const char* tagp = "";
+        for (auto& t : T)
+            if (strcmp(t.k, p.kind) == 0) {
+                snprintf(tag, sizeof(tag), t.tag,
+                         strcmp(p.kind, "combo") == 0 ? (int)p.value : 0);
+                tagp = tag;
+                ImU32 c = t.c;
+                ImFont* f = ImGui::GetFont();
+                float nsz = f->FontSize * 1.1f, tsz = f->FontSize * 1.25f;
+                /* truncate the name to 220k with ".." */
+                char nm[44]; strncpy(nm, p.name, sizeof(nm) - 1);
+                nm[sizeof(nm) - 1] = 0;
+                float maxw = 220 * k;
+                int nl = (int)strlen(nm);
+                while (nl > 0 &&
+                       f->CalcTextSizeA(nsz, FLT_MAX, 0, nm).x > maxw) {
+                    nm[--nl] = 0;
+                    if (nl >= 2) { nm[nl - 1] = '.'; nm[nl - 2] = '.'; }
+                }
+                float nw = f->CalcTextSizeA(nsz, FLT_MAX, 0, nm).x;
+                float tw = f->CalcTextSizeA(tsz, FLT_MAX, 0, tagp).x;
+                float pw = (nw > tw ? nw : tw) + 20 * k;
+                if (pw > 260 * k) pw = 260 * k;
+                dl->AddRectFilled(ImVec2(x + 56 * k, y),
+                                  ImVec2(x + 56 * k + pw, y + 50 * k),
+                                  IM_COL32(0, 0, 0, (int)(a * 170)), 10 * k);
+                dl->AddText(f, nsz, ImVec2(x + 66 * k, y + 4 * k),
+                            IM_COL32(255, 255, 255, (int)(a * 255)), nm);
+                dl->AddText(f, tsz, ImVec2(x + 66 * k, y + 26 * k),
+                            c & 0x00ffffff | ((ImU32)(a * 255) << 24), tagp);
+                break;
+            }
+    }
 }
 
 void DrawLeaderboard() {

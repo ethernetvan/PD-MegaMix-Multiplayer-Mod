@@ -26,6 +26,7 @@ S->C: welcome/error/pong (existing);
       sel {pv, name};
       sel_status {pv, missing:[{cid,name,fb_name|null}], cant:[{cid,name}]};
       launch {round, pv, name, players:[cid], spectators:[cid]};
+      countdown {round, secs};
       start {round, dropped:[cid]};
       board {round, e:[{cid,name,score,pct,life,rank,connected}]};
       event {kind, cid, name, value};
@@ -99,6 +100,7 @@ class Member:
 class Round:
     __slots__ = ("id", "pv", "name", "leader", "players", "spectators",
                  "dropped", "launch_at", "leader_loaded_at", "started",
+                 "start_sent", "countdown_at",
                  "first_final_at", "complete_at", "complete_announced",
                  "leader_back")
 
@@ -113,6 +115,8 @@ class Round:
         self.launch_at = None
         self.leader_loaded_at = None
         self.started = False
+        self.start_sent = False    # real `start` broadcast happened
+        self.countdown_at = None   # when `start` may go out (0 = sent now)
         self.first_final_at = None
         self.complete_at = None
         self.complete_announced = False
@@ -154,7 +158,8 @@ class Lobby:
 
 
 class LobbyManager:
-    def __init__(self, log=None):
+    def __init__(self, log=None, countdown=0.0):
+        self.countdown = countdown
         self.lobbies = {}           # code -> Lobby
         self.by_cid = {}            # cid -> Lobby
         self.outbox = []            # (cid, msg)
@@ -245,7 +250,7 @@ class LobbyManager:
             self._send(cid, {"t": "launch", "round": r.id, "pv": r.pv,
                              "name": r.name, "players": r.players,
                              "spectators": r.spectators})
-            if r.started:
+            if r.started and r.start_sent:
                 self._send(cid, {"t": "start", "round": r.id,
                                  "dropped": r.dropped})
             self._send_board(lobby)
@@ -745,8 +750,14 @@ class LobbyManager:
         lobby.last_board_at = 0.0
         lobby.board_dirty = False
         self.log(f"lobby {lobby.code}: start r{r.id} dropped={r.dropped}")
-        self._broadcast(lobby, {"t": "start", "round": r.id,
-                                "dropped": r.dropped})
+        if self.countdown > 0:
+            r.countdown_at = now + self.countdown
+            self._broadcast(lobby, {"t": "countdown", "round": r.id,
+                                    "secs": self.countdown})
+        else:
+            r.start_sent = True
+            self._broadcast(lobby, {"t": "start", "round": r.id,
+                                    "dropped": r.dropped})
         self._broadcast_lobby(lobby)
 
     # ------------------------------------------------- PLAYING
@@ -945,6 +956,13 @@ class LobbyManager:
             self._tick_lobby(lobby, now)
 
     def _tick_lobby(self, lobby, now):
+        r = lobby.round
+        if r is not None and r.started and not r.start_sent \
+                and r.countdown_at is not None \
+                and now >= r.countdown_at:
+            r.start_sent = True
+            self._broadcast(lobby, {"t": "start", "round": r.id,
+                                    "dropped": r.dropped})
         if lobby.vote is not None and now >= lobby.vote["ends_at"]:
             self._send_pause_vote(lobby, now, expired=True)
             lobby.vote = None

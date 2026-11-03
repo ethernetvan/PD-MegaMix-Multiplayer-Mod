@@ -343,6 +343,9 @@ class WebBridge:
         if t == "launch":
             return {"ts": now, "kind": "launch", "round": msg.get("round"),
                     "pv": msg.get("pv"), "name": msg.get("name")}
+        if t == "countdown":
+            return {"ts": now, "kind": "countdown",
+                    "round": msg.get("round"), "secs": msg.get("secs")}
         if t == "start":
             return {"ts": now, "kind": "start", "round": msg.get("round")}
         if t in ("pause", "resume"):

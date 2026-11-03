@@ -284,7 +284,8 @@ static void HandleLine(const char* line, int len) {
 enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
-    PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds, Glow
+    PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds,
+    Glow, NotifyStyle, PopupTest
 };
 struct MpCmd {
     MpCmdType type;
@@ -373,6 +374,12 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
         c.b = -1; getInt("pct", &c.b);
+    } else if (strcmp(cmd, "notify_style") == 0) {
+        /* {cmd:notify_style, style:avatars|text|off} */
+        c.type = MpCmdType::NotifyStyle;
+        c.a = strstr(line, "\"text\"") ? 1 : strstr(line, "\"off\"") ? 2 : 0;
+    } else if (strcmp(cmd, "popup_test") == 0) {
+        c.type = MpCmdType::PopupTest;
     } else if (strcmp(cmd, "glow") == 0) {
         /* {cmd:glow, dir:up|down} - debug: fire the rank-change glow */
         c.type = MpCmdType::Glow;
@@ -515,6 +522,12 @@ void OnFrame() {
                 break;
             case MpCmdType::Glow:
                 mp::lobby::TriggerRankGlow(c.a != 0);
+                break;
+            case MpCmdType::NotifyStyle:
+                mp::lobby::SetNotifyStyle(c.a);
+                break;
+            case MpCmdType::PopupTest:
+                mp::lobby::PopupTest();
                 break;
             default: break;
         }

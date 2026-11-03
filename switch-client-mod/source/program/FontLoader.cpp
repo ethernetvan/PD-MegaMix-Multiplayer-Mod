@@ -90,6 +90,28 @@ namespace FontLoader {
                 big.SizePixels,
                 &big
             );
+
+            /* countdown display font: only " !", "0-9", "G", "O" so the
+             * atlas stays tiny even at display size */
+            static const ImWchar s_cdRanges[] = {
+                0x0020, 0x0021,   /* " " "!" */
+                0x0030, 0x0039,   /* "0"-"9" */
+                0x0047, 0x0047,   /* "G" */
+                0x004F, 0x004F,   /* "O" */
+                0,
+            };
+            ImFontConfig cd {};
+            cd.FontDataOwnedByAtlas = false;
+            cd.SizePixels           = std::round(150.0f * scale);
+            cd.OversampleH          = 2;
+            cd.OversampleV          = 1;
+            cd.GlyphRanges          = s_cdRanges;
+            io.Fonts->AddFontFromMemoryTTF(
+                const_cast<void*>(fontData),
+                static_cast<int>(fontSize),
+                cd.SizePixels,
+                &cd
+            );
         } else {
             io.Fonts->AddFontDefault();
         }
@@ -100,6 +122,11 @@ namespace FontLoader {
     ImFont* Big() {
         ImFontAtlas* atlas = ImGui::GetIO().Fonts;
         return (atlas && atlas->Fonts.Size > 1) ? atlas->Fonts[1] : nullptr;
+    }
+
+    ImFont* Countdown() {
+        ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+        return (atlas && atlas->Fonts.Size > 2) ? atlas->Fonts[2] : nullptr;
     }
 
 } // namespace FontLoader

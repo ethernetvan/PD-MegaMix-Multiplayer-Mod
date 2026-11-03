@@ -195,6 +195,69 @@ static void SetScene(const char* w) {
     if (s_code[0]) ReportScene();
 }
 
+static int64_t  s_countdownEndMs = 0;   /* >0 = a countdown is ticking */
+static int64_t  s_goAt = 0;             /* ms the round's start arrived */
+static int      s_notifyStyle = 0;      /* 0 avatars, 1 text, 2 off */
+
+static Popup    s_popups[8];
+static int      s_popupCount = 0;
+
+const Popup* Popups(int* count) { *count = s_popupCount; return s_popups; }
+
+void PushPopup(const char* kind, const char* cid, const char* name,
+               int32_t value) {
+    if (s_popupCount >= 8) {   /* push the oldest out */
+        memmove(s_popups, s_popups + 1, sizeof(s_popups) - sizeof(Popup));
+        s_popupCount--;
+    }
+    Popup& p = s_popups[s_popupCount++];
+    strncpy(p.kind, kind, sizeof(p.kind) - 1); p.kind[sizeof(p.kind)-1]=0;
+    strncpy(p.cid, cid, sizeof(p.cid) - 1);   p.cid[sizeof(p.cid)-1]=0;
+    strncpy(p.name, name, sizeof(p.name) - 1); p.name[sizeof(p.name)-1]=0;
+    p.value = value;
+    p.bornAt = NowMs();
+}
+
+static void PushBanner(const char* fmt, ...);
+
+/* route a PLAYER event to popups or a banner per notify_style */
+static void RoutePlayerEvent(const char* k, const char* cid,
+                             const char* nm, int32_t value) {
+    bool onResults = s_resultsShownAt > 0;
+    if (s_notifyStyle == 2) return;                        /* off */
+    if (s_notifyStyle == 0) {                              /* avatars */
+        if ((strcmp(k, "combo") == 0 || strcmp(k, "low_life") == 0)
+                && onResults) return;
+        PushPopup(k, cid, nm, value);
+        return;
+    }
+    /* text */
+    if (strcmp(k, "combo") == 0) { if (!onResults) PushBanner("%s hit a big combo!", nm); }
+    else if (strcmp(k, "low_life") == 0) { if (!onResults) PushBanner("%s is in danger!", nm); }
+    else if (strcmp(k, "leader") == 0) PushBanner("%s is the leader", nm);
+    else if (strcmp(k, "joined") == 0) PushBanner("%s joined", nm);
+    else if (strcmp(k, "left") == 0) PushBanner("%s left", nm);
+    else if (strcmp(k, "disconnected") == 0) PushBanner("%s disconnected", nm);
+    else if (strcmp(k, "reconnected") == 0) PushBanner("%s reconnected", nm);
+    else if (strcmp(k, "owner") == 0) PushBanner("%s is now the room owner", nm);
+}
+
+void PopupTest() {
+    static const char* k[] = {
+        "combo","low_life","joined","left",
+        "disconnected","reconnected","leader","owner"};
+    for (auto& t : k)
+        RoutePlayerEvent(t, s_myCid, s_myName,
+                         strcmp(t, "combo") == 0 ? 100 : 0);
+}
+
+int NotifyStyle() { return s_notifyStyle; }
+void SetNotifyStyle(int st) {
+    s_notifyStyle = st;
+    Config::mpNotifyStyle = st == 1 ? "text" : st == 2 ? "off" : "avatars";
+    Config::Save();
+}
+
 static void PushBanner(const char* fmt, ...) {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
     if (s_bannerCount >= 4) {
@@ -658,12 +721,25 @@ static void ProcessLine(const std::string& l) {
         }
         return;
     }
+    if (strcmp(t, "countdown") == 0) {
+        int i = mpjson::Find(line, tok, ntok, "secs");
+        double secs = 0;
+        if (i >= 0) {
+            char num[24] = "";
+            mpjson::Copy(line, tok[i], num, sizeof(num));
+            secs = strtod(num, nullptr);
+        }
+        if (secs > 0) s_countdownEndMs = NowMs() + (int64_t)(secs * 1000);
+        return;
+    }
     if (strcmp(t, "start") == 0) {
         int32_t rd = 0, i = mpjson::Find(line, tok, ntok, "round"), v;
         if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) rd = v;
         if (s_startSeen && rd == s_round) return;
         s_startSeen = true;
         s_round = rd;
+        s_countdownEndMs = 0;
+        s_goAt = NowMs();
         if (!s_amPlayer) {
             SetPhase(L_SPECTATING, "Spectating this round");
             return;
@@ -767,13 +843,23 @@ static void ProcessLine(const std::string& l) {
         return;
     }
     if (strcmp(t, "event") == 0) {
-        char k[24] = "", nm[40] = "";
+        char k[24] = "", nm[40] = "", cid[20] = "";
         int i = mpjson::Find(line, tok, ntok, "kind");
         if (i >= 0) mpjson::Copy(line, tok[i], k, sizeof(k));
         i = mpjson::Find(line, tok, ntok, "name");
         if (i >= 0) mpjson::Copy(line, tok[i], nm, sizeof(nm));
+        i = mpjson::Find(line, tok, ntok, "cid");
+        if (i >= 0) mpjson::Copy(line, tok[i], cid, sizeof(cid));
+        int32_t value = 0;
+        i = mpjson::Find(line, tok, ntok, "value");
+        if (i >= 0) mpjson::ToInt(line, tok[i], &value);
         /* the results screen has its own standings; don't cover its title */
         bool onResults = s_resultsShownAt > 0;
+        bool player = strcmp(k, "combo") == 0 || strcmp(k, "low_life") == 0 ||
+            strcmp(k, "joined") == 0 || strcmp(k, "left") == 0 ||
+            strcmp(k, "disconnected") == 0 || strcmp(k, "reconnected") == 0 ||
+            strcmp(k, "leader") == 0 || strcmp(k, "owner") == 0;
+        if (player) { RoutePlayerEvent(k, cid, nm, value); return; }
         if (strcmp(k, "combo") == 0) { if (!onResults) PushBanner("%s hit a big combo!", nm); }
         else if (strcmp(k, "low_life") == 0) { if (!onResults) PushBanner("%s is in danger!", nm); }
         else if (strcmp(k, "leader") == 0) PushBanner("%s is the leader", nm);
@@ -1789,6 +1875,11 @@ void GetSnapshot(Snapshot* out) {
     out->myPct = s_curPct;
     out->sinceStartMs = s_launchStartMs > 0
         ? (int32_t)(NowMs() - s_launchStartMs) : -1;
+    out->countdownMs = s_countdownEndMs > 0
+        ? (int32_t)(s_countdownEndMs - NowMs()) : -1;
+    if (out->countdownMs < 0) out->countdownMs = s_countdownEndMs > 0 ? 0 : -1;
+    out->goMs = s_goAt > 0 ? (int32_t)(NowMs() - s_goAt) : -1;
+    if (out->goMs > 800) out->goMs = -1;
     out->inSong = strcmp(s_scene, "game") == 0;
     /* the leader waits in LOADING, followers in LAUNCHING once loaded */
     out->waitingStart = s_phase == L_LOADING ||
@@ -1809,6 +1900,8 @@ void GetSnapshot(Snapshot* out) {
 }
 
 void Init() {
+    s_notifyStyle = Config::mpNotifyStyle == "text" ? 1
+                  : Config::mpNotifyStyle == "off" ? 2 : 0;
     strncpy(s_myCid, Config::mpClientId.c_str(), sizeof(s_myCid) - 1);
     strncpy(s_myName, Config::mpPlayerName.c_str(), sizeof(s_myName) - 1);
 }

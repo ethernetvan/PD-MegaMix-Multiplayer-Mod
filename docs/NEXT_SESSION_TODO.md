@@ -123,6 +123,13 @@ bug to this file.
 17. **The PC's address changed to `10.90.99.133`** (Wi-Fi; was `10.169.0.37`). The Switch's
     `sdmc:/MikuMikuSwitchPlugin/config.toml` still points at 10.169.0.37, so update `server_ip` before the next
     console session if the PC stays on this network.
+19. **Synced 3-2-1 countdown before each round (user-approved pitch, session 4).** The server sends
+    `countdown {round, secs}` when everyone is loaded and the real `start` after `--countdown` seconds (default 3).
+    Clients show big centred 3 / 2 / 1 and then "GO!".
+20. **Notification style toggle (user-approved pitch, modified by the user).** Player events (combo, danger,
+    joined/left, offline/back, picker/owner) appear as avatar popups (portrait + tag sliding in at the left edge
+    in songs), as the old text banners, or not at all: `[multiplayer] notify_style = avatars|text|off`, plus a
+    3-way control in the MP overlay. System messages always stay text.
 18. **ryu1 exited right after connecting** again (16:34, `mm-re/tmp/exit_1634_ryu1`; also 07:43 and 14:04, the
     last one when its song hit life 0). No Windows error event and no Ryujinx log (the test roots write none).
 

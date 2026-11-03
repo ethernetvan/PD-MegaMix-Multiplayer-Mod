@@ -38,6 +38,7 @@ struct Config {
     static std::string mpPlayerName;
     static bool mpShowStatus;
     static std::string mpClientId;
+    static std::string mpNotifyStyle;   /* "avatars" | "text" | "off" */
 
     // Graphics
     static bool disableAdp;
