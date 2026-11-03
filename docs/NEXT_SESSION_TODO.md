@@ -123,10 +123,10 @@ bug to this file.
 17. **The PC's address changed to `10.90.99.133`** (Wi-Fi; was `10.169.0.37`). The Switch's
     `sdmc:/MikuMikuSwitchPlugin/config.toml` still points at 10.169.0.37, so update `server_ip` before the next
     console session if the PC stays on this network.
-19. **Synced 3-2-1 countdown before each round (user-approved pitch, session 4).** The server sends
+19. **DONE in `0db0768`: synced 3-2-1 countdown** (restyled after user feedback: own 150 px glyph atlas, navy outline, gradient fill, italic, teal band; `mm-re/screens/cd2_grid.png`). The server sends
     `countdown {round, secs}` when everyone is loaded and the real `start` after `--countdown` seconds (default 3).
     Clients show big centred 3 / 2 / 1 and then "GO!".
-20. **Notification style toggle (user-approved pitch, modified by the user).** Player events (combo, danger,
+20. **DONE in `0db0768`: notification style toggle** (verified avatars / text / off with `popup_test`, `mm-re/screens/pop2_grid.png`; the overlay control sits on the MP overlay HOME screen, i.e. not reachable while in a room - consider adding it to the room screen). Player events (combo, danger,
     joined/left, offline/back, picker/owner) appear as avatar popups (portrait + tag sliding in at the left edge
     in songs), as the old text banners, or not at all: `[multiplayer] notify_style = avatars|text|off`, plus a
     3-way control in the MP overlay. System messages always stay text.
