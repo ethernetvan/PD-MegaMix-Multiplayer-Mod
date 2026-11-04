@@ -46,6 +46,7 @@ std::string Config::mpPlayerName = "Player";
 bool Config::mpShowStatus = false;
 std::string Config::mpClientId = "";
 std::string Config::mpNotifyStyle = "avatars";
+bool Config::mpRemoteAvatars = false;
 
 // Graphics
 bool Config::disableAdp = false;
@@ -308,7 +309,8 @@ static void SaveConfig(const std::string& path) {
     tomlContent += "[multiplayer]\n";
     tomlContent += "# LAN multiplayer client: connects to a PC server over TCP\n";
     tomlContent += "enabled = " + std::string(Config::mpEnabled ? "true" : "false") + "\n";
-    tomlContent += "# Leave empty to auto-discover the server over UDP broadcast\n";
+    tomlContent += "# Optional, tried first. If it doesn't answer (or is empty) the console\n";
+    tomlContent += "# searches the local network for a server automatically\n";
     tomlContent += "server_ip = \"" + EscapeTomlString(Config::mpServerIp) + "\"\n";
     tomlContent += "server_port = " + std::to_string(Config::mpServerPort) + "\n";
     tomlContent += "discovery_port = " + std::to_string(Config::mpDiscoveryPort) + "\n";
@@ -317,6 +319,9 @@ static void SaveConfig(const std::string& path) {
     tomlContent += "debug_status_chip = " + std::string(Config::mpShowStatus ? "true" : "false") + "\n";
     tomlContent += "# Multiplayer player notifications: \"avatars\" (portrait popups), \"text\" (banners) or \"off\"\n";
     tomlContent += "notify_style = \"" + EscapeTomlString(Config::mpNotifyStyle) + "\"\n";
+    tomlContent += "# Show portraits other players' consoles send for modules this console\n";
+    tomlContent += "# doesn't have (custom/mod modules). Off: their character's default portrait\n";
+    tomlContent += "remote_avatars = " + std::string(Config::mpRemoteAvatars ? "true" : "false") + "\n";
     tomlContent += "# Auto-generated stable client id; do not edit\n";
     tomlContent += "client_id = \"" + Config::mpClientId + "\"\n\n";
 
@@ -454,6 +459,7 @@ bool Config::init() {
             mpClientId = config["multiplayer"]["client_id"].value_or("");
             mpNotifyStyle = config["multiplayer"]["notify_style"].value_or("avatars");
             if (mpNotifyStyle != "text" && mpNotifyStyle != "off") mpNotifyStyle = "avatars";
+            mpRemoteAvatars = config["multiplayer"]["remote_avatars"].value_or(false);
 
             enableFtUi = config["leftover"]["ft_ui"].value_or(false);
         }

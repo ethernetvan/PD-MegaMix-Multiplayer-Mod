@@ -655,6 +655,15 @@ function AdminPanel({ l }: { l: LobbySnap }) {
                 Make picker
               </button>
             )}
+            {m.avatar && (
+              <button
+                className="btn sm"
+                title="Stop showing this player's uploaded portrait here and on every console"
+                onClick={() => act({ op: "hide_avatar", member: m.mid })}
+              >
+                Hide portrait
+              </button>
+            )}
             {(state.you.admin || m.mid !== l.owner) &&
               (confirm === m.mid ? (
                 <button

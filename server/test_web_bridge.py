@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from avatars import AvatarStore
 from lobby import LobbyManager
+from mp_server import Server as RealServer
 from web_bridge import (WebBridge, WsError, encode_frame, read_frame,
                         ws_accept)
 
@@ -54,10 +55,16 @@ class FakeConn:
 
 
 class FakeServer:  # minimal stand-in for MpServer
+    web_img = RealServer.web_img
+    console_img = RealServer.console_img
+    hide_avatar = RealServer.hide_avatar
+
     def __init__(self):
         self.avatars = AvatarStore()
         self.lobby = LobbyManager()
         self.clients = {}
+        self.client_img = {}
+        self.avatar_relay = True
         self.forwarded = []          # outbox copies drained
 
     async def drain_outbox(self):
@@ -210,9 +217,10 @@ class Snap(unittest.TestCase):
         self.assertIsNone(l["members"][0]["avatar"])
         if l["standings"]:
             self.assertIsNone(l["standings"]["e"][0]["avatar"])
-        # after an upload for module 12 (assigned to alice's cid), the
-        # member and consoles rows expose /api/avatar/12.png
-        self.srv.avatars.put(12, b"png-bytes")
+        # after alice uploads module 12's portrait, the member and
+        # consoles rows expose /api/avatar/<content id>.png
+        img = self.srv.avatars.put(b"rgba-alice", b"png-bytes")
+        self.srv.client_img["cid_alice_01"] = (12, img)
         self.lm._client_modules["cid_alice_01"] = 12
         self.srv.clients["cid_alice_01"] = SimpleNamespace(
             cid="cid_alice_01", name="Alice", mod="m")
@@ -226,13 +234,21 @@ class Snap(unittest.TestCase):
         s = self.web.snapshot()
         l = s["lobbies"][0]
         mem = [m for m in l["members"] if m["name"] == "Alice"][0]
-        self.assertEqual(mem["avatar"], "/api/avatar/12.png")
+        url = f"/api/avatar/{img}.png"
+        self.assertEqual(mem["avatar"], url)
         self.assertEqual(mem["autoplay_pct"], 50)
-        self.assertEqual(s["consoles"][0]["avatar"],
-                         "/api/avatar/12.png")
+        self.assertEqual(s["consoles"][0]["avatar"], url)
         row = [r for r in l["standings"]["e"] if r["name"] == "Alice"][0]
-        self.assertEqual(row["avatar"], "/api/avatar/12.png")
+        self.assertEqual(row["avatar"], url)
         self.assertEqual(row["autoplay_pct"], 50)
+        # bob has no upload of his own: no other player's portrait leaks
+        bob = [m for m in l["members"] if m["name"] == "Bob"][0]
+        self.assertIsNone(bob["avatar"])
+        # switching module drops the stale portrait until a new upload
+        self.lm._client_modules["cid_alice_01"] = 13
+        mem = [m for m in self.web.snapshot()["lobbies"][0]["members"]
+               if m["name"] == "Alice"][0]
+        self.assertIsNone(mem["avatar"])
 
 class Actions(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -275,6 +291,30 @@ class Actions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(e["kind"], "web_action")
         self.assertEqual(e["op"], "kick")
         self.assertEqual(e["name"], "Bob")
+
+    async def test_hide_avatar(self):
+        img = self.srv.avatars.put(b"rgba-bob", b"png")
+        self.srv.client_img["cid_bob_0002"] = (5, img)
+        self.lm._client_modules["cid_bob_0002"] = 5
+        c = self.conn()
+        await self.auth(c, name="Eve")
+        r = await self.action(c, op="hide_avatar", lobby=self.code,
+                              member=self.mid_of("cid_bob_0002"))
+        self.assertEqual(r["error"], "forbidden")
+        await self.auth(c, name="Alice")          # the room owner may
+        r = await self.action(c, op="hide_avatar", lobby=self.code,
+                              member=self.mid_of("cid_bob_0002"))
+        self.assertTrue(r["ok"])
+        self.assertTrue(self.srv.avatars.hidden(img))
+        self.assertEqual(self.srv.web_img("cid_bob_0002"), "")
+        # consoles get a lobby resync where bob's img is now empty
+        lob = [m for cid, m in self.srv.forwarded
+               if m.get("t") == "lobby" and cid == "cid_carol_03"][-1]
+        bob = [m for m in lob["members"] if m["cid"] == "cid_bob_0002"][0]
+        self.assertEqual(bob["img"], "")
+        r = await self.action(c, op="hide_avatar", lobby=self.code,
+                              member=self.mid_of("cid_bob_0002"))
+        self.assertEqual(r["error"], "no_portrait")
 
     async def test_non_owner_forbidden(self):
         c = self.conn()
@@ -448,19 +488,21 @@ class Integration(unittest.IsolatedAsyncioTestCase):
         return head.decode("latin-1"), body
 
     async def test_http_avatar_route(self):
-        self.srv.avatars.put(12, b"fake-png-bytes")
-        head, body = await self.http("/api/avatar/12.png")
+        img = self.srv.avatars.put(b"rgba", b"fake-png-bytes")
+        head, body = await self.http(f"/api/avatar/{img}.png")
         self.assertIn("200", head)
         self.assertIn("image/png", head.lower())
         self.assertIn("x-content-type-options: nosniff", head.lower())
         self.assertIn("content-security-policy", head.lower())
         self.assertIn("cross-origin-resource-policy", head.lower())
         self.assertIn('content-disposition', head.lower())
-        self.assertIn('avatar_012.png', head)
+        self.assertIn(f'avatar_{img}.png', head)
         self.assertEqual(body, b"fake-png-bytes")
-        head, _ = await self.http("/api/avatar/13.png")
-        self.assertIn("404", head)
-        head, _ = await self.http("/api/avatar/abc.png")
+        for bad in ("0123456789ab", "12", "abc", "../" + img):
+            head, _ = await self.http(f"/api/avatar/{bad}.png")
+            self.assertIn("404", head, bad)
+        self.srv.avatars.hide(img)          # moderated: gone for good
+        head, _ = await self.http(f"/api/avatar/{img}.png")
         self.assertIn("404", head)
 
     async def test_http_routes(self):

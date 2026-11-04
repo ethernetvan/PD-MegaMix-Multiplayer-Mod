@@ -48,6 +48,7 @@ using FnNifmInit      = uint32_t (*)();
 using FnNifmSubmit    = void (*)();
 using FnNifmBool      = bool (*)();
 using FnNifmGetIp     = uint32_t (*)(uint32_t*);
+using FnNifmIpCfg     = uint32_t (*)(uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*);
 
 static FnInitPool     p_InitPool      = nullptr;
 static FnInitConfig   p_InitConfig    = nullptr;
@@ -72,6 +73,7 @@ static FnNifmSubmit   p_NifmSubmit    = nullptr;
 static FnNifmBool     p_NifmOnHold    = nullptr;
 static FnNifmBool     p_NifmAvailable = nullptr;
 static FnNifmGetIp    p_NifmGetIp     = nullptr;
+static FnNifmIpCfg    p_NifmIpCfg     = nullptr;   /* optional */
 
 static uintptr_t addr_InitPool   = 0;
 static uintptr_t addr_InitConfig = 0;
@@ -113,6 +115,9 @@ bool ApiResolveAll() {
     MP_RESOLVE(p_NifmOnHold, &s_resolveSink, "_ZN2nn4nifm22IsNetworkRequestOnHoldEv");
     MP_RESOLVE(p_NifmAvailable, &s_resolveSink, "_ZN2nn4nifm18IsNetworkAvailableEv");
     MP_RESOLVE(p_NifmGetIp, &s_resolveSink, "_ZN2nn4nifm26GetCurrentPrimaryIpAddressEP7in_addr");
+    /* optional: without it discovery assumes a /24 */
+    p_NifmIpCfg = reinterpret_cast<FnNifmIpCfg>(
+        ResolveSymbol("_ZN2nn4nifm22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_"));
 
     return !missing;
 }
@@ -294,6 +299,11 @@ bool NifmGetCurrentPrimaryIpAddress(uint32_t* out_be_addr) {
     uint32_t res = p_NifmGetIp(out_be_addr);
     WriteLog("[MP] nifm::GetCurrentPrimaryIpAddress -> 0x%x addr=%08x\n", res, out_be_addr ? *out_be_addr : 0);
     return res == 0;
+}
+bool NifmGetCurrentIpConfig(uint32_t* ip_be, uint32_t* mask_be) {
+    if (!p_NifmIpCfg) return false;
+    uint32_t gw = 0, d1 = 0, d2 = 0;
+    return p_NifmIpCfg(ip_be, mask_be, &gw, &d1, &d2) == 0;
 }
 
 } // namespace mp

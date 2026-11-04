@@ -17,6 +17,13 @@ change on the LATEST build in Ryujinx with **three emulators** (the user asked f
 more players; use the real Switch for DLC / fan-import cases and real-controller input. Add every newly found
 bug to this file.
 
+## Session 5 (2026-11-04): discovery + custom-module portraits
+See `docs/MULTIPLAYER_STATUS.md` Round 10. Environment left running: the 7777 server (detached, log `mm-re/tmp/main7777_server.log`), the Switch (10.221.139.150, game open, build md5 in the commit) and the main Ryujinx (same build). Open follow-ups:
+- Mikudayo falls back to **Yowane Haku** on consoles without the pack (its table entry says chara HAKU). Ask the user whether a per-module override (e.g. treat modules whose portrait/name is Miku as MIKU) is wanted; nothing in the game data says Miku.
+- Portrait decoder only handles RGTC2 (BC5 YCbCr) cards; X_Song_Pack module 972 is format 37.
+- `remote_avatars` is only on the MP home screen (not the room screen), like the notification style.
+- `Config.cpp` had unsaved edits in the user's editor during session 5; the disk copy got the `remote_avatars` lines by script. Check `git diff` if the editor saves over it.
+
 ## RESUME HERE
 
 ### Commits in session 3 (on top of `f9f16c6`), all verified on emulators unless noted

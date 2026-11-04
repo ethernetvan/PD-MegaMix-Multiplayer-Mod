@@ -1,4 +1,5 @@
 #pragma once
+#include "MpAvatar.hpp"
 
 #include <cstdint>
 #include "../nc/diva_nc.hpp"
@@ -35,6 +36,9 @@ void PushPopup(const char* kind, const char* cid, const char* name,
 void PopupTest();                /* dbg_cmd `popup_test` */
 int  NotifyStyle();              /* 0 avatars, 1 text, 2 off */
 void SetNotifyStyle(int st);
+/* opt-in: show portraits other consoles upload for modules this console
+ * lacks (Config::mpRemoteAvatars, saved) */
+void SetRemoteAvatars(bool on);
 bool InLobby();
 bool PanelWanted();           /* song select + connected */
 void DrawPanel();
@@ -58,7 +62,7 @@ void DbgSelLists(const int32_t* pvs, int n);
 /* For MpUi: snapshot getters (copies; safe to call on UI thread). */
 struct MemberInfo { char cid[20]; char name[40]; bool connected, is_leader,
                     ready; char reason[24]; char role[12]; int32_t score; float pct;
-                    int32_t module; /* avatar: Shared Set A slot 1, -1 unknown */ };
+                    avatar::Ref av; /* Shared Set A slot 1 module (-1 unknown) + chara/mh/img */ };
 struct Snapshot {
     int      phase;           /* LPhase */
     bool     connected;
@@ -89,7 +93,7 @@ struct Snapshot {
     bool     standingsComplete;
     struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t max_combo;
              int32_t life; int rank; bool final; bool me; bool connected;
-             int32_t module; } standing[8];
+             avatar::Ref av; } standing[8];
     int      standingCount;
     int32_t  resultsAgeMs;  /* ms on the results screen, -1 when not shown */
     /* banners */

@@ -13,13 +13,20 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       standings complete); a member off song select at launch becomes a
       spectator; owner leaving hands ownership to the first connected
       non-bot member and rejoining within 120s restores it;
-      avatar {module} (Shared Set A slot-1 module id, -1 unknown; any time);
+      avatar {module, chara, mh} (Shared Set A slot-1 module id, -1 unknown;
+      chara = the module's character 0..9 (MIKU RIN LEN LUKA NERU HAKU KAITO
+      MEIKO SAKINE TETO), -1 unknown; mh = signature of the sender's module
+      table entry (FNV-1a of chara, cos, sort_index), 0 unknown; any time);
+      avatar_get {img} (an opted-in console asks for a member's uploaded
+      portrait; handled by mp_server, answered with avatar_px {img, rgba} or
+      avatar_px {img, err});
       autoplay {on, pct} (AutoPlay on/off plus hit-rate 0..100);
       avatar_img {module,w,h,rgba} (base64 portrait upload; handled by
       mp_server, not the engine).
 S->C: welcome/error/pong (existing);
       lobby {code, phase, leader, you, round, sel_pv,
-             members:[{cid,name,connected,role,loaded,module}]}
+             members:[{cid,name,connected,role,loaded,module,chara,mh,img}]}
+      (img: id of the member's uploaded portrait, "" none/hidden/relay off)
       (phase in SELECT/LOADING/PLAYING/RESULTS; role in player/spectator/dropped)
       lobby_left {reason: left|kicked|closed};
       lobby_error {code: not_found|already_in_lobby|not_in_lobby|not_leader|bad_phase, msg};
@@ -168,6 +175,9 @@ class LobbyManager:
         self._rng = random.Random()
         self._client_names = {}     # cid -> display name (all clients)
         self._client_modules = {}   # cid -> avatar module id (all clients)
+        self._client_avatar = {}    # cid -> (chara, mh) of that module
+        # cid -> portrait id consoles may request ("" none); set by mp_server
+        self.avatar_img_of = lambda cid: ""
         self._bots = set()          # cids whose mod starts with "bot"
 
     # ------------------------------------------------- helpers
@@ -204,7 +214,10 @@ class LobbyManager:
                              "ready": m.ready, "reason": m.ready_reason,
                              "autoplay": m.autoplay,
                              "autoplay_pct": m.autoplay_pct,
-                             "module": self._client_modules.get(m.cid, -1)}
+                             "module": self._client_modules.get(m.cid, -1),
+                             "chara": self._client_avatar.get(m.cid, (-1, 0))[0],
+                             "mh": self._client_avatar.get(m.cid, (-1, 0))[1],
+                             "img": self.avatar_img_of(m.cid)}
                             for m in lobby.members]}
 
     def _broadcast_lobby(self, lobby):
@@ -321,16 +334,30 @@ class LobbyManager:
         elif t in ("pause_req", "resume_req"):
             self._pause_req(cid, msg, now, t == "pause_req")
         elif t == "avatar":
-            self._set_avatar(cid, msg.get("module"))
+            self._set_avatar(cid, msg.get("module"), msg.get("chara", -1),
+                             msg.get("mh", 0))
 
-    def _set_avatar(self, cid, module):
-        if (not isinstance(module, int) or isinstance(module, bool)
-                or not -1 <= module <= 99999):
+    @staticmethod
+    def _int_in(v, lo, hi):
+        return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+    def _set_avatar(self, cid, module, chara=-1, mh=0):
+        if not self._int_in(module, -1, 99999):
             self._error(cid, "bad_avatar", "module must be an int in -1..99999")
             return
-        if self._client_modules.get(cid, -1) == module:
+        if not self._int_in(chara, -1, 15):
+            chara = -1
+        if not self._int_in(mh, 0, 0xFFFFFFFF):
+            mh = 0
+        if (self._client_modules.get(cid, -1) == module and
+                self._client_avatar.get(cid, (-1, 0)) == (chara, mh)):
             return
         self._client_modules[cid] = module
+        self._client_avatar[cid] = (chara, mh)
+        self.touch_avatar(cid)
+
+    def touch_avatar(self, cid):
+        """Resend the lobby of `cid` (its avatar/portrait changed)."""
         lobby = self._lobby_of(cid)
         if lobby:
             self._broadcast_lobby(lobby)

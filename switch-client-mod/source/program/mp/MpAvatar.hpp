@@ -35,6 +35,26 @@ int Get(int32_t module, void** tex, float uv0[2], float uv1[2]);
 /* Mark a module wanted without drawing (warm the cache before a round). */
 void Prefetch(int32_t module);
 
+/* A player's avatar as announced through the server. */
+struct Ref {
+    int32_t  module = -1;
+    int32_t  chara = -1;      /* the module's character on the owner's console */
+    uint32_t mh = 0;          /* owner's module-table signature, 0 unknown */
+    char     img[13] = "";    /* owner's uploaded portrait id, "" none */
+};
+/* Which portrait to show for `r`, in order: this console's own image of
+ * the module (only if its table entry matches the owner's), the owner's
+ * uploaded portrait (only with [multiplayer] remote_avatars = true), the
+ * character's default module, else -1 (silhouette). Same return values
+ * as Get(). */
+int Resolve(const Ref& r, void** tex, float uv0[2], float uv1[2]);
+
+/* net thread: avatar_px {img, rgba} (err = refused). Only accepted for an
+ * id this console asked for; the payload must be exactly 96x96 RGBA. */
+void OnRemotePixels(const char* img, const char* b64, int n, bool err);
+/* remote_avatars switched off: free every downloaded portrait */
+void DropRemote();
+
 /* debug (admin dbg_cmd): overwrite Set A slot 1 / report state / write the
  * module's whole decoded card to ExlSD:/av_dump_MMM_WxH.rgba (in pv_sel). */
 void DbgPoke(int32_t module);

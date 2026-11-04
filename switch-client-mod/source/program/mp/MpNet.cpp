@@ -1,6 +1,7 @@
 #include "MpNet.hpp"
 #include "MpApi.hpp"
 #include "MpAvatar.hpp"
+#include "MpModuleDb.hpp"
 #include "MpJson.hpp"
 #include "MpInput.hpp"
 #include "MpLobby.hpp"
@@ -158,7 +159,10 @@ static size_t DrainQueue(char* buf, size_t max) {
 /* ------------------------------------------------------------------ */
 
 static int g_sock = -1;
-static char s_lineBuf[16 * 1024];
+/* normal lines stay under 4 KiB; avatar_px (one 96x96 RGBA portrait,
+ * base64) is ~49 KiB */
+constexpr uint32_t kMaxLine = 4096, kMaxPxLine = 52 * 1024;
+static char s_lineBuf[kMaxPxLine];
 static uint32_t s_lineLen = 0;
 
 /* Horizon sockets use Linux errnos; BSD values accepted defensively. */
@@ -270,6 +274,22 @@ static void HandleLine(const char* line, int len) {
             SetRtt((int)(NowMs() - s_lastPingSent));
         return;
     }
+    if (strcmp(type, "avatar_px") == 0) {
+        int iIdx = mpjson::Find(line, tok, ntok, "img");
+        int rIdx = mpjson::Find(line, tok, ntok, "rgba");
+        char img[16] = "";
+        if (iIdx >= 0) mpjson::Copy(line, tok[iIdx], img, sizeof(img));
+        if (rIdx >= 0 && tok[rIdx].type == JSMN_STRING)
+            avatar::OnRemotePixels(img, line + tok[rIdx].start,
+                                   tok[rIdx].end - tok[rIdx].start, false);
+        else
+            avatar::OnRemotePixels(img, nullptr, 0, true);
+        return;
+    }
+    if ((uint32_t)len > kMaxLine) {
+        WriteLog("[MP] oversized '%s' line (%d bytes) dropped\n", type, len);
+        return;
+    }
     if (strcmp(type, "dbg_cmd") == 0) {
         PushDbgCmd(line, tok, ntok);
         return;
@@ -285,7 +305,7 @@ enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
     PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds,
-    Glow, NotifyStyle, PopupTest
+    Glow, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars
 };
 struct MpCmd {
     MpCmdType type;
@@ -380,6 +400,13 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         c.a = strstr(line, "\"text\"") ? 1 : strstr(line, "\"off\"") ? 2 : 0;
     } else if (strcmp(cmd, "popup_test") == 0) {
         c.type = MpCmdType::PopupTest;
+    } else if (strcmp(cmd, "module_dump") == 0) {
+        c.type = MpCmdType::ModuleDump;
+    } else if (strcmp(cmd, "remote_avatars") == 0) {
+        /* {cmd:remote_avatars, on:bool} - same as the overlay toggle */
+        c.type = MpCmdType::RemoteAvatars;
+        int o = mpjson::Find(line, tok, ntok, "on");
+        c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
     } else if (strcmp(cmd, "glow") == 0) {
         /* {cmd:glow, dir:up|down} - debug: fire the rank-change glow */
         c.type = MpCmdType::Glow;
@@ -529,6 +556,8 @@ void OnFrame() {
             case MpCmdType::PopupTest:
                 mp::lobby::PopupTest();
                 break;
+            case MpCmdType::ModuleDump:  moduledb::DbgDump(); break;
+            case MpCmdType::RemoteAvatars: lobby::SetRemoteAvatars(c.a != 0); break;
             default: break;
         }
     }
@@ -547,52 +576,63 @@ static void CloseSock() {
 /* Discovery                                                           */
 /* ------------------------------------------------------------------ */
 
-/* Returns true and fills ip_be + port when a server is found. */
-static bool Discover(uint32_t* ip_be, uint16_t* port) {
+/* One discovery round (~1.5 s); true fills ip_be + port. Hotspots and
+ * some APs drop broadcasts, so besides 255.255.255.255 and the subnet
+ * broadcast the probe also goes to 127.0.0.1 (Ryujinx: a server on the
+ * same PC), the configured server_ip and every host of the local subnet
+ * (the whole subnet up to a /22, otherwise our /24). */
+static bool DiscoverOnce(uint32_t* ip_be, uint16_t* port, int round) {
     SetState(MpState::Discovering);
-    WriteLog("[MP] UDP discovery on port %d\n", Config::mpDiscoveryPort);
+    const bool verbose = round < 3 || round % 10 == 0;
+    int u = SockSocket(MP_AF_INET, MP_SOCK_DGRAM, 0);
+    if (u < 0) { WriteLog("[MP] discovery socket failed errno=%d\n", SockGetLastErrno()); return false; }
+    MpSockAddrIn bindAddr = {};
+    bindAddr.sin_len = sizeof(bindAddr);
+    bindAddr.sin_family = MP_AF_INET;
+    bindAddr.sin_addr = MP_INADDR_ANY;
+    SockBind(u, &bindAddr, sizeof(bindAddr));
+    int one = 1;
+    SockSetSockOpt(u, MP_SOL_SOCKET, MP_SO_BROADCAST, &one, sizeof(one));
+    int fl = SockFcntl(u, MP_F_GETFL, 0);
+    if (fl >= 0) SockFcntl(u, MP_F_SETFL, fl | MP_O_NONBLOCK);
 
-    int attempt = 0;
-    while (true) {
-        int u = SockSocket(MP_AF_INET, MP_SOCK_DGRAM, 0);
-        if (u < 0) { WriteLog("[MP] discovery socket failed errno=%d\n", SockGetLastErrno()); SleepMs(2000); continue; }
-        MpSockAddrIn bindAddr = {};
-        bindAddr.sin_len = sizeof(bindAddr);
-        bindAddr.sin_family = MP_AF_INET;
-        bindAddr.sin_port = 0;
-        bindAddr.sin_addr = MP_INADDR_ANY;
-        SockBind(u, &bindAddr, sizeof(bindAddr));
-        int one = 1;
-        SockSetSockOpt(u, MP_SOL_SOCKET, MP_SO_BROADCAST, &one, sizeof(one));
-        int fl = SockFcntl(u, MP_F_GETFL, 0);
-        if (fl >= 0) SockFcntl(u, MP_F_SETFL, fl | MP_O_NONBLOCK);
+    uint32_t me_be = 0, mask_be = 0;
+    if (!NifmGetCurrentIpConfig(&me_be, &mask_be) || me_be == 0) {
+        mask_be = 0;
+        NifmGetCurrentPrimaryIpAddress(&me_be);
+    }
+    const uint32_t me = __builtin_bswap32(me_be);
+    uint32_t mask = __builtin_bswap32(mask_be);
+    const int prefix = __builtin_popcount(mask);
+    if (prefix < 22 || prefix > 30) mask = 0xffffff00u;
+    const uint32_t net = me & mask, bcast = net | ~mask;
+    uint32_t cfg = 0;
+    if (!Config::mpServerIp.empty() &&
+        SockInetPton(MP_AF_INET, Config::mpServerIp.c_str(), &cfg) != 1)
+        cfg = 0;
 
-        const char probe[] = "{\"t\":\"discover\",\"proto\":1}\n";
-        MpSockAddrIn dst = {};
-        dst.sin_len = sizeof(dst);
-        dst.sin_family = MP_AF_INET;
-        dst.sin_port = SockInetHtons((uint16_t)Config::mpDiscoveryPort);
-        dst.sin_addr = MP_INADDR_BROADCAST;
-        int64_t wr = SockSendTo(u, probe, sizeof(probe) - 1, 0, &dst, sizeof(dst));
-        bool verbose = (attempt < 3 || attempt % 10 == 0);
-        if (verbose)
-            WriteLog("[MP] discovery #%d sendto -> %lld errno=%d\n",
-                     attempt, wr, SockGetLastErrno());
-
-        /* non-blocking recv loop: 10ms x 100 = 1s wait for reply */
-        bool found = false;
-        for (int i = 0; i < 100 && !found; i++) {
+    const char probe[] = "{\"t\":\"discover\",\"proto\":1}\n";
+    MpSockAddrIn dst = {};
+    dst.sin_len = sizeof(dst);
+    dst.sin_family = MP_AF_INET;
+    dst.sin_port = SockInetHtons((uint16_t)Config::mpDiscoveryPort);
+    int sent = 0;
+    auto sendTo = [&](uint32_t addr_be) {
+        dst.sin_addr = addr_be;
+        for (int t = 0; t < 4; t++) {
+            if (SockSendTo(u, probe, sizeof(probe) - 1, 0, &dst, sizeof(dst)) >= 0) { sent++; return; }
+            if (SockGetLastErrno() != MP_EAGAIN) return;
+            SleepMs(2);
+        }
+    };
+    bool found = false;
+    auto poll = [&]() {
+        while (!found) {
             char rbuf[1024];
             MpSockAddrIn src = {};
             uint32_t slen = sizeof(src);
             int64_t rn = SockRecvFrom(u, rbuf, sizeof(rbuf) - 1, 0, &src, &slen);
-            if (rn <= 0) {
-                if (i == 99 && verbose)
-                    WriteLog("[MP] discovery #%d no reply, last errno=%d\n",
-                             attempt, SockGetLastErrno());
-                SleepMs(10);
-                continue;
-            }
+            if (rn <= 0) return;
             rbuf[rn] = 0;
             jsmntok_t tok[32];
             int ntok = mpjson::Parse(rbuf, (int)rn, tok, 32);
@@ -602,20 +642,38 @@ static bool Discover(uint32_t* ip_be, uint16_t* port) {
             int pIdx = ntok > 0 ? mpjson::Find(rbuf, tok, ntok, "port") : -1;
             int pnum = 0;
             if (pIdx >= 0) mpjson::ToInt(rbuf, tok[pIdx], &pnum);
-            if (strcmp(type, "server") == 0 && pnum > 0) {
+            if (strcmp(type, "server") == 0 && pnum > 0 && pnum < 65536) {
                 *ip_be = src.sin_addr;
                 *port = (uint16_t)pnum;
-                WriteLog("[MP] discovered %u.%u.%u.%u:%d\n",
-                         src.sin_addr & 0xff, (src.sin_addr >> 8) & 0xff,
-                         (src.sin_addr >> 16) & 0xff, src.sin_addr >> 24, pnum);
                 found = true;
             }
         }
-        SockClose(u);
-        if (found) return true;
-        attempt++;
-        SleepMs(2000);
+    };
+
+    sendTo(MP_INADDR_BROADCAST);
+    sendTo(__builtin_bswap32(0x7f000001u));
+    if (cfg) sendTo(cfg);
+    if (me) {
+        sendTo(__builtin_bswap32(bcast));
+        for (uint32_t h = net + 1; h < bcast && !found; h++) {
+            if (h == me) continue;
+            sendTo(__builtin_bswap32(h));
+            if ((h & 31) == 0) { SleepMs(1); poll(); }
+        }
     }
+    for (int i = 0; i < 120 && !found; i++) {
+        poll();
+        if (!found) SleepMs(10);
+    }
+    SockClose(u);
+    if (found || verbose)
+        WriteLog("[MP] discovery #%d: me %u.%u.%u.%u/%d, %d probes -> %s %u.%u.%u.%u:%u\n",
+                 round, me >> 24, (me >> 16) & 0xff, (me >> 8) & 0xff, me & 0xff,
+                 __builtin_popcount(mask), sent, found ? "server" : "none",
+                 found ? (*ip_be & 0xff) : 0, found ? ((*ip_be >> 8) & 0xff) : 0,
+                 found ? ((*ip_be >> 16) & 0xff) : 0, found ? (*ip_be >> 24) : 0,
+                 found ? *port : 0);
+    return found;
 }
 
 /* ------------------------------------------------------------------ */
@@ -751,7 +809,7 @@ static void SessionLoop() {
                     if (c == '\n') {
                         HandleLine(s_lineBuf, (int)s_lineLen);
                         s_lineLen = 0;
-                    } else if (s_lineLen >= 4096) {
+                    } else if (s_lineLen >= sizeof(s_lineBuf)) {
                         WriteLog("[MP] line overflow, dropping conn\n");
                         return;
                     } else {
@@ -822,36 +880,47 @@ static void NetThread(void*) {
     int backoff = 0;
     const int backoffSeq[] = {1000, 2000, 4000, 5000};
 
-    while (true) {
-        uint32_t ip_be = 0;
-        uint16_t port = 0;
-        bool haveAddr = false;
-
-        if (!Config::mpServerIp.empty()) {
-            if (SockInetPton(MP_AF_INET, Config::mpServerIp.c_str(), &ip_be) == 1) {
-                port = (uint16_t)Config::mpServerPort;
-                haveAddr = true;
-            } else {
-                WriteLog("[MP] bad server_ip '%s'\n", Config::mpServerIp.c_str());
-            }
-        }
-        if (!haveAddr)
-            haveAddr = Discover(&ip_be, &port);
-
+    /* Each pass: the address of the last session (this boot), then the
+     * configured server_ip, then a discovery round. A stale server_ip
+     * (another network) therefore costs one failed connect, not forever. */
+    uint32_t cfgIp = 0, lastIp = 0;
+    uint16_t lastPort = 0;
+    if (!Config::mpServerIp.empty() &&
+        SockInetPton(MP_AF_INET, Config::mpServerIp.c_str(), &cfgIp) != 1) {
+        WriteLog("[MP] bad server_ip '%s'\n", Config::mpServerIp.c_str());
+        cfgIp = 0;
+    }
+    const uint16_t cfgPort = (uint16_t)Config::mpServerPort;
+    auto attempt = [&](uint32_t ip_be, uint16_t port) {
         char ab[64];
         snprintf(ab, sizeof(ab), "%u.%u.%u.%u:%u",
                  ip_be & 0xff, (ip_be >> 8) & 0xff, (ip_be >> 16) & 0xff,
                  ip_be >> 24, port);
         SetServer(ab);
-
         if (!TcpConnect(ip_be, port) || !SayHello()) {
             CloseSock();
-            SleepMs(backoffSeq[backoff < 3 ? backoff++ : 3]);
-            continue;
+            return false;
         }
         backoff = 0;
+        lastIp = ip_be; lastPort = port;
         SessionLoop();
         CloseSock();
+        return true;
+    };
+    int round = 0;
+    while (true) {
+        bool done = lastIp && attempt(lastIp, lastPort);
+        if (!done && cfgIp && !(cfgIp == lastIp && cfgPort == lastPort))
+            done = attempt(cfgIp, cfgPort);
+        uint32_t ip_be = 0;
+        uint16_t port = 0;
+        if (!done && DiscoverOnce(&ip_be, &port, round++)) {
+            if (cfgIp && ip_be != cfgIp)
+                WriteLog("[MP] server_ip %s unreachable, using discovered %u.%u.%u.%u:%u\n",
+                         Config::mpServerIp.c_str(), ip_be & 0xff, (ip_be >> 8) & 0xff,
+                         (ip_be >> 16) & 0xff, ip_be >> 24, port);
+            attempt(ip_be, port);
+        }
         SleepMs(backoffSeq[backoff < 3 ? backoff++ : 3]);
     }
 }

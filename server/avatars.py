@@ -1,13 +1,17 @@
 """Avatar portrait store: consoles upload their module's 96x96 RGBA
-portrait as base64 in an `avatar_img` message; the server keeps the
-first upload per module for its lifetime and serves it as PNG to the
-web UI. Portraits are memory-only, never written to disk, and are only
-ever named by the integer module id (`/api/avatar/<module>.png`,
-`avatar_NNN.png` in Content-Disposition) - uploader-supplied names or
-metadata are never used. Portraits are game assets - never committed
-to the repo."""
+portrait as base64 in an `avatar_img` message. The server keeps the
+sanitized pixels per uploader, serves them as PNG to the web UI and, on
+request, relays them to opted-in consoles in the same lobby (custom/mod
+modules the other console doesn't have). Portraits are memory-only,
+never written to disk, and are only ever named by their content id (the
+first 12 hex digits of the SHA-256 of the normalized RGBA:
+`/api/avatar/<id>.png`, `avatar_<id>.png` in Content-Disposition) -
+uploader-supplied names or metadata are never used. Portraits are game
+assets - never committed to the repo."""
 
 import base64
+import hashlib
+import re
 import struct
 import zlib
 
@@ -32,9 +36,10 @@ OUT = 96
 _MAX_RGBA_STR = 4 * ((96 * 96 * 4 + 2) // 3)
 
 
-def parse_upload(msg) -> tuple[int, int, int, bytes]:
+def parse_upload(msg) -> tuple[int, int, int, bytes, bytes]:
     """avatar_img {module:int 0..999, w:int, h:int (square, 32..96),
-    rgba:base64 of exactly w*h*4 bytes} -> (module, 96, 96, png).
+    rgba:base64 of exactly w*h*4 bytes} -> (module, w, h, rgba96, png):
+    rgba96 = the normalized 96x96 pixels consoles get, png = its PNG.
 
     Normalizes to 96x96 (nearest-neighbour upscale), zeros the RGB of
     fully transparent pixels, and re-encodes with rgba_to_png, so the
@@ -85,7 +90,7 @@ def parse_upload(msg) -> tuple[int, int, int, bytes]:
     for i in range(3, len(out), 4):
         if out[i] == 0:
             out[i - 3] = out[i - 2] = out[i - 1] = 0
-    return module, OUT, OUT, rgba_to_png(OUT, OUT, bytes(out))
+    return module, w, h, bytes(out), rgba_to_png(OUT, OUT, bytes(out))
 
 
 class UploadGate:
@@ -114,20 +119,59 @@ class UploadGate:
         self._attempts.pop(cid, None)
 
 
-class AvatarStore:
-    """First upload per module wins for the server's lifetime."""
+IMG_ID = re.compile(r"[0-9a-f]{12}")
+
+
+class RelayGate:
+    """Per-cid avatar_get admission: at most 20 requests per 60 s."""
+
+    RATE_N = 20
+    RATE_S = 60.0
 
     def __init__(self):
-        self._png: dict[int, bytes] = {}
+        self._t: dict = {}
 
-    def put(self, module: int, png: bytes) -> bool:
-        if module in self._png:
-            return False
-        self._png[module] = png
-        return True
+    def allow(self, cid, now):
+        ts = [t for t in self._t.get(cid, []) if now - t < self.RATE_S]
+        ts.append(now)
+        self._t[cid] = ts
+        return len(ts) <= self.RATE_N
 
-    def get(self, module: int):
-        return self._png.get(module)
+    def forget(self, cid):
+        self._t.pop(cid, None)
 
-    def has(self, module: int) -> bool:
-        return module in self._png
+
+class AvatarStore:
+    """Sanitized portraits keyed by content id, memory only, at most MAX
+    (oldest dropped). A hidden (moderated) id is never served again."""
+
+    MAX = 256
+
+    def __init__(self):
+        self._img: dict[str, tuple[bytes, bytes]] = {}   # id -> (rgba, png)
+        self._hidden: set[str] = set()
+
+    def put(self, rgba: bytes, png: bytes) -> str:
+        img = hashlib.sha256(rgba).hexdigest()[:12]
+        if img in self._img:
+            self._img[img] = self._img.pop(img)      # most recent last
+        else:
+            self._img[img] = (rgba, png)
+            while len(self._img) > self.MAX:
+                self._img.pop(next(iter(self._img)))
+        return img
+
+    def has(self, img) -> bool:
+        return img in self._img and img not in self._hidden
+
+    def png(self, img):
+        return self._img[img][1] if self.has(img) else None
+
+    def rgba(self, img):
+        return self._img[img][0] if self.has(img) else None
+
+    def hide(self, img):
+        self._hidden.add(img)
+
+    def hidden(self, img) -> bool:
+        return img in self._hidden

@@ -87,5 +87,7 @@ bool NifmSubmitNetworkRequest();
 bool NifmIsNetworkRequestOnHold();
 bool NifmIsNetworkAvailable();
 bool NifmGetCurrentPrimaryIpAddress(uint32_t* out_be_addr);
+/* address + subnet mask (network order); false if unavailable */
+bool NifmGetCurrentIpConfig(uint32_t* ip_be, uint32_t* mask_be);
 
 } // namespace mp

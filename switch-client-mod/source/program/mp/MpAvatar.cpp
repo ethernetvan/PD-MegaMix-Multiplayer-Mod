@@ -1,5 +1,7 @@
 #include "MpAvatar.hpp"
 #include "MpNet.hpp"
+#include "MpModuleDb.hpp"
+#include "../Config.hpp"
 #include "../nc/diva_nc.hpp"
 #include "../backend/nvn/nvn_Cpp.h"
 #include "../backend/imgui_backend/imgui_impl_nvn.hpp"
@@ -57,12 +59,27 @@ static void* ModBase() { return (void*)exl::util::GetMainModuleInfo().m_Total.m_
 
 /* ============================ portrait cache ============================ */
 
-enum St : uint8_t { ST_FREE, ST_WANTED, ST_LOADING, ST_DRAWN, ST_READY, ST_FAILED, ST_COPYING };
+/* local portraits: WANTED -> LOADING -> DRAWN -> COPYING -> READY/FAILED
+ * remote (opt-in, another console's upload): RWANT -> REQ (avatar_get
+ * sent) -> PIXELS (avatar_px decoded on the net thread) -> UPLOAD ->
+ * READY/FAILED */
+enum St : uint8_t { ST_FREE, ST_WANTED, ST_LOADING, ST_DRAWN, ST_READY, ST_FAILED, ST_COPYING,
+                    ST_RWANT, ST_REQ, ST_PIXELS, ST_UPLOAD };
 
-static bool Busy(St s) { return s == ST_LOADING || s == ST_DRAWN || s == ST_COPYING; }
+static bool Busy(St s) {
+    return s == ST_LOADING || s == ST_DRAWN || s == ST_COPYING || s == ST_UPLOAD;
+}
+
+constexpr int kRemotePx = 96 * 96 * 4;   /* avatar_px payload, exact */
+constexpr int kMaxRemote = 6;           /* remote portraits cached at once */
+constexpr int kRemoteTries = 3;         /* avatar_get attempts per id */
 
 struct Ent {
     int32_t  module = -1;
+    char     img[13] = "";       /* remote entry: server portrait id */
+    uint8_t* px = nullptr;       /* remote: decoded pixels awaiting upload */
+    int      tries = 0;
+    uint64_t reqAt = 0;
     St       st = ST_FREE;
     bool     holdsSet = false;   /* our LoadSprSet ref is still held */
     int      setId = -1, sprId = -1, wait = 0;
@@ -86,13 +103,20 @@ static int        s_doomedN = 0;
 
 static Ent* Find(int32_t module) {
     for (Ent& e : s_ents)
-        if (e.st != ST_FREE && e.module == module) return &e;
+        if (e.st != ST_FREE && !e.img[0] && e.module == module) return &e;
+    return nullptr;
+}
+
+static Ent* FindImg(const char* img) {
+    for (Ent& e : s_ents)
+        if (e.st != ST_FREE && e.img[0] && strcmp(e.img, img) == 0) return &e;
     return nullptr;
 }
 
 static void Release(Ent& e) {
     if (e.tex && s_doomedN < 16) s_doomed[s_doomedN++] = {e.slot, 4};  /* frames in flight */
     if (e.holdsSet && s_unloadN < kCache) s_unload[s_unloadN++] = e.setId;
+    free(e.px);
     e = Ent{};
 }
 
@@ -131,6 +155,93 @@ int Get(int32_t module, void** tex, float uv0[2], float uv1[2]) {
 void Prefetch(int32_t module) {
     void* t = nullptr; float a[2], b[2];
     Get(module, &t, a, b);
+}
+
+static bool ValidImg(const char* s) {
+    int n = 0;
+    for (; s[n]; n++)
+        if (!((s[n] >= '0' && s[n] <= '9') || (s[n] >= 'a' && s[n] <= 'f'))) return false;
+    return n == 12;
+}
+
+static int GetRemote(const char* img, void** tex) {
+    if (!ValidImg(img)) return -1;
+    std::lock_guard<std::mutex> g(s_mtx);
+    uint64_t now = NowMs();
+    Ent* e = FindImg(img);
+    if (!e) {
+        int n = 0;
+        for (const Ent& x : s_ents) n += x.st != ST_FREE && x.img[0];
+        if (n >= kMaxRemote || !(e = Alloc(now))) return n >= kMaxRemote ? -1 : 0;
+        memcpy(e->img, img, 13);
+        e->st = ST_RWANT;
+        WriteLog("[MP-AV] remote %s: wanted\n", img);
+    }
+    e->used = now;
+    if (e->st == ST_FAILED) return -1;
+    if (e->st != ST_READY) return 0;
+    *tex = e->tex;
+    return 1;
+}
+
+int Resolve(const Ref& r, void** tex, float uv0[2], float uv1[2]) {
+    uv0[0] = uv0[1] = 0.0f;
+    uv1[0] = uv1[1] = 1.0f;
+    /* no table (hook failed): plain module lookup, as before */
+    if (!moduledb::Available()) return Get(r.module, tex, uv0, uv1);
+    moduledb::Info inf;
+    if (r.module >= 0 && moduledb::Find(r.module, &inf) && (r.mh == 0 || inf.sig == r.mh)) {
+        int g = Get(r.module, tex, uv0, uv1);
+        if (g != -1) return g;
+    }
+    if (Config::mpRemoteAvatars && r.img[0]) {
+        int g = GetRemote(r.img, tex);
+        if (g != -1) return g;
+    }
+    int32_t dm = moduledb::DefaultModuleFor(r.chara);
+    return dm >= 0 ? Get(dm, tex, uv0, uv1) : -1;
+}
+
+static int B64Val(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    return c == '+' ? 62 : c == '/' ? 63 : -1;
+}
+
+/* exactly kRemotePx bytes (a multiple of 3: no padding allowed) */
+static bool DecodeRemote(const char* s, int n, uint8_t* out) {
+    if (n != kRemotePx / 3 * 4) return false;
+    for (int i = 0, o = 0; i < n; i += 4, o += 3) {
+        int a = B64Val(s[i]), b = B64Val(s[i + 1]), c = B64Val(s[i + 2]), d = B64Val(s[i + 3]);
+        if ((a | b | c | d) < 0) return false;
+        uint32_t v = (uint32_t)a << 18 | (uint32_t)b << 12 | (uint32_t)c << 6 | (uint32_t)d;
+        out[o] = (uint8_t)(v >> 16); out[o + 1] = (uint8_t)(v >> 8); out[o + 2] = (uint8_t)v;
+    }
+    return true;
+}
+
+void OnRemotePixels(const char* img, const char* b64, int n, bool err) {
+    uint8_t* px = nullptr;
+    if (!err && Config::mpRemoteAvatars) {
+        px = (uint8_t*)malloc(kRemotePx);
+        if (px && !DecodeRemote(b64, n, px)) { free(px); px = nullptr; }
+    }
+    std::lock_guard<std::mutex> g(s_mtx);
+    Ent* e = ValidImg(img) ? FindImg(img) : nullptr;
+    if (!e || e->st != ST_REQ) { free(px); return; }   /* unsolicited / stale */
+    if (px) { e->px = px; e->st = ST_PIXELS; }
+    else {
+        /* refused (hidden, left the room, relay off) or malformed: final */
+        e->st = ST_FAILED;
+        WriteLog("[MP-AV] remote %s: %s\n", img, err ? "refused" : "bad payload");
+    }
+}
+
+void DropRemote() {
+    std::lock_guard<std::mutex> g(s_mtx);
+    for (Ent& e : s_ents)
+        if (e.st != ST_FREE && e.img[0] && !Busy(e.st)) Release(e);
 }
 
 /* ============================ game thread ============================ */
@@ -196,6 +307,7 @@ static St FinishLoad(Ent& e) {
 }
 
 void GamePump() {
+    moduledb::MarkReady();
     static int s_poll = 0;
     if (s_mgr && (s_poll++ % 20) == 0) {
         int32_t m = ((int32_t*)s_mgr)[IDX_SET_A_SLOT1];
@@ -321,6 +433,16 @@ static bool DecodeYCbCr(const uint8_t* m0, int w0, int h0, const uint8_t* m1, in
 constexpr float kCropSide     = 0.37f;
 constexpr float kCropHeadroom = 0.15f;
 constexpr int   kOutSide      = 192;    /* decoded avatar, px (max) */
+/* Head width = mean opaque texels per row 0.075..0.125 x card width below
+ * the first opaque row (normal modules 0.12..0.24 x width, Mikudayo 0.45).
+ * From kBigHeadFrom (no change) to kBigHeadFull the crop blends to side =
+ * kBigHeadSide x head width (capped at kBigHeadMax x width), centred on the
+ * head's opaque centroid and kBigHeadFaceY x head width below its top. */
+constexpr float kBigHeadFrom  = 0.31f;
+constexpr float kBigHeadFull  = 0.45f;
+constexpr float kBigHeadSide  = 1.2f;
+constexpr float kBigHeadMax   = 0.6f;
+constexpr float kBigHeadFaceY = 0.6f;
 
 /* first upright row of the card with >= 3 opaque texels in a central strip */
 static int OpaqueTop(const uint8_t* m0, int w0, int h0, int cx, int cy, int cw, int ch) {
@@ -337,6 +459,28 @@ static int OpaqueTop(const uint8_t* m0, int w0, int h0, int cx, int cy, int cw, 
     }
     free(ya);
     return top;
+}
+
+/* mean opaque texels per upright row (*w) and their mean x relative to cx
+ * (*x) over rows head + 0.075..0.125 x cw */
+static bool HeadBand(const uint8_t* m0, int w0, int h0, int cx, int cy, int cw, int ch,
+                     int head, float* w, float* x) {
+    const int r0 = head + (int)(cw * 0.075f), r1 = head + (int)(cw * 0.125f);
+    if (r1 >= ch || r1 <= r0) return false;
+    const int rows = r1 - r0 + 1;
+    uint8_t* ya = (uint8_t*)malloc((size_t)cw * rows * 2);
+    if (!ya) return false;
+    /* upright rows r0..r1 = memory rows cy+ch-1-r1 .. cy+ch-1-r0 */
+    Bc5Region(m0, w0, h0, cx, cy + ch - 1 - r1, cw, rows, ya);
+    uint64_t n = 0, sx = 0;
+    for (int r = 0; r < rows; r++)
+        for (int i = 0; i < cw; i++)
+            if (ya[((size_t)r * cw + i) * 2 + 1] > 128) { n++; sx += i; }
+    free(ya);
+    if (!n) return false;
+    *w = (float)n / rows;
+    *x = (float)sx / n;
+    return true;
 }
 
 /* the one readback in flight (present thread only) */
@@ -397,11 +541,37 @@ static int FinishUpload(Ent& e) {
     int side = (int)(cw * kCropSide + 0.5f);
     if (side > cw) side = cw;
     if (side > ch) side = ch;
-    int top = OpaqueTop(raw, s_rb.w[0], s_rb.h[0], cx, cy, cw, ch) - (int)(side * kCropHeadroom + 0.5f);
+    const int head = OpaqueTop(raw, s_rb.w[0], s_rb.h[0], cx, cy, cw, ch);
+    int top = head - (int)(side * kCropHeadroom + 0.5f);
+    int sx = cx + (cw - side) / 2;
+    /* big heads (chibi modules such as Mikudayo) would only show hair:
+     * grow the crop with the head and centre it on the face, still
+     * smaller than the head so it overflows the frame */
+    float hw, hx;
+    if (HeadBand(raw, s_rb.w[0], s_rb.h[0], cx, cy, cw, ch, head, &hw, &hx)) {
+        float t = (hw - kBigHeadFrom * cw) / ((kBigHeadFull - kBigHeadFrom) * cw);
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        if (t > 0.0f) {
+            int big = (int)(hw * kBigHeadSide);
+            if (big > (int)(cw * kBigHeadMax)) big = (int)(cw * kBigHeadMax);
+            if (big > ch) big = ch;
+            if (big > side) {
+                const int base = side;
+                side = base + (int)((big - base) * t + 0.5f);
+                const float topBig = head + hw * kBigHeadFaceY - side * 0.5f;
+                top = (int)(top + (topBig - top) * t + 0.5f);
+                const float sxBig = cx + hx - side * 0.5f;
+                const float sxBase = cx + (cw - side) * 0.5f;
+                sx = (int)(sxBase + (sxBig - sxBase) * t + 0.5f);
+            }
+        }
+    }
     if (top < 0) top = 0;
     if (top > ch - side) top = ch - side;
+    if (sx < cx) sx = cx;
+    if (sx > cx + cw - side) sx = cx + cw - side;
     /* upright top row `top` is memory row cy + ch - 1 - top */
-    const int sx = cx + (cw - side) / 2, sy = cy + ch - top - side;
+    const int sy = cy + ch - top - side;
     const int os = side < kOutSide ? side : kOutSide;
     uint8_t* rgba = (uint8_t*)malloc((size_t)os * os * 4);
     bool ok = rgba && DecodeYCbCr(raw, s_rb.w[0], s_rb.h[0], raw + s_rb.s[0], s_rb.w[1], s_rb.h[1],
@@ -455,14 +625,71 @@ static int FinishUpload(Ent& e) {
     return ok ? 1 : -1;
 }
 
+/* opt-in remote portraits: one avatar_get in flight at a time (8 s
+ * timeout, kRemoteTries attempts); decoded pixels become a texture here */
+static void RemotePump(bool connected) {
+    static bool s_wasOn = false;
+    const bool on = Config::mpRemoteAvatars;
+    if (s_wasOn && !on) DropRemote();
+    s_wasOn = on;
+    const uint64_t now = NowMs();
+    Ent* up = nullptr;
+    uint8_t* px = nullptr;
+    char req[13] = "";
+    {
+        std::lock_guard<std::mutex> g(s_mtx);
+        Ent* want = nullptr;
+        bool inFlight = false;
+        for (Ent& e : s_ents) {
+            if (e.st == ST_FREE || !e.img[0]) continue;
+            if (e.st == ST_REQ) {
+                if (!connected || now - e.reqAt > 8000)
+                    e.st = e.tries >= kRemoteTries ? ST_FAILED : ST_RWANT;
+                else
+                    inFlight = true;
+            }
+            if (e.st == ST_RWANT && (!want || e.used > want->used)) want = &e;
+            if (e.st == ST_PIXELS && !up) up = &e;
+        }
+        if (on && connected && want && !inFlight) {
+            want->st = ST_REQ;
+            want->reqAt = now;
+            want->tries++;
+            memcpy(req, want->img, sizeof(req));
+        }
+        if (up) { px = up->px; up->px = nullptr; up->st = ST_UPLOAD; }
+    }
+    if (req[0]) {
+        char line[64];
+        snprintf(line, sizeof(line), "{\"t\":\"avatar_get\",\"img\":\"%s\"}", req);
+        Enqueue(line);
+    }
+    if (up) {
+        int slot = -1;
+        void* tex = ImguiNvnBackend::CreateRgbaTexture(96, 96, px, &slot);
+        free(px);
+        std::lock_guard<std::mutex> g(s_mtx);
+        up->tex = tex; up->slot = slot; up->w = up->h = 96;
+        up->st = tex ? ST_READY : ST_FAILED;
+        WriteLog("[MP-AV] remote %s: %s (slot %d)\n", up->img, tex ? "ready" : "no texture", slot);
+    }
+}
+
 void RenderPump() {
-    if (mp::GetState() != MpState::Connected) {
+    const bool connected = mp::GetState() == MpState::Connected;
+    RemotePump(connected);
+    if (!connected) {
         s_announce.store(false);
     } else if (s_announce.load()) {
         int32_t m = s_local.load();
         if (m >= 0 && m != s_sent) {
-            char line[48];
-            snprintf(line, sizeof(line), "{\"t\":\"avatar\",\"module\":%d}", m);
+            /* the module's character + table signature let other consoles
+             * notice a module they lack (or that differs on theirs) */
+            moduledb::Info inf;
+            const bool known = moduledb::Find(m, &inf);
+            char line[96];
+            snprintf(line, sizeof(line), "{\"t\":\"avatar\",\"module\":%d,\"chara\":%d,\"mh\":%u}",
+                     m, known ? inf.chara : -1, known ? inf.sig : 0u);
             Enqueue(line);
             s_sent = m;
         }

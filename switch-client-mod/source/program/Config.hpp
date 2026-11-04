@@ -39,6 +39,7 @@ struct Config {
     static bool mpShowStatus;
     static std::string mpClientId;
     static std::string mpNotifyStyle;   /* "avatars" | "text" | "off" */
+    static bool mpRemoteAvatars;        /* show other players' uploaded portraits */
 
     // Graphics
     static bool disableAdp;

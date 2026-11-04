@@ -217,10 +217,8 @@ class WebBridge:
         return None
 
     def _avatar_url(self, cid):
-        mod = self.server.lobby._client_modules.get(cid, -1)
-        if mod >= 0 and self.server.avatars.has(mod):
-            return f"/api/avatar/{mod}.png"
-        return None
+        img = self.server.web_img(cid)
+        return f"/api/avatar/{img}.png" if img else None
 
     def you_for(self, conn):
         owns = []
@@ -408,9 +406,9 @@ class WebBridge:
                 await self._respond(writer, 400, b"expected websocket upgrade",
                                     "text/plain")
             return
-        m = re.fullmatch(r"/api/avatar/(\d{1,3})\.png", path)
+        m = re.fullmatch(r"/api/avatar/([0-9a-f]{12})\.png", path)
         if m:
-            png = self.server.avatars.get(int(m.group(1)))
+            png = self.server.avatars.png(m.group(1))
             if png is None:
                 await self._respond(writer, 404, b"not found",
                                     "text/plain", head_only=method == "HEAD")
@@ -423,7 +421,7 @@ class WebBridge:
                       "default-src 'none'; sandbox"),
                      ("Cross-Origin-Resource-Policy", "same-origin"),
                      ("Content-Disposition",
-                      f'inline; filename="avatar_{int(m.group(1)):03d}.png"')],
+                      f'inline; filename="avatar_{m.group(1)}.png"')],
                     head_only=method == "HEAD")
             return
         if path == "/api/health":
@@ -650,6 +648,14 @@ class WebBridge:
                 return err("bad_member")
             lm.on_admin({"cmd": "set_leader", "code": code, "cid": m.cid},
                         now)
+            entry["name"] = m.name
+        elif op == "hide_avatar":
+            m = self._mid_member(lobby, msg.get("member"))
+            if m is None:
+                return err("bad_member")
+            if "error" in self.server.hide_avatar(
+                    m.cid, by="admin" if conn.admin else conn.name):
+                return err("no_portrait")
             entry["name"] = m.name
         else:
             return err("bad_request")

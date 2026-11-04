@@ -8,15 +8,19 @@ UDP discovery on --discovery-port: {"t":"discover"} -> unicast {"t":"server",...
 
 import argparse
 import asyncio
+import base64
 import json
 import secrets
 import socket
 import sys
+import threading
 import time
 
 from lobby import LobbyManager
-from avatars import AvatarStore, UploadGate, parse_upload
+from avatars import (AvatarStore, UploadGate, RelayGate, IMG_ID,
+                     parse_upload)
 from web_bridge import WebBridge
+import netcheck
 
 sys.stdout.reconfigure(errors="replace")
 
@@ -77,10 +81,78 @@ class Server:
         self.first_mod_version = None
         self.avatars = AvatarStore()
         self._avatar_gate = UploadGate()
+        self._relay_gate = RelayGate()
         self._avatar_logged = set()   # (cid, reason) already logged
+        self.client_img = {}          # cid -> (module, portrait id)
+        self.avatar_relay = True      # --no-avatar-relay: web only
         self.web = None
         self.lobby = LobbyManager(log=lambda m: log(f"LOBBY {m}"),
                                   countdown=countdown)
+        self.lobby.avatar_img_of = self.console_img
+
+    # ------------------------------------------------- portraits
+    def web_img(self, cid):
+        """Portrait id of `cid`'s current module ("" none/hidden)."""
+        mod, img = self.client_img.get(cid, (-1, ""))
+        if (img and mod == self.lobby._client_modules.get(cid, -1)
+                and self.avatars.has(img)):
+            return img
+        return ""
+
+    def console_img(self, cid):
+        return self.web_img(cid) if self.avatar_relay else ""
+
+    def accept_upload(self, cid, msg, now):
+        """avatar_img -> (True, log line) once stored, else (False, reason)."""
+        module = msg.get("module")
+        if not isinstance(module, int) or isinstance(module, bool):
+            module = -1
+        announced = self.lobby._client_modules.get(cid, -1)
+        if (module == announced and
+                self.client_img.get(cid, (-1, ""))[0] == module):
+            return False, ""       # already have this module's portrait
+        ok, reason = self._avatar_gate.check(cid, module, announced, now)
+        if not ok:
+            return False, reason
+        try:
+            module, w, h, rgba, png = parse_upload(msg)
+        except ValueError as e:
+            return False, str(e)
+        img = self.avatars.put(rgba, png)
+        self.client_img[cid] = (module, img)
+        self.lobby.touch_avatar(cid)
+        return True, f"module {module} {w}x{h} -> {img}"
+
+    def avatar_get_reply(self, cid, img, now):
+        """avatar_get {img}: only for a portrait of someone in the asker's
+        lobby, relay on, not hidden, rate limited."""
+        if not isinstance(img, str) or not IMG_ID.fullmatch(img):
+            return {"t": "avatar_px", "img": "", "err": "bad_img"}
+
+        def no(e):
+            return {"t": "avatar_px", "img": img, "err": e}
+        if not self.avatar_relay:
+            return no("relay_off")
+        if not self._relay_gate.allow(cid, now):
+            return no("rate_limited")
+        if self.avatars.hidden(img):
+            return no("hidden")
+        lobby = self.lobby._lobby_of(cid)
+        if lobby is None or not any(self.console_img(m.cid) == img
+                                    for m in lobby.members):
+            return no("not_in_lobby")
+        return {"t": "avatar_px", "img": img,
+                "rgba": base64.b64encode(self.avatars.rgba(img)).decode()}
+
+    def hide_avatar(self, cid, by="admin"):
+        """Moderation: never serve or relay `cid`'s current portrait again."""
+        img = self.web_img(cid)
+        if not img:
+            return {"error": "no_portrait"}
+        self.avatars.hide(img)
+        log(f"AVATAR_HIDDEN {img} of {cid} by {by}")
+        self.lobby.touch_avatar(cid)
+        return {"ok": True, "img": img}
 
     def table(self):
         if not self.clients:
@@ -196,29 +268,18 @@ class Server:
                     self.lobby.on_message(client.cid, msg, time.time())
                     await self.drain_outbox()
                 elif t == "avatar_img":
-                    module = msg.get("module")
-                    if not isinstance(module, int) or \
-                            isinstance(module, bool):
-                        module = -1
-                    if module >= 0 and self.avatars.has(module):
-                        pass   # first upload per module wins; skip decode
-                    else:
-                        ok, reason = self._avatar_gate.check(
-                            client.cid, module,
-                            self.lobby._client_modules.get(
-                                client.cid, -1),
-                            time.time())
-                        if not ok:
-                            self._avatar_reject(client, reason)
-                        else:
-                            try:
-                                module, w, h, png = parse_upload(msg)
-                            except ValueError as e:
-                                self._avatar_reject(client, str(e))
-                            else:
-                                if self.avatars.put(module, png):
-                                    log(f"AVATAR_IMG module {module} "
-                                        f"{w}x{h} from '{client.name}'")
+                    ok, info = self.accept_upload(client.cid, msg,
+                                                  time.time())
+                    if ok:
+                        log(f"AVATAR_IMG {info} from '{client.name}'")
+                        await self.drain_outbox()
+                    elif info:
+                        self._avatar_reject(client, info)
+                elif t == "avatar_get":
+                    reply = self.avatar_get_reply(client.cid, msg.get("img"),
+                                                  time.time())
+                    writer.write((json.dumps(reply) + "\n").encode())
+                    await writer.drain()
                 elif t == "dbg_pvs":
                     log(f"PVS '{client.name}' i={msg.get('i')} n={msg.get('n')} "
                         f"ids={msg.get('ids')} names={msg.get('names')}")
@@ -237,6 +298,7 @@ class Server:
                 del self.clients[client.cid]
             log(f"DROPPED {client.cid} '{client.name}'")
             self._avatar_gate.forget(client.cid)
+            self._relay_gate.forget(client.cid)
             self._avatar_logged = {k for k in self._avatar_logged
                                    if k[0] != client.cid}
             self.table()
@@ -258,6 +320,12 @@ class Server:
                     await writer.drain()
                     continue
                 cid = msg.get("cid")
+                if msg.get("cmd") == "avatar_hide":
+                    res = self.hide_avatar(msg.get("target"))
+                    await self.drain_outbox()
+                    writer.write((json.dumps(res) + "\n").encode())
+                    await writer.drain()
+                    continue
                 if msg.get("cmd") in ("lobbies", "kick", "set_leader"):
                     res = self.lobby.on_admin(msg, time.time())
                     await self.drain_outbox()
@@ -318,6 +386,11 @@ class Server:
         if self.web:
             await self.web.start()
         log(f"mp_server listening TCP :{self.port} UDP-discovery :{self.disc_port} admin 127.0.0.1:{self.admin_port}")
+        log(f"LAN addresses: {', '.join(netcheck.lan_ipv4()) or 'none'} - "
+            f"consoles on the same network find this server automatically "
+            f"(UDP {self.disc_port})")
+        threading.Thread(target=netcheck.check_firewall, args=(log,),
+                         daemon=True).start()
         try:
             await srv.serve_forever()
         except asyncio.CancelledError:
@@ -330,6 +403,7 @@ class Server:
 class DiscoveryProtocol(asyncio.DatagramProtocol):
     def __init__(self, server):
         self.server = server
+        self._logged = {}   # source ip -> last log time
 
     def connection_made(self, transport):
         self.transport = transport
@@ -344,7 +418,11 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         reply = {"t": "server", "proto": PROTO, "port": self.server.port,
                  "name": socket.gethostname()}
         self.transport.sendto((json.dumps(reply) + "\n").encode(), addr)
-        log(f"DISCOVER from {addr[0]}:{addr[1]} -> replied")
+        # a searching console probes several addresses per round
+        now = time.time()
+        if now - self._logged.get(addr[0], 0) > 30:
+            self._logged[addr[0]] = now
+            log(f"DISCOVER from {addr[0]}:{addr[1]} -> replied")
 
 
 def main():
@@ -360,6 +438,9 @@ def main():
                     help="admin token (default: random each start)")
     ap.add_argument("--lobby-max", type=int, default=8,
                     help="max members per lobby (consoles support 8)")
+    ap.add_argument("--no-avatar-relay", action="store_true",
+                    help="never send uploaded portraits to consoles (the "
+                         "web UI still shows them)")
     ap.add_argument("--countdown", type=float, default=3.0,
                     help="seconds of 3-2-1 countdown before each round "
                          "start (0 disables)")
@@ -371,6 +452,7 @@ def main():
     srv = Server(args.port, args.discovery_port, args.admin_port,
                  countdown=args.countdown)
     srv.lobby.max_members = args.lobby_max
+    srv.avatar_relay = not args.no_avatar_relay
     if args.web_port:
         srv.web = WebBridge(srv, args.web_host, args.web_port,
                             args.web_token or secrets.token_urlsafe(9))

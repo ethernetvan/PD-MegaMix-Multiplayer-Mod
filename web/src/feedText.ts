@@ -41,6 +41,8 @@ export function feedText(e: FeedEntry): string {
       if (e.op === "kick") return `${e.by ?? "web"} kicked ${e.name}`;
       if (e.op === "set_leader")
         return `${e.by ?? "web"} made ${e.name} the picker`;
+      if (e.op === "hide_avatar")
+        return `${e.by ?? "web"} hid ${e.name}'s portrait`;
       if (e.op === "set_pick_mode")
         return `${e.by ?? "web"} set pick mode to ${e.mode}${e.name ? ` (${e.name})` : ""}`;
       return `${e.by ?? "web"}: ${e.op}`;

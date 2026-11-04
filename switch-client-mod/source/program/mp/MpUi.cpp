@@ -323,7 +323,7 @@ static void Sparkle(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
     dl->AddConvexPolyFilled(h, 4, col);
 }
 
-static void DrawAvatar(const Ui& u, ImVec2 c, float r, int32_t module, bool you, bool connected,
+static void DrawAvatar(const Ui& u, ImVec2 c, float r, const mp::avatar::Ref& av, bool you, bool connected,
                        bool sparkle) {
     ImDrawList* dl = u.dl;
     ImVec2 p[6];
@@ -347,7 +347,7 @@ static void DrawAvatar(const Ui& u, ImVec2 c, float r, int32_t module, bool you,
 
     void* tex = nullptr;
     float uv0[2], uv1[2];
-    if (mp::avatar::Get(module, &tex, uv0, uv1) == 1) {
+    if (mp::avatar::Resolve(av, &tex, uv0, uv1) == 1) {
         HexFill(dl, c, ri, connected ? IM_COL32_WHITE : IM_COL32(140, 140, 140, 255),
                 connected ? IM_COL32_WHITE : IM_COL32(140, 140, 140, 255),
                 (ImTextureID)tex, ImVec2(uv0[0], uv0[1]), ImVec2(uv1[0], uv1[1]));
@@ -409,7 +409,7 @@ static void GlowText(ImDrawList* dl, ImFont* font, float size, ImVec2 pos,
 /* flat-top results hexagon: drop shadow, gold/pink frame, bevel, keyline,
  * pale plate, clipped portrait (uv box nudged down so the flat top edge
  * doesn't cut the head) or the silhouette fallback. */
-static void DrawResultHex(const Ui& u, ImVec2 c, float r, int32_t module,
+static void DrawResultHex(const Ui& u, ImVec2 c, float r, const mp::avatar::Ref& av,
                           bool you, bool connected, bool final, bool sparkle,
                           float faceShift = 0.15f, bool plusSign = false) {
     ImDrawList* dl = u.dl;
@@ -445,7 +445,7 @@ static void DrawResultHex(const Ui& u, ImVec2 c, float r, int32_t module,
                           ImVec2(vx + L * 0.5f, c.y + t * 0.5f), pc, t * 0.35f);
         dl->AddRectFilled(ImVec2(vx - t * 0.5f, c.y - L * 0.5f),
                           ImVec2(vx + t * 0.5f, c.y + L * 0.5f), pc, t * 0.35f);
-    } else if (mp::avatar::Get(module, &tex, uv0, uv1) == 1) {
+    } else if (mp::avatar::Resolve(av, &tex, uv0, uv1) == 1) {
         ImU32 tint = !final ? IM_COL32(190, 190, 190, 255)
                    : (connected ? IM_COL32_WHITE : IM_COL32(140, 140, 140, 255));
         ImVec2 uvC(vx, c.y + 0.06f * ri);
@@ -485,9 +485,14 @@ static void DrawResultHex(const Ui& u, ImVec2 c, float r, int32_t module,
 }
 
 /* the local player's own row follows the save immediately */
-static int32_t StandingModule(const Snapshot& sn, int i) {
+static mp::avatar::Ref LocalRef(int32_t local) {
+    mp::avatar::Ref r;
+    r.module = local;          /* own module: always this console's image */
+    return r;
+}
+static mp::avatar::Ref StandingRef(const Snapshot& sn, int i) {
     int32_t local = mp::avatar::LocalModule();
-    return (sn.standing[i].me && local >= 0) ? local : sn.standing[i].module;
+    return (sn.standing[i].me && local >= 0) ? LocalRef(local) : sn.standing[i].av;
 }
 
 static float EaseOutBack(float p) {
@@ -635,7 +640,7 @@ void DrawResultsAvatars() {
         for (int m = 0; m < shown; m++) {
             const auto& st = sn.standing[ord[m]];
             ImVec2 c(hp[m].x * k, hp[m].y * k);
-            DrawResultHex(u, c, r720 * k, StandingModule(sn, ord[m]), st.me,
+            DrawResultHex(u, c, r720 * k, StandingRef(sn, ord[m]), st.me,
                           st.connected, st.final,
                           i == 0 && m == 0,          /* top group sparkles */
                           shown > 1 ? 0.0f : 0.15f,
@@ -717,9 +722,9 @@ static ImU32 MemberDot(const MemberInfo& m) {
 }
 
 /* your own avatar follows the save immediately; others come from the server */
-static int32_t MemberModule(const Snapshot& s, const MemberInfo& m) {
+static mp::avatar::Ref MemberRef(const Snapshot& s, const MemberInfo& m) {
     int32_t local = mp::avatar::LocalModule();
-    return (local >= 0 && strcmp(m.cid, s.myCid) == 0) ? local : m.module;
+    return (local >= 0 && strcmp(m.cid, s.myCid) == 0) ? LocalRef(local) : m.av;
 }
 
 static void GoHomeOrRoom() {
@@ -864,9 +869,35 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         }
     }
 
+    /* Custom portraits: Off | On (opt-in: images other consoles upload for
+     * modules this one doesn't have; off = that character's default) */
+    {
+        const bool on = Config::mpRemoteAvatars;
+        const char* seg[2] = { "Off", "On" };
+        float sw = 118 * u.k, sh = 38 * u.k, sx0 = a.x + 30 * u.k;
+        float y0 = top + 70 * u.k;
+        u.TextLeft(ImVec2(sx0, y0), ImVec2(sx0 + 190 * u.k, y0 + sh),
+                   "Custom portraits:", 1.25f, kMuted);
+        for (int i = 0; i < 2; i++) {
+            ImVec2 sa(sx0 + 190 * u.k + i * (sw + 4 * u.k), y0), sb(sa.x + sw, sa.y + sh);
+            int fi = u.Focus(sa, sb, true);
+            bool hov = u.FHover(fi), cur = on == (i == 1);
+            u.dl->AddRectFilled(sa, sb, cur ? kAccent : (hov ? kCardHov : kCard), 10 * u.k);
+            if (hov) u.Ring(sa, sb, 10 * u.k);
+            else u.dl->AddRect(sa, sb, kLine, 10 * u.k, 0, 1.2f);
+            u.TextCentered(sa, sb, seg[i], 1.3f, cur ? IM_COL32(20, 20, 20, 255) : kText);
+            if (u.FActivated(fi)) { sound::PlayEnterSE(); SetRemoteAvatars(i == 1); }
+        }
+        float hx = sx0 + 190 * u.k + 2 * (sw + 4 * u.k) + 12 * u.k;
+        u.TextLeft(ImVec2(hx, y0), ImVec2(b.x - 30 * u.k, y0 + sh),
+                   on ? "Showing images other players send"
+                      : "Others' custom modules show the character's default",
+                   1.0f, kDim);
+    }
+
     /* three cards */
     float gap = 22 * u.k;
-    float cy0 = top + 84 * u.k, cy1 = pa.y - 22 * u.k;
+    float cy0 = top + 130 * u.k, cy1 = pa.y - 22 * u.k;
     float cw = (b.x - a.x - 2 * 30 * u.k - 2 * gap) / 3.0f;
     struct Card { const char* label; bool enabled; } cards[3] = {
         { "EDIT NAME", true }, { "CREATE ROOM", online }, { "JOIN ROOM", online } };
@@ -1059,7 +1090,7 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         float r = rads[i];
         ImVec2 ac(cx, baseY - r);
         bool you = strcmp(m.cid, s.myCid) == 0;
-        DrawAvatar(u, ac, r, MemberModule(s, m), you, m.connected, true);
+        DrawAvatar(u, ac, r, MemberRef(s, m), you, m.connected, true);
         /* status dot on the lower-right edge */
         float dr = 9 * u.k;
         ImVec2 dc(ac.x + r * 0.64f, ac.y + r * 0.68f);
@@ -1115,7 +1146,7 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         /* small hex avatar, status dot on its lower-right edge */
         ImVec2 hc(ra.x + 62 * u.k, (ra.y + rb.y) * 0.5f);
         float hr = 21 * u.k;
-        DrawAvatar(u, hc, hr, MemberModule(s, m), false, m.connected, false);
+        DrawAvatar(u, hc, hr, MemberRef(s, m), false, m.connected, false);
         ImVec2 dc(hc.x + hr * 0.66f, hc.y + hr * 0.66f);
         u.dl->AddCircleFilled(dc, 6 * u.k, MemberDot(m), 16);
         u.dl->AddCircle(dc, 6 * u.k, kBg, 16, 2.0f * u.k);
@@ -1934,10 +1965,10 @@ void DrawPopups() {
         float y = s.inSong ? (140 + shown * 58) * k
                   : (60 + shown * 58) * k;
         x -= (1.0f - a) * 60 * k;
-        /* module by cid */
-        int32_t mod = -1;
+        /* avatar by cid */
+        mp::avatar::Ref mod;
         for (int m = 0; m < s.memberCount; m++)
-            if (strcmp(s.members[m].cid, p.cid) == 0) { mod = s.members[m].module; break; }
+            if (strcmp(s.members[m].cid, p.cid) == 0) { mod = MemberRef(s, s.members[m]); break; }
         Ui u; u.dl = dl; u.font = ImGui::GetFont(); u.k = k;
         u.fs = ImGui::GetFont()->FontSize;
         DrawAvatar(u, ImVec2(x + 26 * k, y + 26 * k), 24 * k, mod,

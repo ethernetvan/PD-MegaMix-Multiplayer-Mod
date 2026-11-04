@@ -40,6 +40,7 @@
 #include "mp/MpApi.hpp"
 #include "mp/MpNet.hpp"
 #include "mp/MpSceneHooks.hpp"
+#include "mp/MpModuleDb.hpp"
 
 #include "logger.hpp"
 
@@ -107,6 +108,7 @@ extern "C" void exl_main(void* x0, void* x1) {
     SaveDataSystem::init();
 
     DatabaseLoader::init();
+    mp::moduledb::Init();
     StrArray::init();
     SpriteLoader::init();
     PvLoader::init();

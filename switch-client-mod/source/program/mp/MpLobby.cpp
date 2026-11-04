@@ -45,7 +45,7 @@ struct MRec {
     bool loaded, ready; char reason[24];
     int32_t score; float pct;
     int32_t max_combo; int32_t life; int rank; bool final;
-    int32_t module;
+    avatar::Ref av;
 };
 static MRec s_members[8];
 static int  s_memberCount = 0;
@@ -252,6 +252,12 @@ void PopupTest() {
                          strcmp(t, "combo") == 0 ? 100 : 0);
 }
 
+void SetRemoteAvatars(bool on) {
+    if (Config::mpRemoteAvatars == on) return;
+    Config::mpRemoteAvatars = on;
+    Config::Save();
+}
+
 int NotifyStyle() { return s_notifyStyle; }
 void SetNotifyStyle(int st) {
     s_notifyStyle = st;
@@ -449,10 +455,22 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
                 m.ready = line[tok[i + j].start] == 't';
             if ((j = mpjson::Find(line, tok + i, end - i, "reason")) >= 0)
                 mpjson::Copy(line, tok[i + j], m.reason, sizeof(m.reason));
-            int mod = -1;
+            int v = -1;
             if ((j = mpjson::Find(line, tok + i, end - i, "module")) >= 0)
-                mpjson::ToInt(line, tok[i + j], &mod);
-            m.module = mod;
+                mpjson::ToInt(line, tok[i + j], &v);
+            m.av.module = v;
+            v = -1;
+            if ((j = mpjson::Find(line, tok + i, end - i, "chara")) >= 0)
+                mpjson::ToInt(line, tok[i + j], &v);
+            m.av.chara = v;
+            /* mh is a u32: parse as text so values >= 2^31 survive */
+            if ((j = mpjson::Find(line, tok + i, end - i, "mh")) >= 0) {
+                char hb[16] = "";
+                mpjson::Copy(line, tok[i + j], hb, sizeof(hb));
+                m.av.mh = (uint32_t)strtoul(hb, nullptr, 10);
+            }
+            if ((j = mpjson::Find(line, tok + i, end - i, "img")) >= 0)
+                mpjson::Copy(line, tok[i + j], m.av.img, sizeof(m.av.img));
             s_memberCount++;
             i = end;
         }
@@ -1275,14 +1293,18 @@ void OnPvSelFrame(const void* sel) {
      * results screen (loads only happen on song-select frames) */
     {
         static int s_pf = 0;
-        int32_t mods[9]; int nm = 0;
+        avatar::Ref refs[8]; int nm = 0;
         {
             std::lock_guard<std::recursive_mutex> g(s_mtx);
             if (s_code[0] && (s_pf++ % 30) == 0)
                 for (int i = 0; i < s_memberCount && nm < 8; i++)
-                    mods[nm++] = s_members[i].module;
+                    if (strcmp(s_members[i].cid, s_myCid) != 0)
+                        refs[nm++] = s_members[i].av;
         }
-        for (int i = 0; i < nm; i++) avatar::Prefetch(mods[i]);
+        for (int i = 0; i < nm; i++) {
+            void* t = nullptr; float a[2], b[2];
+            avatar::Resolve(refs[i], &t, a, b);   /* marks what will be shown */
+        }
         if (nm) avatar::Prefetch(avatar::LocalModule());
     }
     int32_t state  = *reinterpret_cast<const int32_t*>(
@@ -1830,7 +1852,7 @@ void GetSnapshot(Snapshot* out) {
         d.ready = s_members[i].ready;
         d.score = s_members[i].score;
         d.pct = s_members[i].pct;
-        d.module = s_members[i].module;
+        d.av = s_members[i].av;
     }
     int lc = 0, pc = 0;
     for (int i = 0; i < s_memberCount; i++)
@@ -1869,10 +1891,10 @@ void GetSnapshot(Snapshot* out) {
         d.connected = r.connected;
         d.me = r.cid[0] ? (strcmp(r.cid, s_myCid) == 0)
                         : (strstr(r.name, s_myName) != nullptr && s_myName[0]);
-        d.module = -1;
+        d.av = avatar::Ref{};
         for (int q = 0; q < s_memberCount; q++)
             if (r.cid[0] && strcmp(s_members[q].cid, r.cid) == 0) {
-                d.module = s_members[q].module; break; }
+                d.av = s_members[q].av; break; }
     }
     out->resultsAgeMs = s_resultsShownAt > 0
         ? (int32_t)(NowMs() - s_resultsShownAt) : -1;
