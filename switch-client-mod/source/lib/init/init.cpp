@@ -1,8 +1,36 @@
 #include "common.hpp"
 
 #include "program/setting.hpp"
+#include <atomic>
+
+static std::atomic<uintptr_t> s_mallocOwner{0};
+static uint32_t               s_mallocDepth = 0;
+
+static inline uintptr_t CurrentThreadTag() {
+    uintptr_t tp = 0;
+    __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
+    return tp ? tp : 1;
+}
 
 extern "C" {
+    void __malloc_lock(struct _reent*) {
+        uintptr_t me = CurrentThreadTag();
+        if (s_mallocOwner.load(std::memory_order_relaxed) != me) {
+            uintptr_t exp = 0;
+            while (!s_mallocOwner.compare_exchange_weak(
+                exp, me, std::memory_order_acquire, std::memory_order_relaxed)) {
+                exp = 0;
+                __asm__ volatile("yield" ::: "memory");
+            }
+        }
+        s_mallocDepth++;
+    }
+
+    void __malloc_unlock(struct _reent*) {
+        if (--s_mallocDepth == 0) {
+            s_mallocOwner.store(0, std::memory_order_release);
+        }
+    }
     /* These magic symbols are provided by the linker.  */
     extern void (*__preinit_array_start []) (void) __attribute__((weak));
     extern void (*__preinit_array_end []) (void) __attribute__((weak));

@@ -122,6 +122,9 @@ void nc::InitResultsData(ScoreDetail* detail)
 
 void nc::DrawResultsWindowText(int32_t win, int32_t prio)
 {
+	if (!nc::ShouldUseConsoleStyleWin() || win <= 0)
+		return;
+
 	AetComposition comp;
 	aet::GetComposition(&comp, win);
 

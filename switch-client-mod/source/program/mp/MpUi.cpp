@@ -1712,9 +1712,9 @@ void DrawBanners() {
  * life state and the clear zone is green, so those hues come last. */
 static const ImU32 kRacePalette[8] = {
     IM_COL32(165, 110, 255, 255), IM_COL32(255, 150, 40, 255),
-    IM_COL32(70, 140, 255, 255), IM_COL32(235, 235, 235, 255),
-    IM_COL32(170, 240, 60, 255), IM_COL32(230, 70, 255, 255),
-    IM_COL32(255, 95, 170, 255), IM_COL32(255, 220, 70, 255),
+    IM_COL32(70, 140, 255, 255),  IM_COL32(255, 75, 145, 255),
+    IM_COL32(170, 240, 60, 255),  IM_COL32(230, 70, 255, 255),
+    IM_COL32(45, 225, 165, 255),  IM_COL32(255, 220, 70, 255),
 };
 
 static ImU32 RaceColor(const Snapshot& s, const char* cid) {
@@ -2203,46 +2203,50 @@ static const char* OrdinalSuffix(int r) {
 }
 
 static GameTextStyle PlacementStyle(int rank, ImU32* outAccent) {
+    /* ImFont::RenderChar emits one quad per glyph (top vertices at t=0,
+     * bottom vertices at t=1), so `top` -> `bot` is the full vertical
+     * gradient across the glyph. Keep both stops saturated (like GlowText)
+     * so glyphs never look washed out in white on the Switch display. */
     switch (rank) {
-    case 1: /* Radiant Gold (EXCELLENT / Crown) */
+    case 1: /* Radiant Gold -> Deep Amber-Orange (EXCELLENT / #1 look) */
         if (outAccent) *outAccent = IM_COL32(255, 210, 45, 255);
         return {
-            IM_COL32(255, 252, 195, 255), IM_COL32(255, 214, 48, 255),
-            IM_COL32(246, 172, 18, 255),  IM_COL32(232, 102, 8, 255),
-            IM_COL32(50, 22, 6, 255),     5.6f,
-            IM_COL32(255, 195, 45, 255),  0.28f
+            IM_COL32(255, 215, 35, 255), IM_COL32(255, 165, 20, 255),
+            IM_COL32(255, 140, 15, 255), IM_COL32(245, 68, 12, 255),
+            IM_COL32(110, 22, 10, 255),  5.6f,
+            IM_COL32(255, 175, 35, 255), 0.30f
         };
-    case 2: /* Sleek Platinum Silver (GREAT) */
-        if (outAccent) *outAccent = IM_COL32(170, 220, 255, 255);
+    case 2: /* Vivid Ice-Blue Silver -> Deep Cobalt Steel (GREAT) */
+        if (outAccent) *outAccent = IM_COL32(120, 205, 255, 255);
         return {
-            IM_COL32(255, 255, 255, 255), IM_COL32(205, 228, 250, 255),
-            IM_COL32(158, 188, 222, 255), IM_COL32(110, 140, 182, 255),
-            IM_COL32(18, 26, 50, 255),    5.4f,
-            IM_COL32(155, 215, 255, 255), 0.22f
+            IM_COL32(145, 222, 255, 255), IM_COL32(105, 185, 245, 255),
+            IM_COL32(85, 160, 235, 255),  IM_COL32(45, 102, 205, 255),
+            IM_COL32(14, 28, 68, 255),    5.4f,
+            IM_COL32(95, 195, 255, 255),  0.24f
         };
-    case 3: /* Warm Rose-Copper Bronze (STANDARD) */
-        if (outAccent) *outAccent = IM_COL32(245, 150, 85, 255);
+    case 3: /* Vivid Copper-Gold -> Deep Crimson-Bronze (STANDARD) */
+        if (outAccent) *outAccent = IM_COL32(245, 145, 75, 255);
         return {
-            IM_COL32(255, 236, 208, 255), IM_COL32(242, 168, 108, 255),
-            IM_COL32(208, 120, 64, 255),  IM_COL32(156, 70, 28, 255),
-            IM_COL32(46, 18, 12, 255),    5.4f,
-            IM_COL32(245, 145, 80, 255),  0.22f
+            IM_COL32(255, 172, 72, 255), IM_COL32(235, 125, 52, 255),
+            IM_COL32(215, 100, 40, 255), IM_COL32(175, 48, 18, 255),
+            IM_COL32(78, 18, 10, 255),   5.4f,
+            IM_COL32(245, 125, 50, 255), 0.24f
         };
-    case 4: /* Project DIVA Miku Teal */
-        if (outAccent) *outAccent = IM_COL32(57, 197, 187, 255);
+    case 4: /* Vivid Miku Turquoise -> Deep Ocean Teal */
+        if (outAccent) *outAccent = IM_COL32(57, 215, 200, 255);
         return {
-            IM_COL32(220, 255, 252, 255), IM_COL32(105, 240, 232, 255),
-            IM_COL32(36, 196, 202, 255),  IM_COL32(14, 138, 170, 255),
-            IM_COL32(15, 24, 52, 255),    5.2f,
-            IM_COL32(57, 197, 187, 255),  0.20f
+            IM_COL32(75, 245, 225, 255), IM_COL32(40, 200, 195, 255),
+            IM_COL32(25, 175, 180, 255), IM_COL32(10, 118, 152, 255),
+            IM_COL32(10, 30, 56, 255),   5.2f,
+            IM_COL32(45, 210, 195, 255), 0.22f
         };
-    default: /* Cyber Violet (5th..8th) */
-        if (outAccent) *outAccent = IM_COL32(175, 125, 255, 255);
+    default: /* Vivid Neon Violet -> Deep Royal Purple (5th..8th) */
+        if (outAccent) *outAccent = IM_COL32(185, 115, 255, 255);
         return {
-            IM_COL32(242, 232, 255, 255), IM_COL32(188, 162, 248, 255),
-            IM_COL32(138, 106, 218, 255), IM_COL32(90, 64, 172, 255),
-            IM_COL32(24, 16, 48, 255),    5.2f,
-            IM_COL32(165, 115, 255, 255), 0.18f
+            IM_COL32(198, 132, 255, 255), IM_COL32(155, 90, 235, 255),
+            IM_COL32(135, 70, 220, 255),  IM_COL32(88, 32, 178, 255),
+            IM_COL32(28, 12, 62, 255),    5.2f,
+            IM_COL32(165, 95, 255, 255),  0.22f
         };
     }
 }
@@ -2483,8 +2487,10 @@ void DrawLeaderboard() {
     ringBoth(ImVec2(0, 0), whiteRNum, whiteRSuf, 12,
              IM_COL32(255, 255, 255, 255), 255);
 
-    /* pass 5: glossy vertical gradient fill on numeral & suffix (vertex-shaded,
-     * no clip rects so hopping/scaling never clips glyph tops/bottoms) */
+    /* pass 5: rich top-to-bottom vertical gradient fill on numeral & suffix
+     * (like GlowText on the results screen; each glyph quad has vertices at
+     * t=0 top and t=1 bottom, so LerpCol(st.top, st.bot, t) gives a crisp,
+     * saturated gradient with no white filter) */
     auto fillGlyph = [&](ImVec2 gp, float gsz, const char* gtxt) {
         int vf0 = dl->VtxBuffer.Size;
         dl->AddText(f, gsz, gp, IM_COL32(255, 255, 255, 255), gtxt);
@@ -2498,26 +2504,15 @@ void DrawLeaderboard() {
         for (int v = vf0; v < vf1; v++) {
             ImDrawVert& vt = dl->VtxBuffer[v];
             float t = yB > yT ? (vt.pos.y - yT) / (yB - yT) : 0.0f;
-            ImU32 c = t < 0.50f
-                ? LerpCol(st.top, st.mid, t / 0.50f)
-                : LerpCol(st.loTop, st.bot, (t - 0.50f) / 0.50f);
+            ImU32 c = LerpCol(st.top, st.bot, t);
             vt.col = (c & 0x00ffffffu) | (vt.col & 0xff000000u);
         }
     };
-    int vtxFill = dl->VtxBuffer.Size;
     fillGlyph(pNum, szNum, numTxt);
     fillGlyph(pSuf, szSuf, sufTxt);
     int vtxEnd = dl->VtxBuffer.Size;
 
-    /* periodic diagonal metallic sheen sweep + rank-up flash */
-    float cyc = fmodf(tSec, 2.8f);
-    bool hasSheen = cyc < 0.65f;
-    float sheenPos = hasSheen ? ((cyc / 0.65f) * 2.4f - 1.2f) * 46.0f * k : 0.0f;
-    float sheenW = 13.0f * k;
-    float flashBoost = (animAge >= 110.0f && animAge < 290.0f && s_placeAnimUp)
-        ? (1.0f - (animAge - 110.0f) / 180.0f) * 0.55f : 0.0f;
-
-    /* transform all passes: italic shear, 3D flip + scale + hop, sheen, alpha */
+    /* transform all passes: italic shear, 3D flip + scale + hop, alpha */
     const float italic = 0.20f;
     int aMul = (int)(alpha * 255.0f);
     for (int i = vtx0; i < vtxEnd; i++) {
@@ -2526,22 +2521,6 @@ void DrawLeaderboard() {
         float dy = (v.pos.y - ctr.y);
         v.pos.x = ctr.x + dx * flipX * totalScale + shakeX;
         v.pos.y = ctr.y + dy * totalScale + hopY;
-        if (i >= vtxFill) {
-            float sheen = flashBoost;
-            if (hasSheen) {
-                float proj = dx + dy * 0.42f;
-                float dist = fabsf(proj - sheenPos);
-                if (dist < sheenW) {
-                    float sTerm = (1.0f - dist / sheenW);
-                    sTerm = sTerm * sTerm * 0.65f;
-                    if (sTerm > sheen) sheen = sTerm;
-                }
-            }
-            if (sheen > 0.0f)
-                v.col = LerpCol(v.col, IM_COL32(255, 255, 255, (v.col >> 24) & 0xff), sheen);
-        } else if (i >= vtxWhite && flashBoost > 0.0f) {
-            v.col = LerpCol(v.col, IM_COL32(255, 255, 220, (v.col >> 24) & 0xff), flashBoost);
-        }
         ImU32 va = (v.col >> 24) & 0xff;
         v.col = (v.col & 0x00ffffff) | ((ImU32)((va * aMul) / 255) << 24);
     }

@@ -173,7 +173,10 @@ static bool  s_voteExpired = false;
 static bool  s_overlayOpen = false;
 static int64_t s_ovlClosedAt = -1;   /* ms; suppresses ZR re-open in Hints */
 
-static std::deque<std::string> s_inQ;
+struct InSlot { uint16_t len; char data[4094]; };
+static InSlot   s_inQ[32];
+static uint32_t s_inHead = 0;
+static uint32_t s_inCount = 0;
 static std::mutex s_inQMtx;
 
 static bool    s_inLobbyDirty();
@@ -371,9 +374,19 @@ static void DbgMenu(int page, int cursor, const char* ev) {
 /* ============================== inbound ============================ */
 
 void PushLine(const char* line, int len) {
+    if (!line || len <= 0) return;
+    if (len > (int)sizeof(s_inQ[0].data) - 1)
+        len = (int)sizeof(s_inQ[0].data) - 1;
     std::lock_guard<std::mutex> lk(s_inQMtx);
-    if (s_inQ.size() >= 64) s_inQ.pop_front();
-    s_inQ.emplace_back(line, len);
+    if (s_inCount == 32) {
+        s_inHead = (s_inHead + 1) & 31;
+        s_inCount--;
+    }
+    uint32_t idx = (s_inHead + s_inCount) & 31;
+    memcpy(s_inQ[idx].data, line, (size_t)len);
+    s_inQ[idx].data[len] = 0;
+    s_inQ[idx].len = (uint16_t)len;
+    s_inCount++;
 }
 
 static void ResetLobbyState() {
@@ -576,10 +589,7 @@ static bool CidInArray(const char* line, const jsmntok_t* tok, int ntok,
     return false;
 }
 
-static void ProcessLine(const std::string& l) {
-    char line[4096];         /* matches MpNet's max line length */
-    strncpy(line, l.c_str(), sizeof(line) - 1);
-    line[sizeof(line) - 1] = 0;
+static void ProcessLine(const char* line) {
     jsmn_parser ps; jsmn_init(&ps);
     jsmntok_t tok[384];      /* 8 members x ~20 tokens + header */
     int ntok = jsmn_parse(&ps, line, strlen(line), tok, 384);
@@ -950,14 +960,17 @@ static void LocalLeave(const char* why) {
 
 void Pump() {
     for (;;) {
-        std::string l;
+        char line[4096];
         {
             std::lock_guard<std::mutex> g(s_inQMtx);
-            if (s_inQ.empty()) break;
-            l = std::move(s_inQ.front());
-            s_inQ.pop_front();
+            if (s_inCount == 0) break;
+            uint16_t n = s_inQ[s_inHead].len;
+            memcpy(line, s_inQ[s_inHead].data, n);
+            line[n] = 0;
+            s_inHead = (s_inHead + 1) & 31;
+            s_inCount--;
         }
-        ProcessLine(l);
+        ProcessLine(line);
     }
 
     uint64_t now = NowMs();

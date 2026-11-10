@@ -276,21 +276,21 @@ struct libcxx_map {
             return;
         }
 
-        // Iterative depth-first traversal using a heap stack
-        std::vector<node_type*> stack;
-        stack.push_back(root);
+        // Iterative depth-first traversal using a fixed stack buffer (no heap allocs)
+        node_type* stack[128];
+        int sp = 0;
+        stack[sp++] = root;
 
-        while (!stack.empty()) {
-            node_type* node = stack.back();
-            stack.pop_back();
+        while (sp > 0) {
+            node_type* node = stack[--sp];
 
             node_type* left = (node_type*)node->left;
             node_type* right = (node_type*)node->right;
 
-            if (left != nullptr && left != end_node)
-                stack.push_back(left);
-            if (right != nullptr && right != end_node)
-                stack.push_back(right);
+            if (left != nullptr && left != end_node && sp < 128)
+                stack[sp++] = left;
+            if (right != nullptr && right != end_node && sp < 128)
+                stack[sp++] = right;
 
             node->key.~Key();
             node->value.~Value();
