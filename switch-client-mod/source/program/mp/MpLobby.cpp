@@ -258,6 +258,10 @@ void SetRemoteAvatars(bool on) {
     Config::Save();
 }
 
+void SystemBanner(const char* text) {
+    PushBanner("%s", text);
+}
+
 int NotifyStyle() { return s_notifyStyle; }
 void SetNotifyStyle(int st) {
     s_notifyStyle = st;

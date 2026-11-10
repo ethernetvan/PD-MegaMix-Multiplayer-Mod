@@ -36,6 +36,7 @@ void PushPopup(const char* kind, const char* cid, const char* name,
 void PopupTest();                /* dbg_cmd `popup_test` */
 int  NotifyStyle();              /* 0 avatars, 1 text, 2 off */
 void SetNotifyStyle(int st);
+void SystemBanner(const char* text);  /* always shows (not notify_style) */
 /* opt-in: show portraits other consoles upload for modules this console
  * lacks (Config::mpRemoteAvatars, saved) */
 void SetRemoteAvatars(bool on);

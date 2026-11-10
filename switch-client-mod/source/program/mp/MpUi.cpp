@@ -35,11 +35,13 @@ static void EndWin() {
  *   ROOM        podium (top 3) + ordered member list w/ kick, Room
  *               Config (owner) and Exit Room
  *   ROOM_CONFIG song-picker mode + assignee (owner only)
+ *   OPTIONS     notification style + custom portraits (from HOME)
  *
  * In a room the overlay always opens straight on ROOM.
  * ============================================================== */
 
-enum Screen { SC_HOME, SC_EDIT_NAME, SC_JOIN_ROOM, SC_ROOM, SC_ROOM_CONFIG };
+enum Screen { SC_HOME, SC_EDIT_NAME, SC_JOIN_ROOM, SC_ROOM, SC_ROOM_CONFIG,
+              SC_OPTIONS };
 
 static Screen s_screen   = SC_HOME;
 static char   s_codeBuf[8]  = "";
@@ -706,6 +708,20 @@ static void IconShapes(const Ui& u, ImVec2 c, float sz) {
                   IM_COL32(255, 125, 200, 255), 2.0f * u.k, 0, th);
 }
 
+static void IconGear(const Ui& u, ImVec2 c, float r, ImU32 col) {
+    /* gear: 8 thick radial teeth + a ring + a centre hole */
+    float tw = r * 0.42f;
+    for (int i = 0; i < 8; i++) {
+        float th = i * 3.14159265f / 4.0f;
+        u.dl->AddLine(ImVec2(c.x + cosf(th) * r * 0.62f,
+                             c.y + sinf(th) * r * 0.62f),
+                      ImVec2(c.x + cosf(th) * r, c.y + sinf(th) * r),
+                      col, tw);
+    }
+    u.dl->AddCircle(c, r * 0.66f, col, 24, tw * 0.8f);
+    u.dl->AddCircle(c, r * 0.30f, col, 16, tw * 0.55f);
+}
+
 /* ---- helpers ---- */
 static const char* MemberStatus(const MemberInfo& m) {
     if (!m.connected) return "disconnected";
@@ -846,58 +862,13 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     u.dl->AddRect(pa, pb, stc, pillH * 0.5f, 0, 1.4f);
     u.TextCentered(pa, pb, st, 1.3f, stc);
 
-    /* Notifications segmented control: Avatars | Text | Off */
-    {
-        int st = NotifyStyle();
-        const char* seg[3] = { "Avatars", "Text", "Off" };
-        float sw = 118 * u.k, sh = 38 * u.k, sx0 = a.x + 30 * u.k;
-        u.TextLeft(ImVec2(sx0, top + 24 * u.k),
-                   ImVec2(sx0 + 190 * u.k, top + 24 * u.k + sh),
-                   "Notifications:", 1.25f, kMuted);
-        for (int i = 0; i < 3; i++) {
-            ImVec2 sa(sx0 + 190 * u.k + i * (sw + 4 * u.k), top + 24 * u.k),
-                   sb(sa.x + sw, sa.y + sh);
-            int fi = u.Focus(sa, sb, true);
-            bool hov = u.FHover(fi), cur = st == i;
-            u.dl->AddRectFilled(sa, sb,
-                cur ? kAccent : (hov ? kCardHov : kCard), 10 * u.k);
-            if (hov) u.Ring(sa, sb, 10 * u.k);
-            else u.dl->AddRect(sa, sb, kLine, 10 * u.k, 0, 1.2f);
-            u.TextCentered(sa, sb, seg[i], 1.3f,
-                           cur ? IM_COL32(20, 20, 20, 255) : kText);
-            if (u.FActivated(fi)) { sound::PlayEnterSE(); SetNotifyStyle(i); }
-        }
-    }
-
-    /* Custom portraits: Off | On (opt-in: images other consoles upload for
-     * modules this one doesn't have; off = that character's default) */
-    {
-        const bool on = Config::mpRemoteAvatars;
-        const char* seg[2] = { "Off", "On" };
-        float sw = 118 * u.k, sh = 38 * u.k, sx0 = a.x + 30 * u.k;
-        float y0 = top + 70 * u.k;
-        u.TextLeft(ImVec2(sx0, y0), ImVec2(sx0 + 190 * u.k, y0 + sh),
-                   "Custom portraits:", 1.25f, kMuted);
-        for (int i = 0; i < 2; i++) {
-            ImVec2 sa(sx0 + 190 * u.k + i * (sw + 4 * u.k), y0), sb(sa.x + sw, sa.y + sh);
-            int fi = u.Focus(sa, sb, true);
-            bool hov = u.FHover(fi), cur = on == (i == 1);
-            u.dl->AddRectFilled(sa, sb, cur ? kAccent : (hov ? kCardHov : kCard), 10 * u.k);
-            if (hov) u.Ring(sa, sb, 10 * u.k);
-            else u.dl->AddRect(sa, sb, kLine, 10 * u.k, 0, 1.2f);
-            u.TextCentered(sa, sb, seg[i], 1.3f, cur ? IM_COL32(20, 20, 20, 255) : kText);
-            if (u.FActivated(fi)) { sound::PlayEnterSE(); SetRemoteAvatars(i == 1); }
-        }
-        float hx = sx0 + 190 * u.k + 2 * (sw + 4 * u.k) + 12 * u.k;
-        u.TextLeft(ImVec2(hx, y0), ImVec2(b.x - 30 * u.k, y0 + sh),
-                   on ? "Showing images other players send"
-                      : "Others' custom modules show the character's default",
-                   1.0f, kDim);
-    }
+    /* offline tip, centred between the cards and the pill */
+    const char* tip = !Config::mpEnabled ? "Set enabled = true in config.toml, then restart"
+                    : (!online ? "Looking for the server..." : nullptr);
 
     /* three cards */
     float gap = 22 * u.k;
-    float cy0 = top + 130 * u.k, cy1 = pa.y - 22 * u.k;
+    float cy0 = top + 24 * u.k, cy1 = pa.y - 22 * u.k - (tip ? 30 * u.k : 0);
     float cw = (b.x - a.x - 2 * 30 * u.k - 2 * gap) / 3.0f;
     struct Card { const char* label; bool enabled; } cards[3] = {
         { "EDIT NAME", true }, { "CREATE ROOM", online }, { "JOIN ROOM", online } };
@@ -932,14 +903,32 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     char nm[64];
     snprintf(nm, sizeof(nm), "Name: %s", Config::mpPlayerName.c_str());
     u.TextLeft(ImVec2(a.x + 30 * u.k, pa.y), ImVec2(pa.x - 10 * u.k, pb.y), nm, 1.3f, kMuted);
-    /* how to get going, right of the pill */
-    const char* tip = !Config::mpEnabled ? "Set enabled = true in config.toml, then restart"
-                    : (!online ? "Looking for the server..." : nullptr);
+    /* Options pill-button, right of the state pill; focused AFTER the
+     * three cards so the focus order is X, EDIT, CREATE, JOIN, OPTIONS */
+    {
+        float ow = 130 * u.k;
+        ImVec2 oa(pb.x + 12 * u.k, pa.y), ob(oa.x + ow, pb.y);
+        int fi = u.Focus(oa, ob, true);
+        bool hov = u.FHover(fi);
+        u.dl->AddRectFilled(oa, ob,
+            hov ? (u.down ? kCardDown : kCardHov) : kCard, pillH * 0.5f);
+        if (hov) u.Ring(oa, ob, pillH * 0.5f);
+        else u.dl->AddRect(oa, ob, kLine, pillH * 0.5f, 0, 1.4f);
+        ImVec2 gc(oa.x + 24 * u.k, (oa.y + ob.y) * 0.5f);
+        IconGear(u, gc, 11 * u.k, kText);
+        u.TextCentered(ImVec2(gc.x + 10 * u.k, oa.y), ob, "Options",
+                       1.3f, kText);
+        if (u.FActivated(fi)) {
+            sound::PlayEnterSE();
+            s_screen = SC_OPTIONS;
+        }
+    }
+    /* offline tip, centred in the band the cards made room for */
     if (tip) {
         char tb[96];
-        u.Fit(tip, b.x - 30 * u.k - pb.x - 16 * u.k, 1.15f, tb, sizeof(tb));
-        ImVec2 tsz = u.Size(tb, 1.15f);
-        u.Text(ImVec2(b.x - 30 * u.k - tsz.x, pa.y + (pillH - tsz.y) * 0.5f), tb, 1.15f, kMuted);
+        u.Fit(tip, b.x - a.x - 60 * u.k, 1.15f, tb, sizeof(tb));
+        ImVec2 tsa(a.x + 30 * u.k, cy1 + 6 * u.k), tsb(b.x - 30 * u.k, pa.y - 8 * u.k);
+        u.TextCentered(tsa, tsb, tb, 1.15f, kMuted);
     }
     /* pad button guide, bottom-right of the content area */
     const GuideEnt g[] = {{"A", "OK"}, {"B", "Close"}};
@@ -1347,6 +1336,83 @@ static void DrawRoomConfig(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
            gw + 10 * u.k);
 }
 
+/* ----------------------------------------------------------- OPTIONS */
+static void DrawOptions(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
+    float top = Header(u, a, b, "OPTIONS", false);
+    float bh = 48 * u.k, bw = 150 * u.k;
+    ImVec2 ka(b.x - 30 * u.k - bw, a.y + (66 * u.k - bh) * 0.5f), kb(ka.x + bw, ka.y + bh);
+    if (u.Button(ka, kb, "Done", Ui::B_PRIMARY, 1.4f)) {   /* focus 0 */
+        sound::PlayCancelSE();
+        s_screen = InLobby() ? SC_ROOM : SC_HOME;
+    }
+    float y = top + 22 * u.k;
+    u.Text(ImVec2(a.x + 30 * u.k, y), "Notifications", 1.6f, kText);
+    y += 34 * u.k;
+    u.Text(ImVec2(a.x + 30 * u.k, y), "How other players' events show up during a song", 1.15f, kMuted);
+    y += 32 * u.k;
+
+    struct Opt { const char* label; const char* desc; } nopts[3] = {
+        { "AVATARS", "Portrait pop-ups at the screen edge" },
+        { "TEXT",    "Short text banners" },
+        { "OFF",     "No player notifications" } };
+    float ow = (b.x - a.x - 60 * u.k - 2 * 18 * u.k) / 3.0f, oh = 104 * u.k;
+    for (int i = 0; i < 3; i++) {                        /* focus 1..3 */
+        ImVec2 oa(a.x + 30 * u.k + i * (ow + 18 * u.k), y), ob(oa.x + ow, oa.y + oh);
+        bool sel = NotifyStyle() == i;
+        int fi = u.Focus(oa, ob);
+        bool hov = u.FHover(fi);
+        u.dl->AddRectFilled(oa, ob, sel ? kAccentBg : (hov ? kCardHov : kCard), 12 * u.k);
+        u.dl->AddRect(oa, ob, (sel || hov) ? kAccent : kLine, 12 * u.k, 0, (sel || hov) ? 2.5f * u.k : 1.2f);
+        if (hov && s_padMode) u.Ring(oa, ob, 12 * u.k);
+        ImVec2 rc(oa.x + 24 * u.k, oa.y + 30 * u.k);
+        u.dl->AddCircle(rc, 11 * u.k, sel ? kAccent : kMuted, 24, 2.0f * u.k);
+        if (sel) u.dl->AddCircleFilled(rc, 6 * u.k, kAccent, 24);
+        ImVec2 ls = u.Size(nopts[i].label, 1.6f);
+        u.Text(ImVec2(oa.x + 44 * u.k, rc.y - ls.y * 0.5f), nopts[i].label, 1.6f, kText);
+        char desc[96];
+        u.Fit(nopts[i].desc, ow - 28 * u.k, 1.15f, desc, sizeof(desc));
+        u.Text(ImVec2(oa.x + 14 * u.k, oa.y + 62 * u.k), desc, 1.15f, kMuted);
+        if (u.FActivated(fi) && !sel) {
+            sound::PlaySelectSE();
+            SetNotifyStyle(i);
+        }
+    }
+    y += oh + 22 * u.k;
+
+    u.Text(ImVec2(a.x + 30 * u.k, y), "Custom portraits", 1.6f, kText);
+    y += 34 * u.k;
+    u.Text(ImVec2(a.x + 30 * u.k, y), "Portraits of modules this console doesn't have", 1.15f, kMuted);
+    y += 32 * u.k;
+    struct Opt2 { const char* label; const char* desc; } popts[2] = {
+        { "OFF", "Show that character's default portrait" },
+        { "ON",  "Download the image the other console sends" } };
+    for (int i = 0; i < 2; i++) {                        /* focus 4..5 */
+        ImVec2 oa(a.x + 30 * u.k + i * (ow + 18 * u.k), y), ob(oa.x + ow, oa.y + oh);
+        bool sel = Config::mpRemoteAvatars == (i == 1);
+        int fi = u.Focus(oa, ob);
+        bool hov = u.FHover(fi);
+        u.dl->AddRectFilled(oa, ob, sel ? kAccentBg : (hov ? kCardHov : kCard), 12 * u.k);
+        u.dl->AddRect(oa, ob, (sel || hov) ? kAccent : kLine, 12 * u.k, 0, (sel || hov) ? 2.5f * u.k : 1.2f);
+        if (hov && s_padMode) u.Ring(oa, ob, 12 * u.k);
+        ImVec2 rc(oa.x + 24 * u.k, oa.y + 30 * u.k);
+        u.dl->AddCircle(rc, 11 * u.k, sel ? kAccent : kMuted, 24, 2.0f * u.k);
+        if (sel) u.dl->AddCircleFilled(rc, 6 * u.k, kAccent, 24);
+        ImVec2 ls = u.Size(popts[i].label, 1.6f);
+        u.Text(ImVec2(oa.x + 44 * u.k, rc.y - ls.y * 0.5f), popts[i].label, 1.6f, kText);
+        char desc[96];
+        u.Fit(popts[i].desc, ow - 28 * u.k, 1.15f, desc, sizeof(desc));
+        u.Text(ImVec2(oa.x + 14 * u.k, oa.y + 62 * u.k), desc, 1.15f, kMuted);
+        if (u.FActivated(fi) && !sel) {
+            sound::PlaySelectSE();
+            SetRemoteAvatars(i == 1);
+        }
+    }
+    const GuideEnt g[] = {{"A", "OK"}, {"B", "Back"}};
+    float gw2 = GuideW(u, g, 2);
+    DrawGuide(u, ImVec2(b.x - 30 * u.k - gw2, a.y), b, g, 2);
+    Footer(u, a, b, "Saved on this console", gw2 + 10 * u.k);
+}
+
 /* ------------------------- pad nav driver ------------------------- */
 static int AxisStep(int axis, int dir, uint64_t now) {
     if (dir == 0) { s_lastDir[axis] = 0; return 0; }
@@ -1433,8 +1499,19 @@ void DrawPanel() {
         s_zrIgnoreUntil = NavNowMs() + 300;
         s_lastScreen = (Screen)-1;   /* force the default focus on reopen */
     }
+    /* OUR keyboard only closes when the overlay is closed OR when the
+     * open overlay has left its text screen (a VirtualKeyboard opened
+     * by Edit Name / Join Room must never outlive song select); another
+     * owner's keyboard (SongQuickJump) is left alone. */
+    bool ourKb = VirtualKeyboard::IsOpenFor(s_nameBuf)
+              || VirtualKeyboard::IsOpenFor(s_codeBuf);
+    bool onTextScreen = s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM;
+    if (ourKb && (!open || !onTextScreen)) {
+        VirtualKeyboard::Close();
+        s_kbArmed = false;
+        if (onTextScreen) s_screen = InLobby() ? SC_ROOM : SC_HOME;
+    }
     if (!open && s_prevOpen) {
-        if (VirtualKeyboard::IsOpen() && s_kbArmed) VirtualKeyboard::Close();
         VirtualKeyboard::SetPadMode(false);
         s_armCid[0] = 0;
     }
@@ -1476,10 +1553,14 @@ void DrawPanel() {
 
         /* screen change -> reset focus + disarm kick */
         if (s_screen != s_lastScreen) {
+            bool fromOptions = s_lastScreen == SC_OPTIONS;
             s_lastScreen = s_screen;
             s_armCid[0] = 0;
             if (s_screen == SC_HOME)
-                s_focusIdx = s.connected ? 2 : 1;   /* [X, EDIT, CREATE, JOIN] */
+                s_focusIdx = fromOptions ? 4          /* back on the Options button */
+                           : (s.connected ? 2 : 1);   /* [X, EDIT, CREATE, JOIN, OPTIONS] */
+            else if (s_screen == SC_OPTIONS)
+                s_focusIdx = 1 + NotifyStyle();       /* [Done, n1..n3, p1..p2] */
             else if (s_screen == SC_ROOM)
                 s_focusIdx = (strcmp(s.ownerCid, s.myCid) == 0) ? 2 : 1;
             else if (s_screen == SC_ROOM_CONFIG)
@@ -1510,6 +1591,8 @@ void DrawPanel() {
                     s_armCid[0] = 0;
                     sound::PlayCancelSE();
                     if (s_screen == SC_ROOM_CONFIG) s_screen = SC_ROOM;
+                    else if (s_screen == SC_OPTIONS)
+                        s_screen = InLobby() ? SC_ROOM : SC_HOME;
                     else SetOverlayOpen(false);
                 } else {
                     int dx = 0, dy = 0;
@@ -1568,6 +1651,7 @@ void DrawPanel() {
                                             OnCodeSubmit, "Enter the 4-letter room code"); break;
         case SC_ROOM:        DrawRoom(u, s, a, b); break;
         case SC_ROOM_CONFIG: DrawRoomConfig(u, s, a, b); break;
+        case SC_OPTIONS:     DrawOptions(u, s, a, b); break;
     }
 
     EndWin();

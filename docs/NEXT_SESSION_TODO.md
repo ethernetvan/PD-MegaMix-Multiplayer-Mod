@@ -21,7 +21,10 @@ bug to this file.
 See `docs/MULTIPLAYER_STATUS.md` Round 10. Environment left running: the 7777 server (detached, log `mm-re/tmp/main7777_server.log`), the Switch (10.221.139.150, game open, build md5 in the commit) and the main Ryujinx (same build). Open follow-ups:
 - Mikudayo falls back to **Yowane Haku** on consoles without the pack (its table entry says chara HAKU). Ask the user whether a per-module override (e.g. treat modules whose portrait/name is Miku as MIKU) is wanted; nothing in the game data says Miku.
 - Portrait decoder only handles RGTC2 (BC5 YCbCr) cards; X_Song_Pack module 972 is format 37.
-- `remote_avatars` is only on the MP home screen (not the room screen), like the notification style.
+- Notification style and `remote_avatars` moved to an OPTIONS screen (gear button right of the status pill on the MP HOME screen; the user didn't want them above the three cards). Still not reachable from the room screen.
+- User-reported bug, fixed: a small keyboard that "can't be used" in song select = the plugin's input display in Keyboard mode (`InputOverlay`). The plain L3+R3 toggle fired at 0.8 s while held, so the L3+R3+ZL/ZR/Plus/L/R combos cycled it when the third button came late, and Keyboard mode was offered without a USB keyboard. Now: fires on release of a pure hold, Keyboard only with `enable_keyboard`, banner on every toggle.
+- Latent bug, fixed: an Edit Name / Join Room VirtualKeyboard stayed up after song select was left (OnPvSelDest closes the overlay, then DrawPanel stopped running). DrawPanel now runs every frame.
+- Session 6 (2026-11-10, `MULTIPLAYER_STATUS.md` Round 11): routed-subnet discovery (remembered servers + /22 sweep around them and `server_ip`), verified on the Switch. Left running: server on the default ports (log `mm-re/tmp/main7777_s2_server.log`), the Switch (10.167.1.61, game open, original config with the stale `server_ip`) and the main Ryujinx on the 2nd monitor (its `Config.json` backup: `mm-re/tmp/ryu_Config_backup_1012.json`). The three `ryu_multi` instances still have the 2026-11-04 build.
 - `Config.cpp` had unsaved edits in the user's editor during session 5; the disk copy got the `remote_avatars` lines by script. Check `git diff` if the editor saves over it.
 
 ## RESUME HERE

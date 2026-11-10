@@ -576,11 +576,91 @@ static void CloseSock() {
 /* Discovery                                                           */
 /* ------------------------------------------------------------------ */
 
+/* Servers this console reached before, most recent first, kept on the SD
+ * card across boots (net thread only). */
+static const char kServersPath[] = "ExlSD:/MikuMikuSwitchPlugin/mp_servers.txt";
+static const int kMaxKnown = 4;
+static uint32_t s_knownIp[kMaxKnown];   /* network order */
+static uint16_t s_knownPort[kMaxKnown];
+static int s_nKnown = 0;
+static int s_sweepTurn = 0;
+
+static bool UsableIp(uint32_t h) {      /* host order */
+    return h != 0 && (h >> 24) != 127 && (h >> 28) < 14;
+}
+
+static void LoadKnownServers() {
+    nn::fs::FileHandle f;
+    if (R_FAILED(nn::fs::OpenFile(&f, kServersPath, nn::fs::OpenMode_Read))) return;
+    char buf[256];
+    int64_t size = 0;
+    nn::fs::GetFileSize(&size, f);
+    if (size < 0) size = 0;
+    if (size > (int64_t)sizeof(buf) - 1) size = sizeof(buf) - 1;
+    if (R_FAILED(nn::fs::ReadFile(f, 0, buf, (uint64_t)size))) size = 0;
+    nn::fs::CloseFile(f);
+    buf[size] = 0;
+    for (char* line = buf; *line && s_nKnown < kMaxKnown;) {
+        char* nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        unsigned a, b, c, d, p;
+        if (sscanf(line, "%u.%u.%u.%u %u", &a, &b, &c, &d, &p) == 5 &&
+            a < 256 && b < 256 && c < 256 && d < 256 && p > 0 && p < 65536) {
+            const uint32_t h = (a << 24) | (b << 16) | (c << 8) | d;
+            if (UsableIp(h)) {
+                s_knownIp[s_nKnown] = __builtin_bswap32(h);
+                s_knownPort[s_nKnown++] = (uint16_t)p;
+            }
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+    WriteLog("[MP] %d remembered server(s)\n", s_nKnown);
+}
+
+static void RememberServer(uint32_t ip_be, uint16_t port) {
+    const uint32_t h = __builtin_bswap32(ip_be);
+    if (!UsableIp(h) || (s_nKnown && s_knownIp[0] == ip_be && s_knownPort[0] == port))
+        return;
+    int at = -1;
+    for (int i = 0; i < s_nKnown && at < 0; i++)
+        if (s_knownIp[i] == ip_be && s_knownPort[i] == port) at = i;
+    if (at < 0) at = s_nKnown < kMaxKnown ? s_nKnown++ : kMaxKnown - 1;
+    for (int i = at; i > 0; i--) {
+        s_knownIp[i] = s_knownIp[i - 1];
+        s_knownPort[i] = s_knownPort[i - 1];
+    }
+    s_knownIp[0] = ip_be;
+    s_knownPort[0] = port;
+
+    char out[160];
+    int o = 0;
+    for (int i = 0; i < s_nKnown; i++) {
+        const uint32_t k = __builtin_bswap32(s_knownIp[i]);
+        o += snprintf(out + o, sizeof(out) - o, "%u.%u.%u.%u %u\n", k >> 24,
+                      (k >> 16) & 0xff, (k >> 8) & 0xff, k & 0xff, s_knownPort[i]);
+    }
+    nn::fs::DeleteFile(kServersPath);
+    nn::fs::FileHandle f;
+    if (R_SUCCEEDED(nn::fs::CreateFile(kServersPath, o)) &&
+        R_SUCCEEDED(nn::fs::OpenFile(&f, kServersPath, nn::fs::OpenMode_Write))) {
+        nn::fs::WriteFile(f, 0, out, o, nn::fs::WriteOption::CreateOption(nn::fs::WriteOptionFlag_Flush));
+        nn::fs::CloseFile(f);
+    }
+    WriteLog("[MP] remembered server %u.%u.%u.%u:%u\n", h >> 24, (h >> 16) & 0xff,
+             (h >> 8) & 0xff, h & 0xff, port);
+}
+
 /* One discovery round (~1.5 s); true fills ip_be + port. Hotspots and
  * some APs drop broadcasts, so besides 255.255.255.255 and the subnet
  * broadcast the probe also goes to 127.0.0.1 (Ryujinx: a server on the
  * same PC), the configured server_ip and every host of the local subnet
- * (the whole subnet up to a /22, otherwise our /24). */
+ * (the whole subnet up to a /22, otherwise our /24). Networks split into
+ * routed subnets (PC and console on different ones) never pass that, so
+ * the probe also goes to every remembered server and, on rounds 0-5 and
+ * every 4th after, to the whole /22 around one of server_ip / the
+ * remembered servers (in turn): the PC's next DHCP lease is usually in
+ * the same block as an old one. */
 static bool DiscoverOnce(uint32_t* ip_be, uint16_t* port, int round) {
     SetState(MpState::Discovering);
     const bool verbose = round < 3 || round % 10 == 0;
@@ -661,15 +741,42 @@ static bool DiscoverOnce(uint32_t* ip_be, uint16_t* port, int round) {
             if ((h & 31) == 0) { SleepMs(1); poll(); }
         }
     }
+    uint32_t blocks[1 + kMaxKnown];
+    int nb = 0;
+    auto addKnown = [&](uint32_t a_be) {
+        const uint32_t h = __builtin_bswap32(a_be);
+        if (!UsableIp(h) || found) return;
+        if (a_be != cfg) sendTo(a_be);
+        const uint32_t blk = h & 0xfffffc00u;
+        if (me && blk <= bcast && net <= blk + 1023) return;   /* swept above */
+        for (int i = 0; i < nb; i++)
+            if (blocks[i] == blk) return;
+        blocks[nb++] = blk;
+    };
+    if (cfg) addKnown(cfg);
+    for (int i = 0; i < s_nKnown; i++) addKnown(s_knownIp[i]);
+    uint32_t swept = 0;
+    if (nb && !found && (round < 6 || round % 4 == 0)) {
+        swept = blocks[s_sweepTurn++ % nb];
+        for (uint32_t h = swept + 1; h < swept + 1023 && !found; h++) {
+            if (h == me) continue;
+            sendTo(__builtin_bswap32(h));
+            if ((h & 31) == 0) { SleepMs(1); poll(); }
+        }
+    }
     for (int i = 0; i < 120 && !found; i++) {
         poll();
         if (!found) SleepMs(10);
     }
     SockClose(u);
+    char sw[40] = "";
+    if (swept)
+        snprintf(sw, sizeof(sw), " + sweep %u.%u.%u.0/22", swept >> 24,
+                 (swept >> 16) & 0xff, (swept >> 8) & 0xff);
     if (found || verbose)
-        WriteLog("[MP] discovery #%d: me %u.%u.%u.%u/%d, %d probes -> %s %u.%u.%u.%u:%u\n",
+        WriteLog("[MP] discovery #%d: me %u.%u.%u.%u/%d%s, %d probes -> %s %u.%u.%u.%u:%u\n",
                  round, me >> 24, (me >> 16) & 0xff, (me >> 8) & 0xff, me & 0xff,
-                 __builtin_popcount(mask), sent, found ? "server" : "none",
+                 __builtin_popcount(mask), sw, sent, found ? "server" : "none",
                  found ? (*ip_be & 0xff) : 0, found ? ((*ip_be >> 8) & 0xff) : 0,
                  found ? ((*ip_be >> 16) & 0xff) : 0, found ? (*ip_be >> 24) : 0,
                  found ? *port : 0);
@@ -881,8 +988,11 @@ static void NetThread(void*) {
     const int backoffSeq[] = {1000, 2000, 4000, 5000};
 
     /* Each pass: the address of the last session (this boot), then the
-     * configured server_ip, then a discovery round. A stale server_ip
-     * (another network) therefore costs one failed connect, not forever. */
+     * configured server_ip, then a discovery round (which also probes the
+     * servers remembered from earlier boots and the blocks around them).
+     * A stale server_ip (another network) therefore costs one failed
+     * connect, not forever. */
+    LoadKnownServers();
     uint32_t cfgIp = 0, lastIp = 0;
     uint16_t lastPort = 0;
     if (!Config::mpServerIp.empty() &&
@@ -903,6 +1013,7 @@ static void NetThread(void*) {
         }
         backoff = 0;
         lastIp = ip_be; lastPort = port;
+        RememberServer(ip_be, port);
         SessionLoop();
         CloseSock();
         return true;

@@ -252,24 +252,42 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
         vol_hold_timer = 0.0f;
     }
 
-    // Input Overlay Hotkey: L3 + R3 (without ZL, ZR, L, R, and without Plus)
+    // Input Overlay Hotkey: a PURE L3+R3 hold fires on RELEASE (>= 0.8 s,
+    // no other button during the hold) so the +ZL/+ZR/+Plus/+L/+R combos
+    // can't trip the input display while a third button is being added.
     static float overlay_hold_timer = 0.0f;
-    bool isOverlayCombo = (npad.buttons & nn::hid::Button::LStick) &&
-                          (npad.buttons & nn::hid::Button::RStick) &&
-                          !(npad.buttons & nn::hid::Button::ZL) &&
-                          !(npad.buttons & nn::hid::Button::ZR) &&
-                          !(npad.buttons & nn::hid::Button::L) &&
-                          !(npad.buttons & nn::hid::Button::R) &&
-                          !(npad.buttons & nn::hid::Button::Plus);
-
-    if (isOverlayCombo) {
+    static bool  overlay_hold_pure = false;
+    const uint64_t sticks = (uint64_t)nn::hid::Button::LStick |
+                            (uint64_t)nn::hid::Button::RStick;
+    const uint64_t nonStickMask = ~sticks & ~0xFF0000ull;  /* direction bits excluded */
+    bool bothDown = (npad.buttons & sticks) == sticks;
+    if (bothDown) {
+        if (overlay_hold_timer == 0.0f && !overlay_hold_pure)
+            overlay_hold_pure = true;                 /* hold just started */
+        if (npad.buttons & nonStickMask)
+            overlay_hold_pure = false;                /* a third button joined */
         overlay_hold_timer += dt;
-        if (overlay_hold_timer >= 0.8f && (overlay_hold_timer - dt) < 0.8f) {
-            int nextMode = (InputOverlay::GetMode() + 1) % 3;
-            InputOverlay::SetMode(nextMode);
-        }
     } else {
+        if (overlay_hold_timer >= 0.8f && overlay_hold_pure) {
+            int cur = InputOverlay::GetMode();
+            int next = cur == InputOverlay::Mode_Disabled
+                       ? InputOverlay::Mode_Gamepad
+                       : cur == InputOverlay::Mode_Gamepad
+                       ? (Config::enableKeyboard ? InputOverlay::Mode_Keyboard
+                                                 : InputOverlay::Mode_Disabled)
+                       : InputOverlay::Mode_Disabled;
+            InputOverlay::SetMode(next);
+            mp::lobby::SystemBanner(
+                next == InputOverlay::Mode_Gamepad
+                    ? (Config::enableKeyboard
+                           ? "Input display: Gamepad (hold L3 + R3 for keyboard)"
+                           : "Input display: Gamepad (hold L3 + R3 to hide)")
+                : next == InputOverlay::Mode_Keyboard
+                    ? "Input display: Keyboard (hold L3 + R3 to hide)"
+                    : "Input display off");
+        }
         overlay_hold_timer = 0.0f;
+        overlay_hold_pure = false;
     }
 
     // Keyboard Hotkey: F10
@@ -498,7 +516,9 @@ extern "C" IMNVNFUNC ImDrawData* nvnImguiCalc() {
         mp::lobby::Snapshot sn;
         mp::lobby::GetSnapshot(&sn);
         int ph = sn.phase;
-        if (mp::lobby::PanelWanted()) mp::lobby::DrawPanel();
+        mp::lobby::DrawPanel();   /* runs every frame; returns early
+                                     when the overlay is closed so its
+                                     keyboard cleanup still runs */
         /* in-round boxes never cover song select (spectators wait there) */
         if ((ph == 3 /*LOADING*/ || ph == 4 /*PLAYING*/ || ph == 5 /*SPEC*/) &&
             !sn.inSongSelect && sn.resultsAgeMs < 0)
