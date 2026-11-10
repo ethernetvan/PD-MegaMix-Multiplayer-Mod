@@ -98,8 +98,10 @@ HOOK_DEFINE_TRAMPOLINE(TaskPvGameCtrlHook) {
 };
 
 // 3. TaskPvGameDest (0x64c960)
+extern PVGameArcade* g_current_game;
 HOOK_DEFINE_TRAMPOLINE(TaskPvGameDestHook) {
 	static bool Callback(uint64_t a1) {
+		g_current_game = nullptr;
 		state.ResetPlayState();
 		state.ui.ResetAllLayers();
 

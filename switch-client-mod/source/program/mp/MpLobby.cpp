@@ -20,6 +20,8 @@
 #include <deque>
 #include <string>
 
+extern PVGameArcade* g_current_game;
+
 namespace mp::lobby {
 
 /* ------------------------------------------------------------------ */
@@ -136,6 +138,7 @@ static char  s_notReady[128] = "";
 
 static int32_t s_curScore = 0, s_curCombo = 0, s_curLife = 0;
 static float   s_curPct = 0.0f;
+static bool    s_topRightBusy = false;
 static int32_t s_lastSentScore = -1, s_lastSentCombo = -1,
                s_lastSentLife = -1;
 static float   s_lastSentPct = -1.0f;
@@ -399,6 +402,7 @@ static void ResetLobbyState() {
     s_ready = true; s_readyReason[0] = 0;
     s_statusLine[0] = 0;
     s_quitting = false; s_prevPvPaused = 0;
+    s_topRightBusy = false;
     s_retryWatch = false; s_retryRecStage = 0;
     s_retBannered = false; s_scoreTries = 0;
     menu::End();
@@ -703,6 +707,8 @@ static void ProcessLine(const std::string& l) {
         int32_t pv = 0; i = mpjson::Find(line, tok, ntok, "pv");
         if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) pv = v;
         s_selPv = pv;
+        s_boardCount = 0;
+        s_lastSentScore = -1;
         if (s_resultsShownAt == 0)
             s_standingCount = 0;   /* don't show last round's standings */
         if (s_committed) {
@@ -780,6 +786,8 @@ static void ProcessLine(const std::string& l) {
         s_resumeTries = 0;
         s_resumeLastMs = 0;
         s_playedRound = rd;
+        s_lastSentScore = -1;
+        s_statePending = true;
         if (dropped) {
             SetPhase(L_DROPPED, "Dropped - playing solo");
             ClearAllInput();
@@ -1201,6 +1209,7 @@ void OnPvSelInit() {
     s_retryWatch = false;
     s_retryRecStage = 0;
     s_prevPvPaused = 0;
+    s_topRightBusy = false;
     menu::End();
     SetScene("sel");
     ApplyBlocks();
@@ -1302,7 +1311,7 @@ void OnPvSelFrame(const void* sel) {
         avatar::Ref refs[8]; int nm = 0;
         {
             std::lock_guard<std::recursive_mutex> g(s_mtx);
-            if (s_code[0] && (s_pf++ % 30) == 0)
+            if (s_code[0] && (s_pf++ % 10) == 0)
                 for (int i = 0; i < s_memberCount && nm < 8; i++)
                     if (strcmp(s_members[i].cid, s_myCid) != 0)
                         refs[nm++] = s_members[i].av;
@@ -1584,6 +1593,25 @@ void OnPvGameFrame(PVGameData* pv) {
     s_curPct = pv->percentage;
     s_curLife = pv->life;
     s_gamePaused = pv->paused != 0;
+    {
+        bool trBusy = false;
+        if (pv->loaded && !pv->paused && s_resultsShownAt == 0 &&
+            g_current_game && g_current_game->play) {
+            int steps = 0;
+            for (PvGameTarget* t = g_current_game->target;
+                 t != nullptr && steps < 64; t = t->next, steps++) {
+                if (!t->note_active ||
+                    (t->hit_state != 21 && t->hit_state != HitState_None))
+                    continue;
+                if ((t->target_pos.x > 1050.0f && t->target_pos.y < 160.0f) ||
+                    (t->button_pos.x > 1050.0f && t->button_pos.y < 160.0f)) {
+                    trBusy = true;
+                    break;
+                }
+            }
+        }
+        s_topRightBusy = trBusy;
+    }
 
     /* pause menu model on local pause edges (guarded rooms only) */
     {
@@ -1918,6 +1946,7 @@ void GetSnapshot(Snapshot* out) {
     out->goMs = s_goAt > 0 ? (int32_t)(NowMs() - s_goAt) : -1;
     if (out->goMs > 800) out->goMs = -1;
     out->inSong = strcmp(s_scene, "game") == 0;
+    out->topRightBusy = s_topRightBusy;
     /* the leader waits in LOADING, followers in LAUNCHING once loaded */
     out->waitingStart = s_phase == L_LOADING ||
                         (s_phase == L_LAUNCHING &&

@@ -1735,6 +1735,58 @@ static ImU32 _shade(ImU32 c, float f, int a) {
                     b > 255 ? 255 : b, a);
 }
 
+static mp::avatar::Ref RaceAvatarRef(const Snapshot& s, const char* cid) {
+    for (int i = 0; i < s.memberCount; i++)
+        if (strcmp(s.members[i].cid, cid) == 0)
+            return MemberRef(s, s.members[i]);
+    return mp::avatar::Ref{};
+}
+
+/* mini pointy-top DIVA hexagon framed in the player's race colour */
+static void DrawRaceAvatar(ImDrawList* dl, float k, ImVec2 c, float r,
+                           const mp::avatar::Ref& av, ImU32 raceCol,
+                           bool connected) {
+    ImVec2 p[6];
+    int a = connected ? 255 : 130;
+    HexFill(dl, ImVec2(c.x, c.y + 2.0f * k), r + 1.0f * k,
+            IM_COL32(0, 0, 0, connected ? 115 : 55),
+            IM_COL32(0, 0, 0, connected ? 115 : 55));
+    ImU32 f0 = connected ? _shade(raceCol, 1.22f, 255)
+                         : IM_COL32(150, 150, 150, a);
+    ImU32 f1 = connected ? _shade(raceCol, 0.68f, 255)
+                         : IM_COL32(105, 105, 105, a);
+    HexFill(dl, c, r, f0, f1);
+    HexPts(c, r - 1.2f * k, p);
+    ImVec2 bevel[3] = { p[4], p[5], p[0] };
+    dl->AddPolyline(bevel, 3,
+                    IM_COL32(255, 255, 255, connected ? 140 : 60),
+                    0, 1.6f * k);
+    float ri = r * 0.81f;
+    HexFill(dl, c, ri + 1.4f * k,
+            IM_COL32(255, 255, 255, connected ? 245 : 130),
+            IM_COL32(255, 255, 255, connected ? 245 : 130));
+    HexFill(dl, c, ri,
+            connected ? IM_COL32(255, 232, 242, 255)
+                      : IM_COL32(200, 200, 200, a),
+            connected ? IM_COL32(255, 220, 198, 255)
+                      : IM_COL32(170, 170, 170, a));
+    void* tex = nullptr;
+    float uv0[2], uv1[2];
+    if (mp::avatar::Resolve(av, &tex, uv0, uv1) == 1) {
+        ImU32 tint = connected ? IM_COL32_WHITE
+                               : IM_COL32(145, 145, 145, a);
+        HexFill(dl, c, ri, tint, tint, (ImTextureID)tex,
+                ImVec2(uv0[0], uv0[1]), ImVec2(uv1[0], uv1[1]));
+    } else {
+        Ui u{};
+        u.dl = dl;
+        u.k = k;
+        ImU32 sil = connected ? _shade(raceCol, 0.95f, 240)
+                              : IM_COL32(140, 140, 140, a);
+        IconPerson(u, ImVec2(c.x, c.y - ri * 0.08f), ri * 0.58f, sil, sil);
+    }
+}
+
 void DrawGaugeRace() {
     Snapshot s;
     GetSnapshot(&s);
@@ -1751,7 +1803,7 @@ void DrawGaugeRace() {
     };
     /* smooth each other player's pct toward its target */
     int n = 0;
-    float ds_[8]; ImU32 cs_[8]; bool dc_[8];
+    float ds_[8]; ImU32 cs_[8]; bool dc_[8]; mp::avatar::Ref av_[8];
     for (int i = 0; i < s.boardCount && n < 8; i++) {
         const auto& b = s.board[i];
         if (b.me) continue;
@@ -1768,6 +1820,7 @@ void DrawGaugeRace() {
             ds_[n] = s_race[j].d;
             cs_[n] = RaceColor(s, b.cid);
             dc_[n] = !b.connected;
+            av_[n] = RaceAvatarRef(s, b.cid);
             n++;
         }
     }
@@ -1778,6 +1831,7 @@ void DrawGaugeRace() {
                 float tf = ds_[i]; ds_[i] = ds_[j]; ds_[j] = tf;
                 ImU32 tc = cs_[i]; cs_[i] = cs_[j]; cs_[j] = tc;
                 bool tb = dc_[i]; dc_[i] = dc_[j]; dc_[j] = tb;
+                mp::avatar::Ref ta = av_[i]; av_[i] = av_[j]; av_[j] = ta;
             }
     float myx = X(s.myPct);
     /* lead fill over [x(myPct), x(d)] for whoever is ahead; drawing
@@ -1802,18 +1856,48 @@ void DrawGaugeRace() {
     if (anyLead)
         dl->AddRectFilled(ImVec2(myx, 692 * k), ImVec2(myx + 2 * k, 710 * k),
                           IM_COL32(0, 0, 0, 170), 0);
-    /* pointers for EVERY other player (ahead or behind) */
-    for (int i = 0; i < n; i++) {
-        float d = ds_[i];
+    /* spread avatar centres slightly when markers sit at the same % so
+     * every portrait stays visible; ds_ is sorted largest-first (right-to-left) */
+    float tx[8], ax[8];
+    for (int i = 0; i < n; i++) tx[i] = ax[i] = X(ds_[i]);
+    const float minSep = 25.0f * k, xMin = 130.0f * k, xMax = 1230.0f * k;
+    for (int pass = 0; pass < 5; pass++) {
+        for (int i = n - 2; i >= 0; i--)
+            if (ax[i] < ax[i + 1] + minSep) {
+                float mid = 0.5f * (ax[i] + ax[i + 1]);
+                ax[i]     = mid + 0.5f * minSep;
+                ax[i + 1] = mid - 0.5f * minSep;
+            }
+        if (n > 0 && ax[n - 1] < xMin) ax[n - 1] = xMin;
+        for (int i = n - 2; i >= 0; i--)
+            if (ax[i] < ax[i + 1] + minSep) ax[i] = ax[i + 1] + minSep;
+        if (n > 0 && ax[0] > xMax) ax[0] = xMax;
+        for (int i = 1; i < n; i++)
+            if (ax[i] > ax[i - 1] - minSep) ax[i] = ax[i - 1] - minSep;
+    }
+    /* pointers + avatars for EVERY other player (trailing first, leader on top) */
+    const float hr = 13.5f * k, hcy = 667.5f * k;
+    for (int i = n - 1; i >= 0; i--) {
         ImU32 c = cs_[i];
-        int a = dc_[i] ? 102 : 255;
-        ImVec2 tip(X(d), 690 * k);
+        int a = dc_[i] ? 110 : 255;
+        ImU32 col = (c & 0x00ffffff) | ((ImU32)a << 24);
+        ImVec2 tip(tx[i], 690.5f * k);
+        if (fabsf(ax[i] - tx[i]) > 1.5f * k) {
+            dl->AddLine(ImVec2(ax[i], hcy + hr - 1.0f * k),
+                        ImVec2(tx[i], 683.0f * k),
+                        IM_COL32(0, 0, 0, dc_[i] ? 70 : 170), 3.2f * k);
+            dl->AddLine(ImVec2(ax[i], hcy + hr - 1.0f * k),
+                        ImVec2(tx[i], 683.0f * k), col, 1.8f * k);
+        }
         dl->AddTriangleFilled(
-            ImVec2(tip.x - 5 * k, 682 * k), ImVec2(tip.x + 5 * k, 682 * k),
-            tip, (c & 0x00ffffff) | ((ImU32)a << 24));
+            ImVec2(tip.x - 5.5f * k, 682.0f * k),
+            ImVec2(tip.x + 5.5f * k, 682.0f * k),
+            tip, col);
         dl->AddTriangle(
-            ImVec2(tip.x - 5 * k, 682 * k), ImVec2(tip.x + 5 * k, 682 * k),
-            tip, IM_COL32(0, 0, 0, dc_[i] ? 64 : 160), 1.0f);
+            ImVec2(tip.x - 5.5f * k, 682.0f * k),
+            ImVec2(tip.x + 5.5f * k, 682.0f * k),
+            tip, IM_COL32(0, 0, 0, dc_[i] ? 64 : 170), 1.2f * k);
+        DrawRaceAvatar(dl, k, ImVec2(ax[i], hcy), hr, av_[i], c, !dc_[i]);
     }
 }
 
@@ -1829,10 +1913,26 @@ static uint64_t _ms() {
            / nn::os::GetSystemTickFrequency();
 }
 
+/* in-song placement badge state (Mario-Kart ordinal + DIVA styling) */
+static int      s_placeDispRank = 0;
+static int      s_placePrevRank = 0;
+static int      s_placeCandRank = 0;
+static uint64_t s_placeCandAt   = 0;
+static uint64_t s_placeAnimAt   = 0;
+static int      s_placeAnimUp   = 1;
+static uint64_t s_placeEnterAt  = 0;
+static float    s_placeAvoidA   = 1.0f;
+
 void TriggerRankGlow(bool up) {
     s_glowUp = up ? 1 : 0;
     s_glowStart = _ms();
     s_glowLastAt = s_glowStart;
+    s_placeAnimUp = up ? 1 : 0;
+    s_placeAnimAt = s_glowStart;
+    if (s_placeDispRank > 0) {
+        s_placePrevRank = up ? (s_placeDispRank < 8 ? s_placeDispRank + 1 : 2)
+                             : (s_placeDispRank > 1 ? s_placeDispRank - 1 : 1);
+    }
 }
 
 void DrawRankGlow() {
@@ -2092,52 +2192,383 @@ void DrawPopups() {
     }
 }
 
+static const char* OrdinalSuffix(int r) {
+    if (r % 100 >= 11 && r % 100 <= 13) return "th";
+    switch (r % 10) {
+    case 1: return "st";
+    case 2: return "nd";
+    case 3: return "rd";
+    default: return "th";
+    }
+}
+
+static GameTextStyle PlacementStyle(int rank, ImU32* outAccent) {
+    switch (rank) {
+    case 1: /* Radiant Gold (EXCELLENT / Crown) */
+        if (outAccent) *outAccent = IM_COL32(255, 210, 45, 255);
+        return {
+            IM_COL32(255, 252, 195, 255), IM_COL32(255, 214, 48, 255),
+            IM_COL32(246, 172, 18, 255),  IM_COL32(232, 102, 8, 255),
+            IM_COL32(50, 22, 6, 255),     5.6f,
+            IM_COL32(255, 195, 45, 255),  0.28f
+        };
+    case 2: /* Sleek Platinum Silver (GREAT) */
+        if (outAccent) *outAccent = IM_COL32(170, 220, 255, 255);
+        return {
+            IM_COL32(255, 255, 255, 255), IM_COL32(205, 228, 250, 255),
+            IM_COL32(158, 188, 222, 255), IM_COL32(110, 140, 182, 255),
+            IM_COL32(18, 26, 50, 255),    5.4f,
+            IM_COL32(155, 215, 255, 255), 0.22f
+        };
+    case 3: /* Warm Rose-Copper Bronze (STANDARD) */
+        if (outAccent) *outAccent = IM_COL32(245, 150, 85, 255);
+        return {
+            IM_COL32(255, 236, 208, 255), IM_COL32(242, 168, 108, 255),
+            IM_COL32(208, 120, 64, 255),  IM_COL32(156, 70, 28, 255),
+            IM_COL32(46, 18, 12, 255),    5.4f,
+            IM_COL32(245, 145, 80, 255),  0.22f
+        };
+    case 4: /* Project DIVA Miku Teal */
+        if (outAccent) *outAccent = IM_COL32(57, 197, 187, 255);
+        return {
+            IM_COL32(220, 255, 252, 255), IM_COL32(105, 240, 232, 255),
+            IM_COL32(36, 196, 202, 255),  IM_COL32(14, 138, 170, 255),
+            IM_COL32(15, 24, 52, 255),    5.2f,
+            IM_COL32(57, 197, 187, 255),  0.20f
+        };
+    default: /* Cyber Violet (5th..8th) */
+        if (outAccent) *outAccent = IM_COL32(175, 125, 255, 255);
+        return {
+            IM_COL32(242, 232, 255, 255), IM_COL32(188, 162, 248, 255),
+            IM_COL32(138, 106, 218, 255), IM_COL32(90, 64, 172, 255),
+            IM_COL32(24, 16, 48, 255),    5.2f,
+            IM_COL32(165, 115, 255, 255), 0.18f
+        };
+    }
+}
+
 void DrawLeaderboard() {
     Snapshot s;
     GetSnapshot(&s);
-    if (s.boardCount == 0) return;
-    float k = ImGui::GetIO().DisplaySize.y / 720.0f;
-    ImVec2 ds = ImGui::GetIO().DisplaySize;
-    /* top-right at (W - 8, 48) in 720p: right of/above the old spot and
-     * below the note-rating icons (~x 1040-1260, y 15-40) */
-    ImGui::SetNextWindowPos(ImVec2(ds.x - 8 * k, 48 * k), ImGuiCond_Always,
-                            ImVec2(1, 0));
-    ImGui::SetNextWindowBgAlpha(0.55f);
-    if (!BeginWin("##mplb", nullptr,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs |
-            ImGuiWindowFlags_AlwaysAutoResize)) {
-        EndWin();
+    if (!s.inSong || OverlayOpen() || s.resultsAgeMs >= 0) {
+        s_placeDispRank = 0; s_placePrevRank = 0; s_placeCandRank = 0;
+        s_placeAnimAt = 0; s_placeEnterAt = 0; s_placeAvoidA = 1.0f;
         return;
     }
-    ImGui::TextDisabled("MP Live");
-    for (int r = 0; r < s.boardCount; r++) {
-        const auto& b = s.board[r];
-        ImVec4 c = b.me ? ImVec4(1.0f, 0.9f, 0.3f, 1)
-                 : (b.connected ? ImVec4(1, 1, 1, 1)
-                                : ImVec4(0.5f, 0.5f, 0.5f, 1));
-        if (!b.me) {
-            ImU32 rc = RaceColor(s, b.cid);
-            ImGui::PushID(r);
-            ImGui::ColorButton("##rc", ImVec4(
-                (rc & 0xff) / 255.f, ((rc >> 8) & 0xff) / 255.f,
-                ((rc >> 16) & 0xff) / 255.f, 1.0f),
-                ImGuiColorEditFlags_NoTooltip, ImVec2(8 * k, 8 * k));
-            ImGui::PopID();
-            ImGui::SameLine();
+    int myRank = 0;
+    for (int i = 0; i < s.boardCount; i++)
+        if (s.board[i].me) {
+            myRank = s.board[i].rank > 0 ? s.board[i].rank : (i + 1);
+            break;
         }
-        ImGui::TextColored(c, "%d %-10.10s %.1f%%", b.rank > 0 ? b.rank : r + 1,
-                           b.name, (double)b.pct);
-        ImVec4 lc = b.life >= 77 ? ImVec4(0.35f, 0.80f, 0.51f, 1)
-                  : b.life >= 40 ? ImVec4(1.0f, 0.67f, 0.27f, 1)
-                                 : ImVec4(0.90f, 0.31f, 0.27f, 1);
-        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, lc);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg,
-                              ImVec4(0.15f, 0.15f, 0.15f, 1));
-        ImGui::ProgressBar(b.life / 255.0f, ImVec2(44 * k, 6 * k), "");
-        ImGui::PopStyleColor(2);
+    if (myRank <= 0) {
+        if (s.phase == 4 /*L_PLAYING*/ && s.playerCount > 0) myRank = 1;
+        else return;
     }
-    EndWin();
+
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    if (!dl) return;
+    const ImGuiIO& io = ImGui::GetIO();
+    ImVec2 ds = io.DisplaySize;
+    float k = ds.y / 720.0f;
+    float dt = io.DeltaTime > 0.0f ? io.DeltaTime : (1.0f / 60.0f);
+    uint64_t now = _ms();
+    float tSec = (float)ImGui::GetTime();
+
+    /* track rank transitions (short 140 ms debounce against 1-frame tie jitter) */
+    if (s_placeDispRank <= 0) {
+        s_placeDispRank = myRank;
+        s_placePrevRank = myRank;
+        s_placeCandRank = 0;
+        s_placeEnterAt  = now;
+    } else if (myRank == s_placeDispRank) {
+        s_placeCandRank = 0;
+    } else if (s_placeCandRank != myRank) {
+        s_placeCandRank = myRank;
+        s_placeCandAt   = now;
+    } else if (now - s_placeCandAt >= 140) {
+        s_placePrevRank = s_placeDispRank;
+        s_placeAnimUp   = myRank < s_placeDispRank ? 1 : 0;
+        s_placeDispRank = myRank;
+        s_placeCandRank = 0;
+        s_placeAnimAt   = now;
+    }
+
+    /* fade when an active note target or flying button approaches top-right */
+    float targetAvoid = s.topRightBusy ? 0.26f : 1.0f;
+    float step = dt * 10.0f;
+    if (step > 1.0f) step = 1.0f;
+    s_placeAvoidA += (targetAvoid - s_placeAvoidA) * step;
+
+    /* entrance animation (first 340 ms) */
+    float enterSlideX = 0.0f, enterScale = 1.0f, enterAlpha = 1.0f;
+    if (s_placeEnterAt > 0) {
+        float ep = (float)(now - s_placeEnterAt) / 340.0f;
+        if (ep < 1.0f) {
+            if (ep < 0.0f) ep = 0.0f;
+            enterSlideX = (1.0f - EaseOutBack(ep)) * 72.0f * k;
+            enterScale  = 0.75f + 0.25f * EaseOutBack(ep);
+            enterAlpha  = ep < 0.35f ? (ep / 0.35f) : 1.0f;
+        }
+    }
+
+    /* rank-change 3D flip + elastic pop animation (650 ms total) */
+    int shownRank = s_placeDispRank;
+    float flipX = 1.0f, animScale = 1.0f, hopY = 0.0f, shakeX = 0.0f;
+    float animAge = s_placeAnimAt > 0 ? (float)(now - s_placeAnimAt) : -1.0f;
+    if (animAge >= 650.0f) { s_placeAnimAt = 0; animAge = -1.0f; }
+    if (animAge >= 0.0f) {
+        if (animAge < 110.0f) {
+            /* phase 1: old rank rotates edge-on */
+            float p = animAge / 110.0f;
+            shownRank = s_placePrevRank > 0 ? s_placePrevRank : s_placeDispRank;
+            flipX = cosf(p * 1.5707963f);
+            if (flipX < 0.08f) flipX = 0.08f;
+            animScale = 1.0f + 0.08f * p;
+            hopY = (s_placeAnimUp ? -1.0f : 1.0f) * 3.5f * k * sinf(p * 1.5707963f);
+        } else if (animAge < 540.0f) {
+            /* phase 2: new rank flips open with elastic bounce or drop shake */
+            float q = (animAge - 110.0f) / 430.0f;
+            shownRank = s_placeDispRank;
+            float fp = q < 0.32f ? (q / 0.32f) : 1.0f;
+            flipX = sinf(fp * 1.5707963f);
+            if (flipX < 0.08f) flipX = 0.08f;
+            if (s_placeAnimUp) {
+                animScale = q < 0.26f
+                    ? (1.08f + 0.20f * (q / 0.26f))
+                    : (1.0f + 0.28f * powf(1.0f - (q - 0.26f) / 0.74f, 2.0f) *
+                              cosf((q - 0.26f) * 4.8f));
+                hopY = -4.5f * k * (1.0f - q) * cosf(q * 2.4f);
+            } else {
+                animScale = q < 0.22f
+                    ? (1.16f - 0.22f * (q / 0.22f))
+                    : (0.94f + 0.06f * EaseOutBack((q - 0.22f) / 0.78f));
+                hopY = 4.5f * k * sinf(q * 3.14159f) * (1.0f - q);
+                shakeX = sinf(q * 31.4159f) * (1.0f - q) * 4.0f * k;
+            }
+        }
+    }
+
+    /* subtle continuous breathing pulse */
+    float breathe = 1.0f + 0.020f * sinf(tSec * 3.8f);
+    float glowPulse = 0.80f + 0.20f * sinf(tSec * 5.2f);
+    float totalScale = enterScale * animScale * breathe;
+    float alpha = 0.92f * enterAlpha * s_placeAvoidA;
+    if (alpha <= 0.02f) return;
+
+    /* top-right anchor directly beneath the 7-digit score (y ~ 10..38) */
+    ImVec2 ctr(ds.x - 52.0f * k + enterSlideX, 70.0f * k);
+    ImU32 accent = 0;
+    GameTextStyle st = PlacementStyle(shownRank, &accent);
+    st.glowA *= glowPulse;
+
+    /* 1) sleek angled Project DIVA backing plate + accent trim */
+    {
+        float pw = 84.0f * k, ph = 33.0f * k, sk = 7.0f * k;
+        ImVec2 pc(ctr.x + shakeX * 0.4f, ctr.y + 2.0f * k + hopY * 0.4f);
+        ImVec2 q[4] = {
+            ImVec2(pc.x - pw * 0.5f + sk, pc.y - ph * 0.5f),
+            ImVec2(pc.x + pw * 0.5f + sk, pc.y - ph * 0.5f),
+            ImVec2(pc.x + pw * 0.5f - sk, pc.y + ph * 0.5f),
+            ImVec2(pc.x - pw * 0.5f - sk, pc.y + ph * 0.5f),
+        };
+        dl->AddConvexPolyFilled(q, 4, IM_COL32(12, 16, 32, (int)(135 * alpha)));
+        /* diagonal DIVA speed stripes near the right edge */
+        for (int sIdx = 0; sIdx < 2; sIdx++) {
+            float ox = (26.0f + sIdx * 7.5f) * k;
+            ImVec2 sp[4] = {
+                ImVec2(pc.x + ox + sk,            pc.y - ph * 0.5f),
+                ImVec2(pc.x + ox + 4.0f * k + sk, pc.y - ph * 0.5f),
+                ImVec2(pc.x + ox + 4.0f * k - sk, pc.y + ph * 0.5f),
+                ImVec2(pc.x + ox - sk,            pc.y + ph * 0.5f),
+            };
+            dl->AddConvexPolyFilled(sp, 4,
+                (accent & 0x00ffffff) | ((ImU32)(int)(55 * alpha) << 24));
+        }
+        /* bottom + right glowing bevel trim */
+        ImU32 trimC = (accent & 0x00ffffff) | ((ImU32)(int)(225 * alpha) << 24);
+        dl->AddLine(q[3], q[2], trimC, 2.4f * k);
+        dl->AddLine(q[2], q[1], trimC, 2.4f * k);
+        dl->AddLine(q[0], q[1], IM_COL32(255, 255, 255, (int)(70 * alpha)), 1.2f * k);
+    }
+
+    /* 2) rank-change shockwave ring + rising/falling DIVA chevrons */
+    if (animAge >= 0.0f) {
+        ImU32 evCol = s_placeAnimUp ? IM_COL32(95, 255, 165, 255)
+                                    : IM_COL32(205, 105, 255, 255);
+        if (animAge < 460.0f) {
+            float rp = animAge / 460.0f;
+            float expand = 1.0f + 0.65f * (1.0f - (1.0f - rp) * (1.0f - rp));
+            int ra = (int)((1.0f - rp) * (1.0f - rp) * 220.0f * alpha);
+            if (ra > 0) {
+                float rw = 44.0f * k * expand, rh = 19.0f * k * expand, rsk = 6.0f * k * expand;
+                ImVec2 rq[4] = {
+                    ImVec2(ctr.x - rw + rsk, ctr.y - rh),
+                    ImVec2(ctr.x + rw + rsk, ctr.y - rh),
+                    ImVec2(ctr.x + rw - rsk, ctr.y + rh),
+                    ImVec2(ctr.x - rw - rsk, ctr.y + rh),
+                };
+                dl->AddPolyline(rq, 4, (evCol & 0x00ffffff) | ((ImU32)ra << 24),
+                                ImDrawFlags_Closed, (3.2f * (1.0f - rp) + 1.0f) * k);
+            }
+        }
+        /* double directional chevrons on the left of the badge */
+        float cp = animAge / 650.0f;
+        float cAlpha = (cp < 0.15f ? cp / 0.15f : 1.0f - (cp - 0.15f) / 0.85f) * alpha;
+        if (cAlpha > 0.01f) {
+            float dir = s_placeAnimUp ? -1.0f : 1.0f;
+            float slide = dir * (cp * 14.0f - 5.0f) * k;
+            float cx = ctr.x - 50.0f * k;
+            ImU32 cc = (evCol & 0x00ffffff) | ((ImU32)(int)(245 * cAlpha) << 24);
+            ImU32 co = IM_COL32(12, 16, 32, (int)(210 * cAlpha));
+            for (int cIdx = 0; cIdx < 2; cIdx++) {
+                float cy = ctr.y + slide + (cIdx - 0.5f) * 8.5f * k;
+                float cw = 6.5f * k;
+                float tipY  = cy + dir * 4.5f * k;
+                float wingY = cy - dir * 4.5f * k;
+                ImVec2 pts[3] = {
+                    ImVec2(cx - cw, wingY),
+                    ImVec2(cx,      tipY),
+                    ImVec2(cx + cw, wingY),
+                };
+                dl->AddPolyline(pts, 3, co, 0, 4.2f * k);
+                dl->AddPolyline(pts, 3, cc, 0, 2.4f * k);
+            }
+        }
+    }
+
+    /* 3) Mario-Kart style numeral + ordinal suffix with unified strokes & gloss */
+    ImFont* f = FontLoader::Big() ? FontLoader::Big() : ImGui::GetFont();
+    char numTxt[8];
+    snprintf(numTxt, sizeof(numTxt), "%d", shownRank);
+    const char* sufTxt = OrdinalSuffix(shownRank);
+    float szNum = 46.0f * k, szSuf = 24.5f * k;
+    ImVec2 tsNum = f->CalcTextSizeA(szNum, FLT_MAX, 0.0f, numTxt);
+    ImVec2 tsSuf = f->CalcTextSizeA(szSuf, FLT_MAX, 0.0f, sufTxt);
+    float gapX = 2.2f * k;
+    float totalW = tsNum.x + gapX + tsSuf.x;
+    ImVec2 pNum(ctr.x - totalW * 0.5f, ctr.y - tsNum.y * 0.5f);
+    ImVec2 pSuf(pNum.x + tsNum.x + gapX,
+                pNum.y + 0.78f * (tsNum.y - tsSuf.y) - 1.0f * k);
+
+    float whiteRNum = 2.0f * k, whiteRSuf = 1.6f * k;
+    float darkRNum  = 3.8f * k, darkRSuf  = 3.0f * k;
+    int vtx0 = dl->VtxBuffer.Size;
+
+    auto ringBoth = [&](ImVec2 dOff, float rNum, float rSuf, int n, ImU32 col, int a) {
+        ImU32 c = (col & 0x00ffffff) | ((ImU32)a << 24);
+        for (int i = 0; i < n; i++) {
+            float th = i * 6.2831853f / n;
+            float cs = cosf(th), sn = sinf(th);
+            dl->AddText(f, szNum,
+                        ImVec2(pNum.x + dOff.x + cs * rNum, pNum.y + dOff.y + sn * rNum),
+                        c, numTxt);
+            dl->AddText(f, szSuf,
+                        ImVec2(pSuf.x + dOff.x + cs * rSuf, pSuf.y + dOff.y + sn * rSuf),
+                        c, sufTxt);
+        }
+    };
+
+    /* pass 1: drop shadow */
+    ringBoth(ImVec2(3.0f * k, 4.0f * k), darkRNum, darkRSuf, 16,
+             st.dark, (int)(0.52f * 255));
+    /* pass 2: soft outer glow */
+    if (st.glowA > 0.0f)
+        ringBoth(ImVec2(0, 0), 5.6f * k, 4.4f * k, 16,
+                 st.glow, (int)(st.glowA * 255));
+    /* pass 3: unified dark outer stroke */
+    ringBoth(ImVec2(0, 0), darkRNum, darkRSuf, 16, st.dark, 255);
+    /* pass 4: crisp white inner keyline */
+    int vtxWhite = dl->VtxBuffer.Size;
+    ringBoth(ImVec2(0, 0), whiteRNum, whiteRSuf, 12,
+             IM_COL32(255, 255, 255, 255), 255);
+
+    /* pass 5: glossy vertical gradient fill on numeral & suffix (vertex-shaded,
+     * no clip rects so hopping/scaling never clips glyph tops/bottoms) */
+    auto fillGlyph = [&](ImVec2 gp, float gsz, const char* gtxt) {
+        int vf0 = dl->VtxBuffer.Size;
+        dl->AddText(f, gsz, gp, IM_COL32(255, 255, 255, 255), gtxt);
+        int vf1 = dl->VtxBuffer.Size;
+        float yT = 1e30f, yB = -1e30f;
+        for (int v = vf0; v < vf1; v++) {
+            float vy = dl->VtxBuffer[v].pos.y;
+            if (vy < yT) yT = vy;
+            if (vy > yB) yB = vy;
+        }
+        for (int v = vf0; v < vf1; v++) {
+            ImDrawVert& vt = dl->VtxBuffer[v];
+            float t = yB > yT ? (vt.pos.y - yT) / (yB - yT) : 0.0f;
+            ImU32 c = t < 0.50f
+                ? LerpCol(st.top, st.mid, t / 0.50f)
+                : LerpCol(st.loTop, st.bot, (t - 0.50f) / 0.50f);
+            vt.col = (c & 0x00ffffffu) | (vt.col & 0xff000000u);
+        }
+    };
+    int vtxFill = dl->VtxBuffer.Size;
+    fillGlyph(pNum, szNum, numTxt);
+    fillGlyph(pSuf, szSuf, sufTxt);
+    int vtxEnd = dl->VtxBuffer.Size;
+
+    /* periodic diagonal metallic sheen sweep + rank-up flash */
+    float cyc = fmodf(tSec, 2.8f);
+    bool hasSheen = cyc < 0.65f;
+    float sheenPos = hasSheen ? ((cyc / 0.65f) * 2.4f - 1.2f) * 46.0f * k : 0.0f;
+    float sheenW = 13.0f * k;
+    float flashBoost = (animAge >= 110.0f && animAge < 290.0f && s_placeAnimUp)
+        ? (1.0f - (animAge - 110.0f) / 180.0f) * 0.55f : 0.0f;
+
+    /* transform all passes: italic shear, 3D flip + scale + hop, sheen, alpha */
+    const float italic = 0.20f;
+    int aMul = (int)(alpha * 255.0f);
+    for (int i = vtx0; i < vtxEnd; i++) {
+        ImDrawVert& v = dl->VtxBuffer[i];
+        float dx = (v.pos.x - ctr.x) + (ctr.y - v.pos.y) * italic;
+        float dy = (v.pos.y - ctr.y);
+        v.pos.x = ctr.x + dx * flipX * totalScale + shakeX;
+        v.pos.y = ctr.y + dy * totalScale + hopY;
+        if (i >= vtxFill) {
+            float sheen = flashBoost;
+            if (hasSheen) {
+                float proj = dx + dy * 0.42f;
+                float dist = fabsf(proj - sheenPos);
+                if (dist < sheenW) {
+                    float sTerm = (1.0f - dist / sheenW);
+                    sTerm = sTerm * sTerm * 0.65f;
+                    if (sTerm > sheen) sheen = sTerm;
+                }
+            }
+            if (sheen > 0.0f)
+                v.col = LerpCol(v.col, IM_COL32(255, 255, 255, (v.col >> 24) & 0xff), sheen);
+        } else if (i >= vtxWhite && flashBoost > 0.0f) {
+            v.col = LerpCol(v.col, IM_COL32(255, 255, 220, (v.col >> 24) & 0xff), flashBoost);
+        }
+        ImU32 va = (v.col >> 24) & 0xff;
+        v.col = (v.col & 0x00ffffff) | ((ImU32)((va * aMul) / 255) << 24);
+    }
+
+    /* 4) Project DIVA sparkles: twinkling on 1st place + burst on rank-up */
+    if (shownRank == 1) {
+        float sp1 = 0.55f + 0.45f * sinf(tSec * 5.5f);
+        float sp2 = 0.55f + 0.45f * sinf(tSec * 4.3f + 2.1f);
+        Sparkle(dl, ImVec2(ctr.x - 28.0f * k + shakeX, ctr.y - 17.0f * k + hopY),
+                (6.5f + 3.0f * sp1) * k,
+                IM_COL32(255, 255, 235, (int)(240 * alpha * sp1)));
+        Sparkle(dl, ImVec2(ctr.x + 32.0f * k + shakeX, ctr.y + 13.0f * k + hopY),
+                (5.0f + 2.5f * sp2) * k,
+                IM_COL32(255, 235, 160, (int)(225 * alpha * sp2)));
+    }
+    if (animAge >= 100.0f && animAge < 520.0f && s_placeAnimUp) {
+        float bp = (animAge - 100.0f) / 420.0f;
+        float bAlpha = (1.0f - bp) * alpha;
+        float rad = (22.0f + 24.0f * bp) * k;
+        static const float kAng[4] = { -2.4f, -0.55f, 0.75f, 2.35f };
+        for (int sIdx = 0; sIdx < 4; sIdx++) {
+            ImVec2 sp(ctr.x + cosf(kAng[sIdx]) * rad * 1.25f,
+                      ctr.y + sinf(kAng[sIdx]) * rad * 0.78f);
+            Sparkle(dl, sp, (7.5f * (1.0f - bp * 0.6f)) * k,
+                    IM_COL32(255, 252, 210, (int)(245 * bAlpha)));
+        }
+    }
 }
 
 void DrawWaiting() {

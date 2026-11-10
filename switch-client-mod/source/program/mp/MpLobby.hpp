@@ -70,6 +70,7 @@ struct Snapshot {
     int32_t  offlineMs;       /* ms since the session dropped, -1 online */
     bool     inSongSelect;    /* pv_sel is active */
     bool     inSong;          /* a song is loaded and playing/paused (scene "game") */
+    bool     topRightBusy;    /* an active note target/button is near top-right */
     bool     waitingStart;    /* loaded, waiting for the round's start (any member) */
     char     code[8];
     char     myCid[20];
