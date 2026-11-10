@@ -327,9 +327,11 @@ static void GuardPump() {
     }
     PushBlocks();
 }
+/* drops queued taps and every block, except the open overlay's full
+ * block (leaving a room from the overlay must not hand the game input) */
 static void ClearAllInput() { input::ResetAll(); s_relGuard = 0;
                               s_relGuardStick = false; s_baseMask = 0;
-                              s_baseZeroLs = false; }
+                              s_baseZeroLs = false; PushBlocks(); }
 
 static const uint64_t MASK_FOLLOWER =
     nn::hid::A | nn::hid::Up | nn::hid::Down | nn::hid::L | nn::hid::R |
