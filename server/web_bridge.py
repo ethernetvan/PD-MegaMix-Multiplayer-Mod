@@ -2,10 +2,17 @@
 """web_bridge.py - HTTP+WebSocket spectator/admin bridge for mp_server.
 
 Serves the built web/ SPA plus:
-  GET /api/health -> {"ok":true}
+  GET /api/health, /health -> {"ok":true}
   GET /api/state  -> anonymous snapshot
-  GET /ws         -> WebSocket: hello+feed backlog, snapshot pushes (200ms),
-                     auth (name claim and/or admin token), lobby actions.
+  GET /ws (or a WebSocket upgrade on /)
+                  -> browser WebSocket: hello+feed backlog, snapshot pushes
+                     (200ms), auth (name claim and/or admin token), lobby
+                     actions.
+  GET /switch     -> console WebSocket: the NDJSON game protocol of
+                     mp_server.py carried in WebSocket messages (each
+                     message's payload is a chunk of the line stream), so a
+                     console can reach the server through an HTTP-only
+                     front (Cloudflare -> Render) on a single port.
 Stdlib asyncio only. Console cids/IPs are never sent to browsers; members
 are identified by per-process hmac "mid" tokens.
 """
@@ -28,6 +35,7 @@ from collections import OrderedDict, deque
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 MAX_HEAD = 16384          # request line + headers cap
 MAX_MSG = 65536           # max assembled WS client message
+SWITCH_MAX_MSG = 1 << 17  # console messages: avatar_img lines are ~64 KiB
 FEED_LEN = 100            # feed entries kept per lobby
 SEEN_LEN = 2000           # dedupe map bound for observe()
 HEAD_TIMEOUT = 10
@@ -89,7 +97,15 @@ class WsError(Exception):
         self.code = code
 
 
-async def _one_frame(reader, masked=True):
+def _unmask(data, mask):
+    n = len(data)
+    if not n:
+        return b""
+    m = int.from_bytes((mask * (n // 4 + 1))[:n], "big")
+    return (int.from_bytes(data, "big") ^ m).to_bytes(n, "big")
+
+
+async def _one_frame(reader, masked=True, max_msg=MAX_MSG):
     b0, b1 = await reader.readexactly(2)
     op = b0 & 0x0F
     if masked and not (b1 & 0x80):
@@ -99,21 +115,20 @@ async def _one_frame(reader, masked=True):
         n = struct.unpack("!H", await reader.readexactly(2))[0]
     elif n == 127:
         n = struct.unpack("!Q", await reader.readexactly(8))[0]
-    if n > MAX_MSG:
+    if n > max_msg:
         raise WsError(1009)                     # don't buffer absurd lengths
     mask = await reader.readexactly(4) if b1 & 0x80 else None
-    data = bytearray(await reader.readexactly(n))
+    data = await reader.readexactly(n)
     if mask is not None:
-        for i in range(n):
-            data[i] ^= mask[i & 3]
+        data = _unmask(data, mask)
     return b0 & 0x80, op, bytes(data)
 
 
-async def read_frame(reader, masked=True):
+async def read_frame(reader, masked=True, max_msg=MAX_MSG):
     """-> (opcode, payload) for one complete message; joins continuations."""
     parts, total, op0 = [], 0, None
     while True:
-        fin, op, data = await _one_frame(reader, masked)
+        fin, op, data = await _one_frame(reader, masked, max_msg)
         if op >= 8:                             # control frame
             if parts:
                 raise WsError(1002)
@@ -126,10 +141,101 @@ async def read_frame(reader, masked=True):
             raise WsError(1002)
         parts.append(data)
         total += len(data)
-        if total > MAX_MSG:
+        if total > max_msg:
             raise WsError(1009)
         if fin:
             return op0, b"".join(parts)
+
+
+def forwarded_peer(hdrs, peer):
+    """(ip, port) of the real client: behind Render/Cloudflare the socket
+    peer is the proxy, the client is the first X-Forwarded-For hop. Only
+    used for logs."""
+    peer = tuple(peer or ("?", 0))[:2]
+    xff = (hdrs.get("cf-connecting-ip")
+           or hdrs.get("x-forwarded-for", "").split(",")[0]).strip()
+    return (xff, peer[1]) if xff else peer
+
+
+class WsLineReader:
+    """StreamReader-like readline() over a WebSocket: the payloads of the
+    client's text/binary messages form one byte stream that is split on
+    '\\n' (a message may hold several lines or part of one). Pings are
+    answered, a close or a protocol error ends the stream (b"")."""
+
+    def __init__(self, reader, writer, max_line=SWITCH_MAX_MSG):
+        self._r = reader
+        self._w = writer
+        self._buf = bytearray()
+        self._eof = False
+        self.max_line = max_line
+
+    def _control(self, op, data):
+        try:
+            self._w.write(encode_frame(op, data))
+        except Exception:
+            pass
+
+    async def readline(self):
+        while True:
+            i = self._buf.find(b"\n")
+            if i >= 0:
+                line = bytes(self._buf[:i + 1])
+                del self._buf[:i + 1]
+                return line
+            if self._eof or len(self._buf) > self.max_line:
+                self._eof = True
+                line = bytes(self._buf)
+                self._buf.clear()
+                return line
+            try:
+                op, data = await read_frame(self._r, True, self.max_line)
+            except WsError as e:
+                self._control(8, struct.pack("!H", e.code))
+                self._eof = True
+                continue
+            except (asyncio.IncompleteReadError, ConnectionError, OSError):
+                self._eof = True
+                continue
+            if op == 8:
+                self._control(8, data[:125])
+                self._eof = True
+            elif op == 9:
+                self._control(10, data)
+            elif op in (1, 2):
+                self._buf += data
+
+
+class WsLineWriter:
+    """StreamWriter-like write()/drain()/close(): each write() becomes one
+    text message (the game protocol is ASCII JSON lines)."""
+
+    def __init__(self, writer, peer):
+        self._w = writer
+        self._peer = peer
+        self._closed = False
+
+    def write(self, data):
+        if not self._closed:
+            self._w.write(encode_frame(1, bytes(data)))
+
+    async def drain(self):
+        await self._w.drain()
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._w.write(encode_frame(8, struct.pack("!H", 1000)))
+        except Exception:
+            pass
+        self._w.close()
+
+    def get_extra_info(self, name, default=None):
+        if name == "peername":
+            return self._peer
+        return self._w.get_extra_info(name, default)
 
 
 class WsConn:
@@ -179,6 +285,7 @@ class WebBridge:
         self._feed_pending = []            # (code, entry) awaiting push
         self._httpd = None
         self._task = None
+        self.public_url = None             # e.g. https://mikumod.evanthomas.dev
 
     async def start(self):
         try:
@@ -190,11 +297,10 @@ class WebBridge:
             return
         self.port = self._httpd.sockets[0].getsockname()[1]
         self._task = asyncio.create_task(self._push_loop())
-        ip = lan_ip()
-        log(f"web UI http://{ip}:{self.port}/ (bind {self.host})")
+        url = self.public_url or f"http://{lan_ip()}:{self.port}"
+        log(f"web UI {url}/ (bind {self.host}:{self.port})")
         log(f"admin token: {self.token} "
-            f"(open http://{ip}:{self.port}/?token={self.token} "
-            f"to manage any lobby)")
+            f"(open {url}/?token={self.token} to manage any lobby)")
 
     # ------------------------------------------------- ids
     def mid(self, cid):
@@ -235,7 +341,8 @@ class WebBridge:
         lm = self.server.lobby
         now = time.time()
         s = {"t": "snapshot",
-             "server": {"name": socket.gethostname(), "now": now,
+             "server": {"name": (getattr(self.server, "name", None)
+                                 or socket.gethostname()), "now": now,
                         "started_at": self.started_at,
                         "clients_online": len(self.server.clients)},
              "consoles": [], "lobbies": []}
@@ -399,12 +506,15 @@ class WebBridge:
                                 "text/plain", [("Allow", "GET")])
             return
         path = urllib.parse.urlsplit(target).path
-        if path == "/ws":
-            if "websocket" in hdrs.get("upgrade", "").lower():
-                await self._ws_session(reader, writer, hdrs)
-            else:
+        upgrade = "websocket" in hdrs.get("upgrade", "").lower()
+        if path in ("/ws", "/switch") or (path == "/" and upgrade):
+            if not upgrade:
                 await self._respond(writer, 400, b"expected websocket upgrade",
                                     "text/plain")
+            elif path == "/switch":
+                await self._switch_session(reader, writer, hdrs)
+            else:
+                await self._ws_session(reader, writer, hdrs)
             return
         m = re.fullmatch(r"/api/avatar/([0-9a-f]{12})\.png", path)
         if m:
@@ -424,7 +534,7 @@ class WebBridge:
                       f'inline; filename="avatar_{m.group(1)}.png"')],
                     head_only=method == "HEAD")
             return
-        if path == "/api/health":
+        if path in ("/api/health", "/health"):
             await self._respond(writer, 200, b'{"ok":true}',
                                 "application/json", head_only=method == "HEAD")
             return
@@ -502,6 +612,34 @@ class WebBridge:
         await self._respond(writer, 200, body, ctype, extra, head_only)
 
     # ------------------------------------------------- websocket session
+    async def _accept_ws(self, writer, hdrs):
+        key = hdrs.get("sec-websocket-key")
+        if not key:
+            await self._respond(writer, 400, b"missing sec-websocket-key",
+                                "text/plain")
+            return False
+        writer.write(("HTTP/1.1 101 Switching Protocols\r\n"
+                      "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                      f"Sec-WebSocket-Accept: {ws_accept(key)}\r\n\r\n"
+                      ).encode())
+        await writer.drain()
+        return True
+
+    async def _switch_session(self, reader, writer, hdrs):
+        """Console over WebSocket -> mp_server's line protocol handler."""
+        handle = getattr(self.server, "handle", None)
+        if handle is None:
+            await self._respond(writer, 404, b"not found", "text/plain")
+            return
+        if not await self._accept_ws(writer, hdrs):
+            return
+        peer = forwarded_peer(hdrs, writer.get_extra_info("peername"))
+        lw = WsLineWriter(writer, peer)
+        try:
+            await handle(WsLineReader(reader, writer), lw)
+        finally:
+            lw.close()
+
     async def _ws_session(self, reader, writer, hdrs):
         origin = hdrs.get("origin")
         if origin:
@@ -511,16 +649,8 @@ class WebBridge:
             if oh.lower() != hh.lower():
                 await self._respond(writer, 403, b"bad origin", "text/plain")
                 return
-        key = hdrs.get("sec-websocket-key")
-        if not key:
-            await self._respond(writer, 400, b"missing sec-websocket-key",
-                                "text/plain")
+        if not await self._accept_ws(writer, hdrs):
             return
-        writer.write(("HTTP/1.1 101 Switching Protocols\r\n"
-                      "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-                      f"Sec-WebSocket-Accept: {ws_accept(key)}\r\n\r\n"
-                      ).encode())
-        await writer.drain()
         conn = WsConn(reader, writer)
         self.conns.add(conn)
         try:

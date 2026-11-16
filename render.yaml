@@ -1,0 +1,33 @@
+# Render Blueprint: the MegaMix multiplayer server on ONE public port.
+#   https://mikumod.evanthomas.dev/        live web dashboard (web/dist)
+#   https://mikumod.evanthomas.dev/health  health check
+#   wss://mikumod.evanthomas.dev/ws        dashboard WebSocket
+#   ws://mikumod.evanthomas.dev/switch     consoles (WebSocket over plain
+#                                          HTTP through Cloudflare, see README)
+# Local PC/LAN hosting is unchanged: `python server/mp_server.py`.
+services:
+  - type: web
+    name: mikumod
+    runtime: python
+    plan: free
+    buildCommand: npm --prefix web ci && npm --prefix web run build && pip install -r server/requirements.txt
+    startCommand: python -B -u server/mp_server.py --cloud
+    healthCheckPath: /health
+    autoDeploy: true
+    domains:
+      - mikumod.evanthomas.dev
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.3
+      - key: NODE_VERSION
+        value: 22.15.0
+      - key: MP_CLOUD
+        value: "1"
+      - key: MP_SERVER_NAME
+        value: mikumod.evanthomas.dev
+      - key: MP_PUBLIC_URL
+        value: https://mikumod.evanthomas.dev
+      # stable admin token for the dashboard (?token=...); shown in the
+      # Render dashboard under Environment
+      - key: MP_WEB_TOKEN
+        generateValue: true

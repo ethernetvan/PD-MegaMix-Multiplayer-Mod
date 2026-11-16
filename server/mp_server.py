@@ -4,12 +4,21 @@
 Protocol v1 (NDJSON, one object per line):
   C->S hello/ping/dbg_state ; S->C welcome/error/pong
 UDP discovery on --discovery-port: {"t":"discover"} -> unicast {"t":"server",...}
+
+Transports (same handler, same lobby state):
+  local (default): raw TCP on --port + UDP discovery on --discovery-port
+      for consoles on the LAN, web UI on --web-port (which also accepts
+      consoles over WebSocket on /switch).
+  cloud (--cloud, e.g. Render): ONE public port (--web-port, default
+      $PORT) carrying the web UI, /health, the browser /ws and the
+      console WebSocket /switch; no raw TCP/UDP game ports.
 """
 
 import argparse
 import asyncio
 import base64
 import json
+import os
 import secrets
 import socket
 import sys
@@ -72,10 +81,13 @@ class Client:
 
 
 class Server:
-    def __init__(self, port, disc_port, admin_port=7790, countdown=0.0):
+    def __init__(self, port, disc_port, admin_port=7790, countdown=0.0,
+                 cloud=False, name=None):
         self.port = port
         self.disc_port = disc_port
         self.admin_port = admin_port
+        self.cloud = cloud            # single public port, no LAN listeners
+        self.name = name or socket.gethostname()
         self.clients = {}          # cid -> Client
         self.known_cids = set()    # ever seen
         self.first_mod_version = None
@@ -376,28 +388,44 @@ class Server:
 
     async def run(self):
         loop = asyncio.get_running_loop()
-        asyncio.get_running_loop().create_task(self.ticker())
-        transport, _ = await loop.create_datagram_endpoint(
-            lambda: DiscoveryProtocol(self), local_addr=("0.0.0.0", self.disc_port))
-        srv = await asyncio.start_server(self.handle, "0.0.0.0", self.port,
-                                        limit=1 << 17)
-        adm = await asyncio.start_server(self.admin_handle, "127.0.0.1",
-                                         self.admin_port)
+        loop.create_task(self.ticker())
+        closers = []
+        if not self.cloud:
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda: DiscoveryProtocol(self),
+                local_addr=("0.0.0.0", self.disc_port))
+            srv = await asyncio.start_server(self.handle, "0.0.0.0", self.port,
+                                            limit=1 << 17)
+            closers += [transport, srv]
+        try:
+            closers.append(await asyncio.start_server(
+                self.admin_handle, "127.0.0.1", self.admin_port))
+        except OSError as e:
+            if not self.cloud:
+                raise
+            log(f"admin port 127.0.0.1:{self.admin_port} unavailable ({e})")
         if self.web:
             await self.web.start()
-        log(f"mp_server listening TCP :{self.port} UDP-discovery :{self.disc_port} admin 127.0.0.1:{self.admin_port}")
-        log(f"LAN addresses: {', '.join(netcheck.lan_ipv4()) or 'none'} - "
-            f"consoles on the same network find this server automatically "
-            f"(UDP {self.disc_port})")
-        threading.Thread(target=netcheck.check_firewall, args=(log,),
-                         daemon=True).start()
+        if self.cloud:
+            if not (self.web and self.web._httpd):
+                raise SystemExit("cloud mode needs the web port (--web-port/$PORT)")
+            log(f"mp_server cloud mode: one port :{self.web.port} - web UI, "
+                f"/health, browser /ws, consoles on WebSocket /switch "
+                f"(no LAN TCP/UDP listeners)")
+        else:
+            log(f"mp_server listening TCP :{self.port} UDP-discovery :{self.disc_port} admin 127.0.0.1:{self.admin_port}")
+            log(f"LAN addresses: {', '.join(netcheck.lan_ipv4()) or 'none'} - "
+                f"consoles on the same network find this server automatically "
+                f"(UDP {self.disc_port})")
+            threading.Thread(target=netcheck.check_firewall, args=(log,),
+                             daemon=True).start()
         try:
-            await srv.serve_forever()
+            await asyncio.Event().wait()
         except asyncio.CancelledError:
             pass
         finally:
-            transport.close()
-            adm.close()
+            for c in closers:
+                c.close()
 
 
 class DiscoveryProtocol(asyncio.DatagramProtocol):
@@ -416,7 +444,8 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         if msg.get("t") != "discover":
             return
         reply = {"t": "server", "proto": PROTO, "port": self.server.port,
-                 "name": socket.gethostname()}
+                 "name": getattr(self.server, "name", None)
+                 or socket.gethostname()}
         self.transport.sendto((json.dumps(reply) + "\n").encode(), addr)
         # a searching console probes several addresses per round
         now = time.time()
@@ -425,17 +454,34 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
             log(f"DISCOVER from {addr[0]}:{addr[1]} -> replied")
 
 
+def env_flag(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--cloud", action="store_true", default=env_flag("MP_CLOUD"),
+                    help="single-port cloud mode (Render): only --web-port is "
+                         "opened; consoles connect over WebSocket /switch "
+                         "(also $MP_CLOUD=1)")
     ap.add_argument("--port", type=int, default=7777)
     ap.add_argument("--discovery-port", type=int, default=7778)
     ap.add_argument("--admin-port", type=int, default=7790)
     ap.add_argument("--mod-version-expected", default=None)
-    ap.add_argument("--web-port", type=int, default=8080,
-                    help="web UI port (0 disables)")
+    ap.add_argument("--web-port", type=int,
+                    default=int(os.environ.get("PORT", 8080)),
+                    help="web UI port, also /switch for consoles over "
+                         "WebSocket (default $PORT or 8080; 0 disables)")
     ap.add_argument("--web-host", default="0.0.0.0")
-    ap.add_argument("--web-token", default=None,
-                    help="admin token (default: random each start)")
+    ap.add_argument("--web-token", default=os.environ.get("MP_WEB_TOKEN"),
+                    help="admin token (default $MP_WEB_TOKEN, else random "
+                         "each start)")
+    ap.add_argument("--server-name", default=os.environ.get("MP_SERVER_NAME"),
+                    help="name shown in the web UI (default: host name)")
+    ap.add_argument("--public-url",
+                    default=(os.environ.get("MP_PUBLIC_URL")
+                             or os.environ.get("RENDER_EXTERNAL_URL")),
+                    help="public base URL printed in the log")
     ap.add_argument("--lobby-max", type=int, default=8,
                     help="max members per lobby (consoles support 8)")
     ap.add_argument("--no-avatar-relay", action="store_true",
@@ -449,13 +495,17 @@ def main():
     global MOD_VERSION_EXPECTED
     MOD_VERSION_EXPECTED = args.mod_version_expected
 
+    if args.cloud and not args.web_port:
+        ap.error("--cloud needs a web port (--web-port or $PORT)")
     srv = Server(args.port, args.discovery_port, args.admin_port,
-                 countdown=args.countdown)
+                 countdown=args.countdown, cloud=args.cloud,
+                 name=args.server_name)
     srv.lobby.max_members = args.lobby_max
     srv.avatar_relay = not args.no_avatar_relay
     if args.web_port:
         srv.web = WebBridge(srv, args.web_host, args.web_port,
                             args.web_token or secrets.token_urlsafe(9))
+        srv.web.public_url = (args.public_url or "").rstrip("/") or None
     try:
         asyncio.run(srv.run())
     except KeyboardInterrupt:

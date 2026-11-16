@@ -11,8 +11,8 @@ from types import SimpleNamespace
 from avatars import AvatarStore
 from lobby import LobbyManager
 from mp_server import Server as RealServer
-from web_bridge import (WebBridge, WsError, encode_frame, read_frame,
-                        ws_accept)
+from web_bridge import (WebBridge, WsError, WsLineReader, encode_frame,
+                        forwarded_peer, read_frame, ws_accept)
 
 
 def cframe(op, payload, fin=True):
@@ -563,10 +563,10 @@ class Integration(unittest.IsolatedAsyncioTestCase):
             web._httpd.close()
             web._task.cancel()
 
-    async def ws_open(self, headers=None):
+    async def ws_open(self, headers=None, path="/ws"):
         r, w = await asyncio.open_connection("127.0.0.1", self.port)
         key = base64.b64encode(os.urandom(16)).decode()
-        h = (f"GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
+        h = (f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\n"
              "Upgrade: websocket\r\nConnection: Upgrade\r\n"
              f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n")
         for k, v in (headers or {}).items():
@@ -656,6 +656,167 @@ class Integration(unittest.IsolatedAsyncioTestCase):
         r, w, head, _ = await self.ws_open(
             {"Origin": f"http://127.0.0.1:{self.port}"})
         self.assertIn("101", head)
+        w.close()
+
+    async def test_health_alias(self):
+        for p in ("/health", "/api/health"):
+            head, body = await self.http(p)
+            self.assertIn("200", head, p)
+            self.assertEqual(json.loads(body), {"ok": True})
+
+    async def test_root_ws_upgrade_is_browser_bridge(self):
+        r, w, head, _ = await self.ws_open(path="/")
+        self.assertIn("101", head)
+        hello = await self.ws_msg(r, "hello")
+        self.assertIn("feed", hello)
+        w.close()
+
+    async def test_switch_needs_upgrade_and_handler(self):
+        head, _ = await self.http("/switch")
+        self.assertIn("400", head)
+        r, w, head, _ = await self.ws_open(path="/switch")
+        self.assertIn("404", head)               # FakeServer has no handle()
+        w.close()
+
+
+class FakeWriter:
+    def __init__(self):
+        self.data = b""
+
+    def write(self, b):
+        self.data += b
+
+
+class LineReader(unittest.IsolatedAsyncioTestCase):
+    async def test_lines_across_and_within_frames(self):
+        w = FakeWriter()
+        lr = WsLineReader(reader_of(
+            cframe(1, b'{"a":1}\n{"b"') + cframe(9, b"hb")
+            + cframe(2, b':2}\n') + cframe(1, b"tail")), w)
+        self.assertEqual(await lr.readline(), b'{"a":1}\n')
+        self.assertEqual(await lr.readline(), b'{"b":2}\n')
+        self.assertEqual(w.data, encode_frame(10, b"hb"))   # ping answered
+        self.assertEqual(await lr.readline(), b"tail")       # eof flushes
+        self.assertEqual(await lr.readline(), b"")
+
+    async def test_close_and_errors_end_stream(self):
+        w = FakeWriter()
+        lr = WsLineReader(reader_of(cframe(8, struct.pack("!H", 1000))
+                                    + cframe(1, b"late\n")), w)
+        self.assertEqual(await lr.readline(), b"")
+        self.assertTrue(w.data.startswith(b"\x88"))           # close echoed
+        lr = WsLineReader(reader_of(encode_frame(1, b"x\n")), FakeWriter())
+        self.assertEqual(await lr.readline(), b"")           # unmasked
+        lr = WsLineReader(reader_of(cframe(1, b"y" * 64)), FakeWriter(),
+                          max_line=16)
+        self.assertEqual(await lr.readline(), b"")           # too big
+
+    def test_forwarded_peer(self):
+        self.assertEqual(forwarded_peer({}, ("10.0.0.2", 5, 0, 0)),
+                         ("10.0.0.2", 5))
+        self.assertEqual(forwarded_peer(
+            {"x-forwarded-for": "1.2.3.4, 10.0.0.1"}, ("10.0.0.2", 5)),
+            ("1.2.3.4", 5))
+        self.assertEqual(forwarded_peer(
+            {"cf-connecting-ip": "5.6.7.8", "x-forwarded-for": "1.2.3.4"},
+            ("10.0.0.2", 5)), ("5.6.7.8", 5))
+
+
+class SwitchOverWs(unittest.IsolatedAsyncioTestCase):
+    """Console protocol on /switch of a real mp_server in cloud mode."""
+
+    async def asyncSetUp(self):
+        import socket as sk
+        import mp_server
+        mp_server.log = lambda m: None
+        # an occupied port: cloud mode must never bind the LAN game port
+        self.block = sk.socket()
+        self.block.bind(("127.0.0.1", 0))
+        self.block.listen()
+        busy = self.block.getsockname()[1]
+        self.srv = RealServer(busy, busy, admin_port=0, cloud=True,
+                              name="cloud-test")
+        self.srv.web = WebBridge(self.srv, "127.0.0.1", 0, "tok",
+                                 static_dir=tempfile.mkdtemp())
+        self.task = asyncio.create_task(self.srv.run())
+        for _ in range(100):
+            if self.srv.web._httpd:
+                break
+            await asyncio.sleep(0.01)
+        self.port = self.srv.web.port
+
+    async def asyncTearDown(self):
+        self.task.cancel()
+        try:
+            await self.task
+        except asyncio.CancelledError:
+            pass
+        self.srv.web._httpd.close()
+        self.srv.web._task.cancel()
+        self.block.close()
+
+    async def open(self, extra=""):
+        r, w = await asyncio.open_connection("127.0.0.1", self.port)
+        key = base64.b64encode(os.urandom(16)).decode()
+        w.write((f"GET /switch HTTP/1.1\r\nHost: mikumod.evanthomas.dev\r\n"
+                 "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                 f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+                 f"{extra}\r\n").encode())
+        await w.drain()
+        head = (await r.readuntil(b"\r\n\r\n")).decode("latin-1")
+        self.assertIn("101", head)
+        self.assertIn(ws_accept(key), head)
+        return r, w
+
+    async def lines(self, r, want):
+        buf = b""
+        for _ in range(50):
+            op, data = await asyncio.wait_for(read_frame(r, masked=False), 5)
+            self.assertEqual(op, 1)
+            buf += data
+            msgs = [json.loads(x) for x in buf.split(b"\n") if x.strip()]
+            for m in msgs:
+                if m.get("t") == want:
+                    return m
+        raise AssertionError(f"no {want}")
+
+    async def test_hello_ping_lobby_and_drop(self):
+        r, w = await self.open("X-Forwarded-For: 203.0.113.9\r\n")
+        hello = json.dumps({"t": "hello", "proto": 1, "cid": "c0ffee",
+                            "name": "Miku", "mod": "m1"}) + "\n"
+        w.write(cframe(1, hello[:10].encode()))        # split across frames
+        w.write(cframe(1, hello[10:].encode()))
+        await w.drain()
+        welcome = await self.lines(r, "welcome")
+        self.assertEqual(welcome["cid"], "c0ffee")
+        self.assertIn("c0ffee", self.srv.clients)
+        self.assertEqual(self.srv.clients["c0ffee"].addr[0], "203.0.113.9")
+        # two lines in one message, plus a big (avatar-sized) junk line
+        w.write(cframe(1, b'{"t":"ping","seq":7}\n{"t":"lobby_create"}\n'))
+        w.write(cframe(1, b'{"t":"dbg_x","pad":"' + b"a" * 70000 + b'"}\n'))
+        await w.drain()
+        pong = await self.lines(r, "pong")
+        self.assertEqual(pong["seq"], 7)
+        self.assertEqual(len(self.srv.lobby.lobbies), 1)
+        # the browser dashboard on the same port sees the console + room
+        snap = self.srv.web.snapshot()
+        self.assertEqual(snap["server"]["name"], "cloud-test")
+        self.assertEqual(snap["consoles"][0]["name"], "Miku")
+        w.write(cframe(8, struct.pack("!H", 1000)))
+        await w.drain()
+        for _ in range(100):
+            if "c0ffee" not in self.srv.clients:
+                break
+            await asyncio.sleep(0.01)
+        self.assertNotIn("c0ffee", self.srv.clients)
+        w.close()
+
+    async def test_proto_mismatch_rejected(self):
+        r, w = await self.open()
+        w.write(cframe(1, b'{"t":"hello","proto":99,"cid":"x"}\n'))
+        await w.drain()
+        err = await self.lines(r, "error")
+        self.assertEqual(err["code"], "proto_mismatch")
         w.close()
 
 

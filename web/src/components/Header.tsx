@@ -1,9 +1,13 @@
+import { endpointLabel, pageWsTarget } from "../api/socket";
 import { useStore } from "../store";
+
+const target = pageWsTarget();
 
 export default function Header({ onLogin }: { onLogin: () => void }) {
   const { state, logout } = useStore();
   const you = state.you;
   const snap = state.snapshot;
+  const where = endpointLabel(target);
   return (
     <header className="hdr">
       <a className="title logo" href="#/" aria-label="MegaMix Multiplayer">
@@ -16,6 +20,12 @@ export default function Header({ onLogin }: { onLogin: () => void }) {
         </span>
       </a>
       {snap && <span className="srv">{snap.server.name}</span>}
+      <span
+        className={`endpoint ${target.remote ? "remote" : "local"}`}
+        title={`Dashboard connected to ${target.url}`}
+      >
+        {where}
+      </span>
       <span className={`pill ${state.status}`}>
         <i className="pill-dot" aria-hidden />
         {state.status === "live" ? "live" : state.status}
