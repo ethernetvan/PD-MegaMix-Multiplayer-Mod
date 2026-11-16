@@ -43,6 +43,9 @@ using FnSendTo        = int64_t (*)(int, const void*, uint64_t, int, const void*
 using FnInetPton      = int (*)(int, const char*, void*);
 using FnInetHtons     = uint16_t (*)(uint16_t);
 using FnGetLastErrno  = int (*)();
+using FnGetAddrInfo   = int (*)(const char*, const char*, const void*, void**);
+using FnFreeAddrInfo  = void (*)(void*);
+using FnGetHostByName = void* (*)(const char*);
 
 using FnNifmInit      = uint32_t (*)();
 using FnNifmSubmit    = void (*)();
@@ -67,6 +70,9 @@ static FnSendTo       p_SendTo        = nullptr;
 static FnInetPton     p_InetPton      = nullptr;
 static FnInetHtons    p_InetHtons     = nullptr;
 static FnGetLastErrno p_GetLastErrno  = nullptr;
+static FnGetAddrInfo  p_GetAddrInfo   = nullptr;   /* optional (cloud mode) */
+static FnFreeAddrInfo p_FreeAddrInfo  = nullptr;
+static FnGetHostByName p_GetHostByName = nullptr;
 
 static FnNifmInit     p_NifmInit      = nullptr;
 static FnNifmSubmit   p_NifmSubmit    = nullptr;
@@ -118,6 +124,15 @@ bool ApiResolveAll() {
     /* optional: without it discovery assumes a /24 */
     p_NifmIpCfg = reinterpret_cast<FnNifmIpCfg>(
         ResolveSymbol("_ZN2nn4nifm22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_"));
+    /* optional: only the online (cloud) server needs name resolution */
+    p_GetAddrInfo = reinterpret_cast<FnGetAddrInfo>(
+        ResolveSymbol("_ZN2nn6socket11GetAddrInfoEPKcS2_PK8addrinfoPPS3_"));
+    p_FreeAddrInfo = reinterpret_cast<FnFreeAddrInfo>(
+        ResolveSymbol("_ZN2nn6socket12FreeAddrInfoEP8addrinfo"));
+    p_GetHostByName = reinterpret_cast<FnGetHostByName>(
+        ResolveSymbol("_ZN2nn6socket13GetHostByNameEPKc"));
+    if (!p_GetAddrInfo && !p_GetHostByName)
+        WriteLog("[MP] no resolver symbols: online server unavailable\n");
 
     return !missing;
 }
@@ -274,6 +289,56 @@ uint16_t SockInetHtons(uint16_t v) {
 }
 int SockGetLastErrno() {
     return p_GetLastErrno ? p_GetLastErrno() : 0;
+}
+
+/* BSD layouts (the Horizon socket API is BSD-derived: sockaddr has sin_len) */
+struct MpAddrInfo {
+    int         ai_flags, ai_family, ai_socktype, ai_protocol;
+    uint32_t    ai_addrlen;
+    char*       ai_canonname;
+    void*       ai_addr;
+    MpAddrInfo* ai_next;
+};
+struct MpHostEnt {
+    char*  h_name;
+    char** h_aliases;
+    int    h_addrtype, h_length;
+    char** h_addr_list;
+};
+
+bool SockResolveIpv4(const char* host, uint32_t* out) {
+    if (!host || !*host) return false;
+    if (SockInetPton(MP_AF_INET, host, out) == 1) return true;
+    if (p_GetAddrInfo) {
+        MpAddrInfo hints = {};
+        hints.ai_family = MP_AF_INET;
+        hints.ai_socktype = MP_SOCK_STREAM;
+        void* res = nullptr;
+        int r = p_GetAddrInfo(host, nullptr, &hints, &res);
+        bool ok = false;
+        for (auto* ai = (MpAddrInfo*)res; r == 0 && ai && !ok; ai = ai->ai_next) {
+            auto* sa = (const MpSockAddrIn*)ai->ai_addr;
+            if (ai->ai_family == MP_AF_INET && sa && sa->sin_family == MP_AF_INET &&
+                sa->sin_addr != 0) {
+                *out = sa->sin_addr;
+                ok = true;
+            }
+        }
+        if (res && p_FreeAddrInfo) p_FreeAddrInfo(res);
+        WriteLog("[MP] GetAddrInfo(%s) -> %d%s\n", host, r, ok ? "" : " (no IPv4)");
+        if (ok) return true;
+    }
+    if (p_GetHostByName) {
+        auto* he = (MpHostEnt*)p_GetHostByName(host);
+        if (he && he->h_addrtype == MP_AF_INET && he->h_length == 4 &&
+            he->h_addr_list && he->h_addr_list[0]) {
+            memcpy(out, he->h_addr_list[0], 4);
+            WriteLog("[MP] GetHostByName(%s) ok\n", host);
+            return true;
+        }
+        WriteLog("[MP] GetHostByName(%s) failed\n", host);
+    }
+    return false;
 }
 
 bool NifmInitialize() {

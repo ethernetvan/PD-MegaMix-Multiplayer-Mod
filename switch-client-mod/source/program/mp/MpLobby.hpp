@@ -54,6 +54,8 @@ void DrawEmergency();
 void CmdLobbyCreate();
 void CmdLobbyJoin(const char* code);
 void CmdLobbyLeave();
+/* the console switches servers: tell the old one, leave the room locally */
+void LeaveForServerSwitch();
 void CmdSetName(const char* name);
 
 /* dbg_cmd sel_lists: dumps the 8 sorted_pv_lists of the current sort

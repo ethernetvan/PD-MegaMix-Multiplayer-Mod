@@ -40,6 +40,9 @@ struct Config {
     static std::string mpClientId;
     static std::string mpNotifyStyle;   /* "avatars" | "text" | "off" */
     static bool mpRemoteAvatars;        /* show other players' uploaded portraits */
+    static std::string mpServerMode;    /* "local" (LAN search / server_ip) | "cloud" */
+    static std::string mpCloudHost;     /* online server, e.g. mikumod.evanthomas.dev */
+    static int mpCloudPort;             /* plain-HTTP WebSocket port (80) */
 
     // Graphics
     static bool disableAdp;

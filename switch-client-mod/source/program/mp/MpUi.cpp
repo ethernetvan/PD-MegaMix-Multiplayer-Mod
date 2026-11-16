@@ -1,6 +1,7 @@
 #include "MpLobby.hpp"
 #include "MpAvatar.hpp"
 #include "MpInput.hpp"
+#include "MpNet.hpp"
 #include "../AutoPlay.hpp"
 #include "../Config.hpp"
 #include "../FontLoader.hpp"
@@ -849,10 +850,14 @@ static float GuideReserve(const Ui& u, const GuideEnt* es, int n) {
 static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     float top = Header(u, a, b, "Multiplayer", true);
     bool online = s.connected;
+    mp::MpStatus ns;
+    mp::GetStatus(&ns);
 
-    /* footer pill: MULTIPLAYER: state */
+    /* footer pill: MULTIPLAYER: state (+ which server) */
     const char* st = !Config::mpEnabled ? "MULTIPLAYER: OFF"
-                   : (online ? "MULTIPLAYER: CONNECTED" : "MULTIPLAYER: DISCONNECTED");
+                   : !online ? "MULTIPLAYER: DISCONNECTED"
+                   : ns.cloud ? "MULTIPLAYER: CONNECTED (ONLINE)"
+                              : "MULTIPLAYER: CONNECTED (LAN)";
     ImU32 stc = !Config::mpEnabled ? kDim : (online ? kGreen : kRed);
     float pillH = 40 * u.k;
     ImVec2 ps = u.Size(st, 1.3f);
@@ -863,8 +868,18 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     u.TextCentered(pa, pb, st, 1.3f, stc);
 
     /* offline tip, centred between the cards and the pill */
+    char tipBuf[160];
     const char* tip = !Config::mpEnabled ? "Set enabled = true in config.toml, then restart"
                     : (!online ? "Looking for the server..." : nullptr);
+    if (Config::mpEnabled && !online && ns.cloud) {
+        if (ns.state == mp::MpState::Error && ns.last_error[0])
+            snprintf(tipBuf, sizeof(tipBuf), "Can't reach %s (%s) - retrying...",
+                     mp::CloudHost(), ns.last_error);
+        else
+            snprintf(tipBuf, sizeof(tipBuf),
+                     "Connecting to %s (waking server, up to 60s)...", mp::CloudHost());
+        tip = tipBuf;
+    }
 
     /* three cards */
     float gap = 22 * u.k;
@@ -1337,6 +1352,26 @@ static void DrawRoomConfig(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
 }
 
 /* ----------------------------------------------------------- OPTIONS */
+/* one radio card of an OPTIONS row; true when picked (not already set) */
+static bool OptCard(const Ui& u, ImVec2 oa, ImVec2 ob, bool sel,
+                    const char* label, const char* desc) {
+    const float r = 12 * u.k;
+    int fi = u.Focus(oa, ob);
+    bool hov = u.FHover(fi);
+    u.dl->AddRectFilled(oa, ob, sel ? kAccentBg : (hov ? kCardHov : kCard), r);
+    u.dl->AddRect(oa, ob, (sel || hov) ? kAccent : kLine, r, 0, (sel || hov) ? 2.5f * u.k : 1.2f);
+    if (hov && s_padMode) u.Ring(oa, ob, r);
+    ImVec2 rc(oa.x + 24 * u.k, oa.y + 26 * u.k);
+    u.dl->AddCircle(rc, 11 * u.k, sel ? kAccent : kMuted, 24, 2.0f * u.k);
+    if (sel) u.dl->AddCircleFilled(rc, 6 * u.k, kAccent, 24);
+    ImVec2 ls = u.Size(label, 1.6f);
+    u.Text(ImVec2(oa.x + 44 * u.k, rc.y - ls.y * 0.5f), label, 1.6f, kText);
+    char d[96];
+    u.Fit(desc, ob.x - oa.x - 28 * u.k, 1.15f, d, sizeof(d));
+    u.Text(ImVec2(oa.x + 14 * u.k, oa.y + 50 * u.k), d, 1.15f, kMuted);
+    return u.FActivated(fi) && !sel;
+}
+
 static void DrawOptions(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     float top = Header(u, a, b, "OPTIONS", false);
     float bh = 48 * u.k, bw = 150 * u.k;
@@ -1345,64 +1380,78 @@ static void DrawOptions(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         sound::PlayCancelSE();
         s_screen = InLobby() ? SC_ROOM : SC_HOME;
     }
-    float y = top + 22 * u.k;
-    u.Text(ImVec2(a.x + 30 * u.k, y), "Notifications", 1.6f, kText);
-    y += 34 * u.k;
-    u.Text(ImVec2(a.x + 30 * u.k, y), "How other players' events show up during a song", 1.15f, kMuted);
-    y += 32 * u.k;
+    const float x0 = a.x + 30 * u.k;
+    const float ow = (b.x - a.x - 60 * u.k - 2 * 18 * u.k) / 3.0f, oh = 80 * u.k;
+    float y = top + 14 * u.k;
+    auto section = [&](const char* title, const char* sub) {
+        u.Text(ImVec2(x0, y), title, 1.5f, kText);
+        y += 30 * u.k;
+        u.Text(ImVec2(x0, y), sub, 1.1f, kMuted);
+        y += 26 * u.k;
+    };
+    auto col = [&](int i, ImVec2* oa, ImVec2* ob) {
+        *oa = ImVec2(x0 + i * (ow + 18 * u.k), y);
+        *ob = ImVec2(oa->x + ow, oa->y + oh);
+    };
+    ImVec2 oa, ob;
 
+    /* Server: LAN search vs the online server (focus 1..2) */
+    section("Server", "Where this console finds other players");
+    char online[96];
+    snprintf(online, sizeof(online), "%s (internet)", mp::CloudHost());
+    const bool cloud = mp::IsCloudMode();
+    for (int i = 0; i < 2; i++) {
+        col(i, &oa, &ob);
+        if (OptCard(u, oa, ob, cloud == (i == 1), i ? "ONLINE" : "LOCAL",
+                    i ? online : "PC server on this network (LAN)")) {
+            sound::PlaySelectSE();
+            mp::SetCloudMode(i == 1);
+            SystemBanner(i ? "Online server selected - connecting..."
+                           : "Local server selected - searching the network...");
+        }
+    }
+    {   /* third column: what the connection is doing right now */
+        mp::MpStatus ns;
+        mp::GetStatus(&ns);
+        col(2, &oa, &ob);
+        const char* l1 = s.connected ? "Connected"
+                       : ns.cloud ? (ns.state == mp::MpState::Error ? "Retrying..."
+                                                                    : "Connecting (up to 60s)...")
+                                  : "Searching...";
+        u.Text(ImVec2(oa.x + 6 * u.k, oa.y + 14 * u.k), l1, 1.3f,
+               s.connected ? kGreen : kYellow);
+        char l2[96];
+        const char* src = (!s.connected && ns.state == mp::MpState::Error && ns.last_error[0])
+                        ? ns.last_error : ns.server;
+        u.Fit(src, ow - 12 * u.k, 1.1f, l2, sizeof(l2));
+        u.Text(ImVec2(oa.x + 6 * u.k, oa.y + 46 * u.k), l2, 1.1f, kMuted);
+    }
+    y += oh + 14 * u.k;
+
+    /* Notifications (focus 3..5) */
+    section("Notifications", "How other players' events show up during a song");
     struct Opt { const char* label; const char* desc; } nopts[3] = {
         { "AVATARS", "Portrait pop-ups at the screen edge" },
         { "TEXT",    "Short text banners" },
         { "OFF",     "No player notifications" } };
-    float ow = (b.x - a.x - 60 * u.k - 2 * 18 * u.k) / 3.0f, oh = 104 * u.k;
-    for (int i = 0; i < 3; i++) {                        /* focus 1..3 */
-        ImVec2 oa(a.x + 30 * u.k + i * (ow + 18 * u.k), y), ob(oa.x + ow, oa.y + oh);
-        bool sel = NotifyStyle() == i;
-        int fi = u.Focus(oa, ob);
-        bool hov = u.FHover(fi);
-        u.dl->AddRectFilled(oa, ob, sel ? kAccentBg : (hov ? kCardHov : kCard), 12 * u.k);
-        u.dl->AddRect(oa, ob, (sel || hov) ? kAccent : kLine, 12 * u.k, 0, (sel || hov) ? 2.5f * u.k : 1.2f);
-        if (hov && s_padMode) u.Ring(oa, ob, 12 * u.k);
-        ImVec2 rc(oa.x + 24 * u.k, oa.y + 30 * u.k);
-        u.dl->AddCircle(rc, 11 * u.k, sel ? kAccent : kMuted, 24, 2.0f * u.k);
-        if (sel) u.dl->AddCircleFilled(rc, 6 * u.k, kAccent, 24);
-        ImVec2 ls = u.Size(nopts[i].label, 1.6f);
-        u.Text(ImVec2(oa.x + 44 * u.k, rc.y - ls.y * 0.5f), nopts[i].label, 1.6f, kText);
-        char desc[96];
-        u.Fit(nopts[i].desc, ow - 28 * u.k, 1.15f, desc, sizeof(desc));
-        u.Text(ImVec2(oa.x + 14 * u.k, oa.y + 62 * u.k), desc, 1.15f, kMuted);
-        if (u.FActivated(fi) && !sel) {
+    for (int i = 0; i < 3; i++) {
+        col(i, &oa, &ob);
+        if (OptCard(u, oa, ob, NotifyStyle() == i, nopts[i].label, nopts[i].desc)) {
             sound::PlaySelectSE();
             SetNotifyStyle(i);
         }
     }
-    y += oh + 22 * u.k;
+    y += oh + 14 * u.k;
 
-    u.Text(ImVec2(a.x + 30 * u.k, y), "Custom portraits", 1.6f, kText);
-    y += 34 * u.k;
-    u.Text(ImVec2(a.x + 30 * u.k, y), "Portraits of modules this console doesn't have", 1.15f, kMuted);
-    y += 32 * u.k;
-    struct Opt2 { const char* label; const char* desc; } popts[2] = {
+    /* Custom portraits (focus 6..7) */
+    section("Custom portraits", "Portraits of modules this console doesn't have");
+    Opt popts[2] = {
         { "OFF", "Show that character's default portrait" },
         { "ON",  "Download the image the other console sends" } };
-    for (int i = 0; i < 2; i++) {                        /* focus 4..5 */
-        ImVec2 oa(a.x + 30 * u.k + i * (ow + 18 * u.k), y), ob(oa.x + ow, oa.y + oh);
-        bool sel = Config::mpRemoteAvatars == (i == 1);
-        int fi = u.Focus(oa, ob);
-        bool hov = u.FHover(fi);
-        u.dl->AddRectFilled(oa, ob, sel ? kAccentBg : (hov ? kCardHov : kCard), 12 * u.k);
-        u.dl->AddRect(oa, ob, (sel || hov) ? kAccent : kLine, 12 * u.k, 0, (sel || hov) ? 2.5f * u.k : 1.2f);
-        if (hov && s_padMode) u.Ring(oa, ob, 12 * u.k);
-        ImVec2 rc(oa.x + 24 * u.k, oa.y + 30 * u.k);
-        u.dl->AddCircle(rc, 11 * u.k, sel ? kAccent : kMuted, 24, 2.0f * u.k);
-        if (sel) u.dl->AddCircleFilled(rc, 6 * u.k, kAccent, 24);
-        ImVec2 ls = u.Size(popts[i].label, 1.6f);
-        u.Text(ImVec2(oa.x + 44 * u.k, rc.y - ls.y * 0.5f), popts[i].label, 1.6f, kText);
-        char desc[96];
-        u.Fit(popts[i].desc, ow - 28 * u.k, 1.15f, desc, sizeof(desc));
-        u.Text(ImVec2(oa.x + 14 * u.k, oa.y + 62 * u.k), desc, 1.15f, kMuted);
-        if (u.FActivated(fi) && !sel) {
+    for (int i = 0; i < 2; i++) {
+        col(i, &oa, &ob);
+        if (OptCard(u, oa, ob, Config::mpRemoteAvatars == (i == 1), popts[i].label,
+                    popts[i].desc)) {
             sound::PlaySelectSE();
             SetRemoteAvatars(i == 1);
         }
@@ -1560,7 +1609,7 @@ void DrawPanel() {
                 s_focusIdx = fromOptions ? 4          /* back on the Options button */
                            : (s.connected ? 2 : 1);   /* [X, EDIT, CREATE, JOIN, OPTIONS] */
             else if (s_screen == SC_OPTIONS)
-                s_focusIdx = 1 + NotifyStyle();       /* [Done, n1..n3, p1..p2] */
+                s_focusIdx = 1 + (mp::IsCloudMode() ? 1 : 0); /* [Done, s1..s2, n1..n3, p1..p2] */
             else if (s_screen == SC_ROOM)
                 s_focusIdx = (strcmp(s.ownerCid, s.myCid) == 0) ? 2 : 1;
             else if (s_screen == SC_ROOM_CONFIG)

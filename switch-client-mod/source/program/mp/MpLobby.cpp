@@ -2008,6 +2008,12 @@ void CmdLobbyLeave() {
     if (!s_connected && s_code[0]) { LocalLeave("Left the room"); return; }
     SendLine("{\"t\":\"lobby_leave\"}");
 }
+void LeaveForServerSwitch() {
+    std::lock_guard<std::recursive_mutex> lk(s_mtx);
+    if (!s_code[0]) return;
+    if (s_connected) SendLine("{\"t\":\"lobby_leave\"}");
+    LocalLeave("Server changed - left the room");
+}
 bool OverlayOpen() { return s_overlayOpen; }
 void ToggleOverlay() { s_overlayOpen = !s_overlayOpen; }
 void SetOverlayOpen(bool open) {

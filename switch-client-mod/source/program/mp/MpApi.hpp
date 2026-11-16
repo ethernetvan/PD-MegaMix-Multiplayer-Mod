@@ -80,6 +80,9 @@ int64_t  SockSendTo(int fd, const void* buf, uint64_t len, int flags, const void
 int      SockInetPton(int af, const char* str, void* dst);
 uint16_t SockInetHtons(uint16_t v);
 int      SockGetLastErrno();
+/* host name or dotted quad -> IPv4 (network order) via the SDK resolver
+ * (GetAddrInfo, else GetHostByName). Blocking: net thread only. */
+bool     SockResolveIpv4(const char* host, uint32_t* out_be_addr);
 
 /* --- nifm wrappers --- */
 bool NifmInitialize();

@@ -33,6 +33,14 @@ static char         g_server[64]   = "";
 static int          g_rtt          = -1;
 static char         g_lastError[96] = "";
 static std::atomic<uint32_t> g_connectCount{0};
+/* server selection, mirrored from Config::mpServerMode (the net thread
+ * never reads the std::string); g_modeGen bumps on every change */
+static std::atomic<bool>     g_cloud{false};
+static std::atomic<uint32_t> g_modeGen{0};
+static const char kCloudPath[] = "/switch";
+
+bool IsCloudMode() { return g_cloud.load(std::memory_order_acquire); }
+const char* CloudHost() { return Config::mpCloudHost.c_str(); }
 
 const char* StateName(MpState s) {
     switch (s) {
@@ -52,6 +60,7 @@ MpState GetState() { return g_state.load(std::memory_order_acquire); }
 void GetStatus(MpStatus* out) {
     out->state = GetState();
     out->connect_count = g_connectCount.load();
+    out->cloud = IsCloudMode();
     std::lock_guard<std::mutex> lk(g_statusMtx);
     size_t ns_ = strnlen(g_server, sizeof(g_server));
     size_t ne_ = strnlen(g_lastError, sizeof(g_lastError));
@@ -179,7 +188,7 @@ static bool IsConnected() {
     return e == MP_EISCONN || e == 56;
 }
 
-static bool SendAll(const char* data, size_t len) {
+static bool SendRaw(const char* data, size_t len) {
     size_t off = 0;
     uint64_t deadline = NowMs() + 1000;
     while (off < len) {
@@ -198,6 +207,144 @@ static bool SendAll(const char* data, size_t len) {
         return false;
     }
     return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* WebSocket transport (online server): RFC 6455 client framing over a  */
+/* plain TCP socket. The NDJSON stream is unchanged: every send becomes */
+/* one masked binary message; incoming message payloads are fed to the  */
+/* same line assembler as raw TCP bytes.                                */
+/* ------------------------------------------------------------------ */
+
+static bool s_ws = false;                /* current session is WebSocket */
+static uint64_t s_rng = 0;
+
+static uint32_t Rand32() {
+    if (s_rng == 0)
+        s_rng = (exl::util::GetRandomU64() ^
+                 (uint64_t)nn::os::GetSystemTick().GetInt64Value()) | 1;
+    s_rng ^= s_rng << 13; s_rng ^= s_rng >> 7; s_rng ^= s_rng << 17;
+    return (uint32_t)(s_rng >> 16);
+}
+
+static bool WsSendFrame(uint8_t op, const char* data, size_t len) {
+    uint8_t hdr[14];
+    size_t h = 0;
+    hdr[h++] = 0x80 | op;
+    if (len < 126) {
+        hdr[h++] = 0x80 | (uint8_t)len;
+    } else if (len < 65536) {
+        hdr[h++] = 0x80 | 126;
+        hdr[h++] = (uint8_t)(len >> 8);
+        hdr[h++] = (uint8_t)len;
+    } else {
+        hdr[h++] = 0x80 | 127;
+        for (int i = 7; i >= 0; i--) hdr[h++] = (uint8_t)((uint64_t)len >> (8 * i));
+    }
+    uint32_t m = Rand32();
+    uint8_t mask[4] = {(uint8_t)m, (uint8_t)(m >> 8), (uint8_t)(m >> 16), (uint8_t)(m >> 24)};
+    memcpy(hdr + h, mask, 4);
+    h += 4;
+    char buf[4096];
+    memcpy(buf, hdr, h);
+    size_t fill = h, off = 0;
+    while (off < len || fill) {
+        while (off < len && fill < sizeof(buf)) {
+            buf[fill++] = data[off] ^ mask[off & 3];
+            off++;
+        }
+        if (!SendRaw(buf, fill)) return false;
+        fill = 0;
+    }
+    return true;
+}
+
+static bool SendAll(const char* data, size_t len) {
+    return s_ws ? WsSendFrame(0x2, data, len) : SendRaw(data, len);
+}
+
+/* incremental decoder for server frames (unmasked; a mask is honoured) */
+static struct {
+    uint8_t  hdr[14];
+    int      hlen, need;
+    bool     inPayload, closed;
+    uint8_t  op, mask[4];
+    bool     masked;
+    uint64_t left, pos;
+    char     ctrl[125];
+    int      clen;
+} s_dec;
+
+static void WsDecReset() { memset(&s_dec, 0, sizeof(s_dec)); }
+
+static void WsFrameDone() {
+    if (s_dec.op == 0x8) {
+        s_dec.closed = true;
+        WsSendFrame(0x8, s_dec.ctrl, s_dec.clen >= 2 ? 2 : 0);
+    } else if (s_dec.op == 0x9) {
+        WsSendFrame(0xA, s_dec.ctrl, (size_t)s_dec.clen);
+    }
+    s_dec.inPayload = false;
+    s_dec.hlen = s_dec.clen = 0;
+}
+
+/* raw socket bytes -> data payload bytes appended to out (never more than
+ * n). Control frames are handled here. */
+static size_t WsDecode(const char* in, size_t n, char* out) {
+    size_t w = 0;
+    for (size_t i = 0; i < n && !s_dec.closed; i++) {
+        uint8_t c = (uint8_t)in[i];
+        if (!s_dec.inPayload) {
+            s_dec.hdr[s_dec.hlen++] = c;
+            if (s_dec.hlen == 2) {
+                uint8_t l7 = s_dec.hdr[1] & 0x7f;
+                s_dec.masked = (s_dec.hdr[1] & 0x80) != 0;
+                s_dec.need = 2 + (l7 == 126 ? 2 : l7 == 127 ? 8 : 0) + (s_dec.masked ? 4 : 0);
+            }
+            if (s_dec.hlen < 2 || s_dec.hlen < s_dec.need) continue;
+            uint8_t l7 = s_dec.hdr[1] & 0x7f;
+            int p = 2;
+            uint64_t len = l7;
+            if (l7 == 126) { len = ((uint64_t)s_dec.hdr[2] << 8) | s_dec.hdr[3]; p = 4; }
+            else if (l7 == 127) {
+                len = 0;
+                for (int k = 0; k < 8; k++) len = (len << 8) | s_dec.hdr[2 + k];
+                p = 10;
+            }
+            if (s_dec.masked) memcpy(s_dec.mask, s_dec.hdr + p, 4);
+            s_dec.op = s_dec.hdr[0] & 0x0f;
+            s_dec.left = len;
+            s_dec.pos = 0;
+            s_dec.inPayload = true;
+            if (len == 0) WsFrameDone();
+            continue;
+        }
+        if (s_dec.masked) c ^= s_dec.mask[s_dec.pos & 3];
+        s_dec.pos++;
+        if (s_dec.op >= 0x8) {
+            if (s_dec.clen < (int)sizeof(s_dec.ctrl)) s_dec.ctrl[s_dec.clen++] = (char)c;
+        } else {
+            out[w++] = (char)c;
+        }
+        if (--s_dec.left == 0) WsFrameDone();
+    }
+    return w;
+}
+
+/* recv for both transports: >0 payload bytes, 0 = peer closed (TCP FIN or
+ * WebSocket close), -1 = error (errno), -2 = nothing yet */
+static int64_t RecvPayload(char* buf, size_t max) {
+    if (!s_ws) {
+        int64_t rn = SockRecv(g_sock, buf, max, 0);
+        return (rn < 0 && IsEagain()) ? -2 : rn;
+    }
+    if (s_dec.closed) return 0;
+    char raw[4096];
+    int64_t rn = SockRecv(g_sock, raw, max < sizeof(raw) ? max : sizeof(raw), 0);
+    if (rn <= 0) return (rn < 0 && IsEagain()) ? -2 : rn;
+    size_t w = WsDecode(raw, (size_t)rn, buf);
+    if (w) return (int64_t)w;
+    return s_dec.closed ? 0 : -2;
 }
 
 static void CloseSock();
@@ -305,7 +452,7 @@ enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
     PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds,
-    Glow, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars
+    Glow, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode
 };
 struct MpCmd {
     MpCmdType type;
@@ -407,6 +554,10 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         c.type = MpCmdType::RemoteAvatars;
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
+    } else if (strcmp(cmd, "server_mode") == 0) {
+        /* {cmd:server_mode, mode:local|cloud} - same as the OPTIONS toggle */
+        c.type = MpCmdType::ServerMode;
+        c.a = strstr(line, "\"cloud\"") != nullptr ? 1 : 0;
     } else if (strcmp(cmd, "glow") == 0) {
         /* {cmd:glow, dir:up|down} - debug: fire the rank-change glow */
         c.type = MpCmdType::Glow;
@@ -558,6 +709,7 @@ void OnFrame() {
                 break;
             case MpCmdType::ModuleDump:  moduledb::DbgDump(); break;
             case MpCmdType::RemoteAvatars: lobby::SetRemoteAvatars(c.a != 0); break;
+            case MpCmdType::ServerMode:  SetCloudMode(c.a != 0); break;
             default: break;
         }
     }
@@ -570,6 +722,8 @@ static void CloseSock() {
         g_sock = -1;
     }
     s_lineLen = 0;
+    s_ws = false;
+    WsDecReset();
 }
 
 /* ------------------------------------------------------------------ */
@@ -787,8 +941,14 @@ static bool DiscoverOnce(uint32_t* ip_be, uint16_t* port, int round) {
 /* TCP connect + session                                               */
 /* ------------------------------------------------------------------ */
 
-static bool TcpConnect(uint32_t ip_be, uint16_t port) {
+static bool ModeChanged(uint32_t gen) {
+    return g_modeGen.load(std::memory_order_acquire) != gen;
+}
+
+static bool TcpConnect(uint32_t ip_be, uint16_t port, uint32_t timeoutMs = 3000) {
     SetState(MpState::Connecting);
+    const uint32_t gen = g_modeGen.load();
+    const int tries = (int)(timeoutMs / 50);
     g_sock = SockSocket(MP_AF_INET, MP_SOCK_STREAM, MP_IPPROTO_TCP);
     if (g_sock < 0) { SetError("socket() errno=%d", SockGetLastErrno()); return false; }
 
@@ -804,23 +964,99 @@ static bool TcpConnect(uint32_t ip_be, uint16_t port) {
     if (fl < 0 || SockFcntl(g_sock, MP_F_SETFL, fl | MP_O_NONBLOCK) < 0)
         WriteLog("[MP] Fcntl nonblock failed errno=%d\n", SockGetLastErrno());
 
-    for (int i = 0; i < 60 && !ok; i++) {
+    for (int i = 0; i < tries && !ok; i++) {
         int r = SockConnect(g_sock, &sa, sizeof(sa));
         if (r == 0 || IsConnected()) {
             ok = true;
         } else if (IsInProgress()) {
+            if (ModeChanged(gen)) break;
             SleepMs(50);
         } else {
             SetError("connect errno=%d", SockGetLastErrno());
             break;
         }
-        if (i == 59)
+        if (i == tries - 1)
             SetError("connect timeout");
     }
     if (!ok) { CloseSock(); return false; }
 
     int one = 1;
     SockSetSockOpt(g_sock, MP_IPPROTO_TCP, MP_TCP_NODELAY, &one, sizeof(one));
+    return true;
+}
+
+/* RFC 6455 opening handshake on the connected g_sock: GET path with
+ * Upgrade: websocket, then wait (up to timeoutMs - a sleeping free-tier
+ * server takes ~1 min to answer) for "HTTP/1.1 101". The response is read
+ * byte by byte so no frame bytes are consumed with the header. */
+static bool WsHandshake(const char* host, uint16_t port, uint32_t timeoutMs) {
+    static const char b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    uint8_t raw[16];
+    for (int i = 0; i < 16; i += 4) {
+        uint32_t r = Rand32();
+        memcpy(raw + i, &r, 4);
+    }
+    char key[25];
+    int k = 0;
+    for (int i = 0; i < 16; i += 3) {
+        uint32_t v = (uint32_t)raw[i] << 16 | (i + 1 < 16 ? raw[i + 1] << 8 : 0) |
+                     (i + 2 < 16 ? raw[i + 2] : 0);
+        key[k++] = b64[(v >> 18) & 63];
+        key[k++] = b64[(v >> 12) & 63];
+        key[k++] = i + 1 < 16 ? b64[(v >> 6) & 63] : '=';
+        key[k++] = i + 2 < 16 ? b64[v & 63] : '=';
+    }
+    key[k] = 0;
+    char portSfx[8] = "";
+    if (port != 80) snprintf(portSfx, sizeof(portSfx), ":%u", port);
+    char req[512];
+    int n = snprintf(req, sizeof(req),
+        "GET %s HTTP/1.1\r\nHost: %s%s\r\nUpgrade: websocket\r\n"
+        "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+        "Sec-WebSocket-Version: 13\r\nUser-Agent: MegaMixSwitchMod/1\r\n\r\n",
+        kCloudPath, host, portSfx, key);
+    if (n <= 0 || n >= (int)sizeof(req) || !SendRaw(req, (size_t)n)) {
+        SetError("upgrade request send failed");
+        return false;
+    }
+    const uint32_t gen = g_modeGen.load();
+    const uint64_t t0 = NowMs();
+    char status[160];
+    size_t sl = 0, total = 0;
+    uint32_t tail = 0;
+    while (true) {
+        char c;
+        int64_t rn = SockRecv(g_sock, &c, 1, 0);
+        if (rn == 1) {
+            if (sl < sizeof(status) - 1 && c != '\r' && c != '\n' && total == sl)
+                status[sl++] = c;
+            total++;
+            tail = (tail << 8) | (uint8_t)c;
+            if (tail == 0x0d0a0d0a) break;
+            if (total > 16384) { SetError("upgrade: oversized response"); return false; }
+            continue;
+        }
+        if (rn == 0) { SetError("server closed during upgrade"); return false; }
+        if (!IsEagain()) { SetError("upgrade recv errno=%d", SockGetLastErrno()); return false; }
+        if (ModeChanged(gen)) return false;
+        if (NowMs() - t0 > timeoutMs) {
+            SetError("no answer from %s in %us", host, (unsigned)(timeoutMs / 1000));
+            return false;
+        }
+        SleepMs(20);
+    }
+    status[sl] = 0;
+    int code = 0;
+    sscanf(status, "HTTP/%*d.%*d %d", &code);
+    WriteLog("[MP] upgrade %s%s%s -> '%s' after %llu ms\n", host, portSfx, kCloudPath,
+             status, (unsigned long long)(NowMs() - t0));
+    if (code != 101) {
+        SetError("server answered HTTP %d (not a WebSocket)", code);
+        return false;
+    }
+    s_ws = true;
+    WsDecReset();
     return true;
 }
 
@@ -839,14 +1075,14 @@ static bool SayHello() {
     size_t rl = 0;
     bool gotLine = false;
     for (int i = 0; i < 500 && !gotLine; i++) {
-        int64_t rn = SockRecv(g_sock, rbuf + rl, sizeof(rbuf) - 1 - rl, 0);
+        int64_t rn = RecvPayload(rbuf + rl, sizeof(rbuf) - 1 - rl);
         if (rn > 0) {
             rl += (size_t)rn;
             rbuf[rl] = 0;
             if (strchr(rbuf, '\n')) gotLine = true;
         } else if (rn == 0) {
             SetError("welcome: peer closed"); return false;
-        } else if (!IsEagain()) {
+        } else if (rn != -2) {
             SetError("welcome recv errno=%d", SockGetLastErrno());
             return false;
         }
@@ -901,14 +1137,19 @@ static void SessionLoop() {
     s_lastRecv = NowMs();
     s_lastPingSent = 0;
     uint64_t nextPing = NowMs() + 2000;
+    const uint32_t gen = g_modeGen.load();
 
     while (true) {
-        FlushOutgoing();
+        FlushOutgoing();      /* first: a lobby_leave queued by SetCloudMode */
+        if (ModeChanged(gen)) {
+            WriteLog("[MP] server mode changed, closing session\n");
+            return;
+        }
 
         /* drain recv until EAGAIN */
         char rbuf[4096];
         while (true) {
-            int64_t rn = SockRecv(g_sock, rbuf, sizeof(rbuf), 0);
+            int64_t rn = RecvPayload(rbuf, sizeof(rbuf));
             if (rn > 0) {
                 s_lastRecv = NowMs();
                 for (int64_t i = 0; i < rn; i++) {
@@ -926,7 +1167,7 @@ static void SessionLoop() {
             } else if (rn == 0) {
                 WriteLog("[MP] server closed (recv=0)\n");
                 return;
-            } else if (IsEagain()) {
+            } else if (rn == -2) {
                 break;
             } else {
                 WriteLog("[MP] recv errno=%d\n", SockGetLastErrno());
@@ -1018,25 +1259,80 @@ static void NetThread(void*) {
         CloseSock();
         return true;
     };
-    int round = 0;
-    while (true) {
-        bool done = lastIp && attempt(lastIp, lastPort);
-        if (!done && cfgIp && !(cfgIp == lastIp && cfgPort == lastPort))
-            done = attempt(cfgIp, cfgPort);
+    /* Online server: resolve cloud_host, TCP to cloud_port, WebSocket
+     * upgrade on /switch (both waits up to kCloudTimeoutMs for a sleeping
+     * free-tier server), then the same hello/session as on the LAN. */
+    auto attemptCloud = [&]() {
+        const char* host = Config::mpCloudHost.c_str();
+        const uint16_t port = (uint16_t)Config::mpCloudPort;
+        char ab[64];
+        snprintf(ab, sizeof(ab), "%s:%u", host, port);
+        SetServer(ab);
+        SetState(MpState::Connecting);
         uint32_t ip_be = 0;
-        uint16_t port = 0;
-        if (!done && DiscoverOnce(&ip_be, &port, round++)) {
-            if (cfgIp && ip_be != cfgIp)
-                WriteLog("[MP] server_ip %s unreachable, using discovered %u.%u.%u.%u:%u\n",
-                         Config::mpServerIp.c_str(), ip_be & 0xff, (ip_be >> 8) & 0xff,
-                         (ip_be >> 16) & 0xff, ip_be >> 24, port);
-            attempt(ip_be, port);
+        if (!SockResolveIpv4(host, &ip_be)) {
+            SetError("can't resolve %s (DNS)", host);
+            return false;
         }
-        SleepMs(backoffSeq[backoff < 3 ? backoff++ : 3]);
+        WriteLog("[MP] online server %s -> %u.%u.%u.%u:%u\n", host, ip_be & 0xff,
+                 (ip_be >> 8) & 0xff, (ip_be >> 16) & 0xff, ip_be >> 24, port);
+        if (!TcpConnect(ip_be, port, kCloudTimeoutMs) ||
+            !WsHandshake(host, port, kCloudTimeoutMs) || !SayHello()) {
+            CloseSock();
+            return false;
+        }
+        backoff = 0;
+        SessionLoop();
+        CloseSock();
+        return true;
+    };
+    int round = 0;
+    uint32_t gen = g_modeGen.load();
+    WriteLog("[MP] server mode: %s\n", IsCloudMode() ? "cloud" : "local");
+    while (true) {
+        if (ModeChanged(gen)) {
+            gen = g_modeGen.load();
+            backoff = 0;
+            WriteLog("[MP] server mode: %s\n", IsCloudMode() ? "cloud" : "local");
+        }
+        if (IsCloudMode()) {
+            if (!attemptCloud() && !ModeChanged(gen)) SetState(MpState::Error);
+        } else {
+            bool done = lastIp && attempt(lastIp, lastPort);
+            if (!done && cfgIp && !(cfgIp == lastIp && cfgPort == lastPort) && !ModeChanged(gen))
+                done = attempt(cfgIp, cfgPort);
+            uint32_t ip_be = 0;
+            uint16_t port = 0;
+            if (!done && !ModeChanged(gen) && DiscoverOnce(&ip_be, &port, round++) &&
+                !ModeChanged(gen)) {
+                if (cfgIp && ip_be != cfgIp)
+                    WriteLog("[MP] server_ip %s unreachable, using discovered %u.%u.%u.%u:%u\n",
+                             Config::mpServerIp.c_str(), ip_be & 0xff, (ip_be >> 8) & 0xff,
+                             (ip_be >> 16) & 0xff, ip_be >> 24, port);
+                attempt(ip_be, port);
+            }
+        }
+        const uint32_t wait = backoffSeq[backoff < 3 ? backoff++ : 3];
+        for (uint32_t t = 0; t < wait && !ModeChanged(gen); t += 100) SleepMs(100);
     }
 }
 
+void SetCloudMode(bool cloud) {
+    if (IsCloudMode() == cloud) return;
+    lobby::LeaveForServerSwitch();                   /* rooms don't move servers */
+    Config::mpServerMode = cloud ? "cloud" : "local";
+    Config::Save();
+    g_cloud.store(cloud, std::memory_order_release);
+    g_modeGen.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::lock_guard<std::mutex> lk(g_statusMtx);
+        g_lastError[0] = 0;
+    }
+    WriteLog("[MP] server mode -> %s\n", cloud ? "cloud" : "local");
+}
+
 void Init() {
+    g_cloud.store(Config::mpServerMode == "cloud");
     lobby::Init();
     if (!ApiResolveAll()) {
         WriteLog("[MP] disabled: unresolved symbols\n");

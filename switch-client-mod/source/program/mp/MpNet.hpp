@@ -17,11 +17,23 @@ enum class MpState : uint8_t {
 
 struct MpStatus {
     MpState  state;
-    char     server[64];     /* "ip:port" */
+    char     server[64];     /* "ip:port" or "host:port" (online) */
     int      rtt_ms;         /* last ping RTT, -1 unknown */
     char     last_error[96];
     uint32_t connect_count;
+    bool     cloud;          /* online server mode (WebSocket) */
 };
+
+/* Server selection: false = Local (LAN search / server_ip, raw TCP),
+ * true = the online server Config::mpCloudHost over a WebSocket on plain
+ * HTTP (ws://host:port/switch). SetCloudMode is for the game thread: it
+ * saves config.toml, leaves a room on the old server and makes the net
+ * thread drop the current session/search and reconnect in the new mode. */
+bool IsCloudMode();
+void SetCloudMode(bool cloud);
+const char* CloudHost();
+/* online mode: a free-tier server may need ~1 min to wake up */
+constexpr uint32_t kCloudTimeoutMs = 65000;
 
 /* Called from MainHook once (only if Config::mpEnabled). Spawns the
  * MpNet thread. Never blocks the caller. */
