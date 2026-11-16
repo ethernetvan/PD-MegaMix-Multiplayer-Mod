@@ -48,8 +48,7 @@ std::string Config::mpClientId = "";
 std::string Config::mpNotifyStyle = "avatars";
 bool Config::mpRemoteAvatars = false;
 std::string Config::mpServerMode = "local";
-std::string Config::mpCloudHost = "mikumod.evanthomas.dev";
-int Config::mpCloudPort = 80;
+std::string Config::mpCloudUrl = "mikumod.evanthomas.dev";
 
 // Graphics
 bool Config::disableAdp = false;
@@ -312,12 +311,12 @@ static void SaveConfig(const std::string& path) {
     tomlContent += "[multiplayer]\n";
     tomlContent += "# Multiplayer client: a PC server on the LAN (TCP) or the online server\n";
     tomlContent += "enabled = " + std::string(Config::mpEnabled ? "true" : "false") + "\n";
-    tomlContent += "# \"local\": search this network for a PC server (server_ip tried first)\n";
-    tomlContent += "# \"cloud\": the online server cloud_host (also on the MP overlay's OPTIONS screen)\n";
+    tomlContent += "# Server (also on the MP overlay's OPTIONS screen): \"off\" (never connects),\n";
+    tomlContent += "# \"local\" (search this network for a PC server, server_ip tried first) or\n";
+    tomlContent += "# \"cloud\" (the online server cloud_url)\n";
     tomlContent += "server_mode = \"" + EscapeTomlString(Config::mpServerMode) + "\"\n";
-    tomlContent += "# Online server: WebSocket over plain HTTP to ws://cloud_host:cloud_port/switch\n";
-    tomlContent += "cloud_host = \"" + EscapeTomlString(Config::mpCloudHost) + "\"\n";
-    tomlContent += "cloud_port = " + std::to_string(Config::mpCloudPort) + "\n";
+    tomlContent += "# Online server address: host[:port][/path] (plain-HTTP WebSocket, default port 80, path /switch)\n";
+    tomlContent += "cloud_url = \"" + EscapeTomlString(Config::mpCloudUrl) + "\"\n";
     tomlContent += "# Optional, tried first. If it doesn't answer (or is empty) the console\n";
     tomlContent += "# searches the local network for a server automatically\n";
     tomlContent += "server_ip = \"" + EscapeTomlString(Config::mpServerIp) + "\"\n";
@@ -470,11 +469,14 @@ bool Config::init() {
             if (mpNotifyStyle != "text" && mpNotifyStyle != "off") mpNotifyStyle = "avatars";
             mpRemoteAvatars = config["multiplayer"]["remote_avatars"].value_or(false);
             mpServerMode = config["multiplayer"]["server_mode"].value_or("local");
-            if (mpServerMode != "cloud") mpServerMode = "local";
-            mpCloudHost = config["multiplayer"]["cloud_host"].value_or("mikumod.evanthomas.dev");
-            if (mpCloudHost.empty()) mpCloudHost = "mikumod.evanthomas.dev";
-            mpCloudPort = config["multiplayer"]["cloud_port"].value_or(80);
-            if (mpCloudPort <= 0 || mpCloudPort > 65535) mpCloudPort = 80;
+            if (mpServerMode != "cloud" && mpServerMode != "off") mpServerMode = "local";
+            mpCloudUrl = config["multiplayer"]["cloud_url"].value_or("");
+            if (mpCloudUrl.empty()) {   /* older cloud_host/cloud_port keys */
+                std::string h = config["multiplayer"]["cloud_host"].value_or("");
+                int64_t pt = config["multiplayer"]["cloud_port"].value_or(80);
+                mpCloudUrl = h.empty() ? "mikumod.evanthomas.dev"
+                           : (pt == 80 ? h : h + ":" + std::to_string(pt));
+            }
 
             enableFtUi = config["leftover"]["ft_ui"].value_or(false);
         }

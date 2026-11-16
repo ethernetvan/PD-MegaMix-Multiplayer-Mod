@@ -36,17 +36,20 @@ static void EndWin() {
  *   ROOM        podium (top 3) + ordered member list w/ kick, Room
  *               Config (owner) and Exit Room
  *   ROOM_CONFIG song-picker mode + assignee (owner only)
- *   OPTIONS     notification style + custom portraits (from HOME)
+ *   OPTIONS     server (off / local / online), notification style,
+ *               custom portraits (from HOME)
+ *   EDIT_SERVER online server address + CANCEL/SAVE, keyboard below
  *
  * In a room the overlay always opens straight on ROOM.
  * ============================================================== */
 
 enum Screen { SC_HOME, SC_EDIT_NAME, SC_JOIN_ROOM, SC_ROOM, SC_ROOM_CONFIG,
-              SC_OPTIONS };
+              SC_OPTIONS, SC_EDIT_SERVER };
 
 static Screen s_screen   = SC_HOME;
 static char   s_codeBuf[8]  = "";
 static char   s_nameBuf[40] = "";
+static char   s_urlBuf[100] = "";
 static bool   s_kbArmed  = false;   /* keyboard was opened for this screen */
 static bool   s_prevOpen = false;
 
@@ -745,7 +748,8 @@ static mp::avatar::Ref MemberRef(const Snapshot& s, const MemberInfo& m) {
 }
 
 static void GoHomeOrRoom() {
-    s_screen = InLobby() ? SC_ROOM : SC_HOME;
+    /* the server address editor belongs to OPTIONS */
+    s_screen = s_screen == SC_EDIT_SERVER ? SC_OPTIONS : InLobby() ? SC_ROOM : SC_HOME;
     s_kbArmed = false;
     if (VirtualKeyboard::IsOpen()) VirtualKeyboard::Close();
 }
@@ -764,6 +768,19 @@ static void OpenEditName() {
     s_nameBuf[sizeof(s_nameBuf) - 1] = 0;
     s_screen = SC_EDIT_NAME;
     VirtualKeyboard::Open(s_nameBuf, sizeof(s_nameBuf), "SAVE", OnNameSubmit);
+    s_kbArmed = true;
+}
+static void OnUrlSubmit() {
+    if (!mp::SetCloudUrl(s_urlBuf))
+        SystemBanner("Invalid server address - use host[:port][/path]");
+    else if (mp::IsCloudMode())
+        SystemBanner("Online server changed - connecting...");
+    s_screen = SC_OPTIONS; s_kbArmed = false;
+}
+static void OpenEditServer() {
+    snprintf(s_urlBuf, sizeof(s_urlBuf), "%s", mp::CloudUrl());
+    s_screen = SC_EDIT_SERVER;
+    VirtualKeyboard::Open(s_urlBuf, sizeof(s_urlBuf), "SAVE", OnUrlSubmit);
     s_kbArmed = true;
 }
 static void OpenJoinRoom() {
@@ -854,11 +871,12 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     mp::GetStatus(&ns);
 
     /* footer pill: MULTIPLAYER: state (+ which server) */
-    const char* st = !Config::mpEnabled ? "MULTIPLAYER: OFF"
+    const bool mpOff = !Config::mpEnabled || ns.mode == mp::kServerOff;
+    const char* st = mpOff ? "MULTIPLAYER: OFF"
                    : !online ? "MULTIPLAYER: DISCONNECTED"
                    : ns.cloud ? "MULTIPLAYER: CONNECTED (ONLINE)"
                               : "MULTIPLAYER: CONNECTED (LAN)";
-    ImU32 stc = !Config::mpEnabled ? kDim : (online ? kGreen : kRed);
+    ImU32 stc = mpOff ? kDim : (online ? kGreen : kRed);
     float pillH = 40 * u.k;
     ImVec2 ps = u.Size(st, 1.3f);
     float pw = ps.x + 44 * u.k;
@@ -870,14 +888,16 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     /* offline tip, centred between the cards and the pill */
     char tipBuf[160];
     const char* tip = !Config::mpEnabled ? "Set enabled = true in config.toml, then restart"
-                    : (!online ? "Looking for the server..." : nullptr);
-    if (Config::mpEnabled && !online && ns.cloud) {
+                    : mpOff ? "Multiplayer is off - pick LOCAL or ONLINE in Options"
+                    : (!online ? "Looking for a server on this network..." : nullptr);
+    /* the wake-up wait only exists for the online (free-tier) server */
+    if (!mpOff && !online && ns.mode == mp::kServerCloud) {
         if (ns.state == mp::MpState::Error && ns.last_error[0])
             snprintf(tipBuf, sizeof(tipBuf), "Can't reach %s (%s) - retrying...",
-                     mp::CloudHost(), ns.last_error);
+                     mp::CloudUrl(), ns.last_error);
         else
             snprintf(tipBuf, sizeof(tipBuf),
-                     "Connecting to %s (waking server, up to 60s)...", mp::CloudHost());
+                     "Connecting to %s (waking server, up to 60s)...", mp::CloudUrl());
         tip = tipBuf;
     }
 
@@ -955,7 +975,7 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
 /* -------------------------------------------------- EDIT NAME / JOIN */
 static void DrawTextScreen(const Ui& u, ImVec2 a, ImVec2 b, const char* title,
                            const char* buf, const char* okLabel, bool upper,
-                           void (*onOk)(), const char* help) {
+                           void (*onOk)(), const char* help, bool allowEmpty = false) {
     float top = Header(u, a, b, title, false);
 
     /* field */
@@ -963,7 +983,7 @@ static void DrawTextScreen(const Ui& u, ImVec2 a, ImVec2 b, const char* title,
     ImVec2 fa(a.x + 30 * u.k, top + 28 * u.k), fb(b.x - 30 * u.k, fa.y + fh);
     u.dl->AddRectFilled(fa, fb, kField, 10 * u.k);
     u.dl->AddRect(fa, fb, kAccent, 10 * u.k, 0, 2.0f * u.k);
-    char shown[48];
+    char shown[104];
     if (upper) {
         int i = 0;
         for (; buf[i] && i < (int)sizeof(shown) - 1; i++) {
@@ -982,7 +1002,7 @@ static void DrawTextScreen(const Ui& u, ImVec2 a, ImVec2 b, const char* title,
     /* caret */
     int cp = VirtualKeyboard::GetCursorPos();
     if (cp > (int)strlen(shown)) cp = (int)strlen(shown);
-    char pre[48]; memcpy(pre, shown, cp); pre[cp] = 0;
+    char pre[104]; memcpy(pre, shown, cp); pre[cp] = 0;
     float cx = tx + u.Size(pre, tscale).x + 1.0f;
     if (!buf[0] && help) {
         /* placeholder, with the caret parked just left of it */
@@ -1003,7 +1023,7 @@ static void DrawTextScreen(const Ui& u, ImVec2 a, ImVec2 b, const char* title,
         sound::PlayCancelSE();
         GoHomeOrRoom();
     }
-    if (u.Button(oa, ob, okLabel, Ui::B_PRIMARY, 1.55f, buf[0] != 0, false)) {
+    if (u.Button(oa, ob, okLabel, Ui::B_PRIMARY, 1.55f, buf[0] != 0 || allowEmpty, false)) {
         sound::PlayEnterSE();
         if (VirtualKeyboard::IsOpen()) VirtualKeyboard::Close();
         onOk();
@@ -1395,40 +1415,66 @@ static void DrawOptions(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     };
     ImVec2 oa, ob;
 
-    /* Server: LAN search vs the online server (focus 1..2) */
-    section("Server", "Where this console finds other players");
-    char online[96];
-    snprintf(online, sizeof(online), "%s (internet)", mp::CloudHost());
-    const bool cloud = mp::IsCloudMode();
-    for (int i = 0; i < 2; i++) {
-        col(i, &oa, &ob);
-        if (OptCard(u, oa, ob, cloud == (i == 1), i ? "ONLINE" : "LOCAL",
-                    i ? online : "PC server on this network (LAN)")) {
-            sound::PlaySelectSE();
-            mp::SetCloudMode(i == 1);
-            SystemBanner(i ? "Online server selected - connecting..."
-                           : "Local server selected - searching the network...");
-        }
-    }
-    {   /* third column: what the connection is doing right now */
+    /* Server: off / LAN search / the online server (focus 1..3, pencil 4) */
+    {
         mp::MpStatus ns;
         mp::GetStatus(&ns);
-        col(2, &oa, &ob);
-        const char* l1 = s.connected ? "Connected"
-                       : ns.cloud ? (ns.state == mp::MpState::Error ? "Retrying..."
-                                                                    : "Connecting (up to 60s)...")
-                                  : "Searching...";
-        u.Text(ImVec2(oa.x + 6 * u.k, oa.y + 14 * u.k), l1, 1.3f,
-               s.connected ? kGreen : kYellow);
-        char l2[96];
-        const char* src = (!s.connected && ns.state == mp::MpState::Error && ns.last_error[0])
-                        ? ns.last_error : ns.server;
-        u.Fit(src, ow - 12 * u.k, 1.1f, l2, sizeof(l2));
-        u.Text(ImVec2(oa.x + 6 * u.k, oa.y + 46 * u.k), l2, 1.1f, kMuted);
+        const int mode = (int)ns.mode;
+        /* live status, right-aligned on the title line */
+        const char* l1 = mode == mp::kServerOff ? "Off - not connecting"
+                       : s.connected ? "Connected"
+                       : mode == mp::kServerCloud
+                           ? (ns.state == mp::MpState::Error ? "Retrying..." : "Connecting (up to 60s)...")
+                           : "Searching this network...";
+        char line[160];
+        if (mode == mp::kServerOff)
+            snprintf(line, sizeof(line), "%s", l1);
+        else
+            snprintf(line, sizeof(line), "%s  %s", l1,
+                     (!s.connected && ns.state == mp::MpState::Error && ns.last_error[0])
+                         ? ns.last_error : ns.server);
+        char fitted[96];
+        u.Fit(line, (b.x - a.x) * 0.55f, 1.15f, fitted, sizeof(fitted));
+        ImVec2 ls = u.Size(fitted, 1.15f);
+        u.Text(ImVec2(b.x - 30 * u.k - ls.x, y + 6 * u.k), fitted, 1.15f,
+               mode == mp::kServerOff ? kMuted : s.connected ? kGreen : kYellow);
+        section("Server", "Where this console finds other players");
+        char online[112];
+        snprintf(online, sizeof(online), "%s", mp::CloudUrl());
+        static const char* kLabel[3] = {"OFF", "LOCAL", "ONLINE"};
+        const char* desc[3] = {"Multiplayer disabled, no network",
+                               "PC server on this network (LAN)", online};
+        for (int i = 0; i < 3; i++) {
+            col(i, &oa, &ob);
+            /* ONLINE: a pencil button in the top-right corner edits the
+             * address; a tap on it must not also pick the card */
+            ImVec2 pa(ob.x - 48 * u.k, oa.y + 6 * u.k), pb(ob.x - 8 * u.k, oa.y + 46 * u.k);
+            bool onPencil = i == 2 && !s_padMode && u.Hover(pa, pb);
+            bool picked = OptCard(u, oa, ob, mode == i, kLabel[i], desc[i]);
+            if (picked && !onPencil) {
+                sound::PlaySelectSE();
+                mp::SetServerMode((mp::ServerMode)i);
+                SystemBanner(i == 0 ? "Multiplayer off"
+                           : i == 1 ? "Local server - searching the network..."
+                                    : "Online server - connecting...");
+            }
+            if (i == 2) {
+                int fi = u.Focus(pa, pb);
+                bool hov = u.FHover(fi);
+                u.dl->AddRectFilled(pa, pb, hov ? (u.down ? kCardDown : kCardHov) : kField, 10 * u.k);
+                if (hov) u.Ring(pa, pb, 10 * u.k);
+                else u.dl->AddRect(pa, pb, kLine, 10 * u.k, 0, 1.2f);
+                IconPencil(u, ImVec2((pa.x + pb.x) * 0.5f, (pa.y + pb.y) * 0.5f), 28 * u.k);
+                if (u.FActivated(fi)) {
+                    sound::PlayEnterSE();
+                    OpenEditServer();
+                }
+            }
+        }
     }
     y += oh + 14 * u.k;
 
-    /* Notifications (focus 3..5) */
+    /* Notifications (focus 5..7) */
     section("Notifications", "How other players' events show up during a song");
     struct Opt { const char* label; const char* desc; } nopts[3] = {
         { "AVATARS", "Portrait pop-ups at the screen edge" },
@@ -1443,7 +1489,7 @@ static void DrawOptions(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     }
     y += oh + 14 * u.k;
 
-    /* Custom portraits (focus 6..7) */
+    /* Custom portraits (focus 8..9) */
     section("Custom portraits", "Portraits of modules this console doesn't have");
     Opt popts[2] = {
         { "OFF", "Show that character's default portrait" },
@@ -1553,12 +1599,15 @@ void DrawPanel() {
      * by Edit Name / Join Room must never outlive song select); another
      * owner's keyboard (SongQuickJump) is left alone. */
     bool ourKb = VirtualKeyboard::IsOpenFor(s_nameBuf)
-              || VirtualKeyboard::IsOpenFor(s_codeBuf);
-    bool onTextScreen = s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM;
+              || VirtualKeyboard::IsOpenFor(s_codeBuf)
+              || VirtualKeyboard::IsOpenFor(s_urlBuf);
+    bool onTextScreen = s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM ||
+                        s_screen == SC_EDIT_SERVER;
     if (ourKb && (!open || !onTextScreen)) {
         VirtualKeyboard::Close();
         s_kbArmed = false;
-        if (onTextScreen) s_screen = InLobby() ? SC_ROOM : SC_HOME;
+        if (onTextScreen)
+            s_screen = s_screen == SC_EDIT_SERVER ? SC_OPTIONS : InLobby() ? SC_ROOM : SC_HOME;
     }
     if (!open && s_prevOpen) {
         VirtualKeyboard::SetPadMode(false);
@@ -1577,14 +1626,15 @@ void DrawPanel() {
     if (s_screen == SC_ROOM_CONFIG && (strcmp(s.ownerCid, s.myCid) != 0 || !s.connected))
         s_screen = SC_ROOM;
     /* keyboard dismissed (CLOSE / tap outside) while editing -> cancel */
-    if ((s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM) && s_kbArmed &&
-        !VirtualKeyboard::IsOpen())
+    if ((s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM ||
+         s_screen == SC_EDIT_SERVER) && s_kbArmed && !VirtualKeyboard::IsOpen())
         GoHomeOrRoom();
 
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 ds = io.DisplaySize;
     float k = ds.y / 720.0f;
-    bool textScreen = s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM;
+    bool textScreen = s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM ||
+                      s_screen == SC_EDIT_SERVER;
 
     /* ---------------- pad navigation input ---------------- */
     s_padA = false;
@@ -1603,13 +1653,14 @@ void DrawPanel() {
         /* screen change -> reset focus + disarm kick */
         if (s_screen != s_lastScreen) {
             bool fromOptions = s_lastScreen == SC_OPTIONS;
+            Screen prev = s_lastScreen;
             s_lastScreen = s_screen;
             s_armCid[0] = 0;
             if (s_screen == SC_HOME)
                 s_focusIdx = fromOptions ? 4          /* back on the Options button */
                            : (s.connected ? 2 : 1);   /* [X, EDIT, CREATE, JOIN, OPTIONS] */
-            else if (s_screen == SC_OPTIONS)
-                s_focusIdx = 1 + (mp::IsCloudMode() ? 1 : 0); /* [Done, s1..s2, n1..n3, p1..p2] */
+            else if (s_screen == SC_OPTIONS)   /* [Done, off, local, online, pencil, n1..n3, p1..p2] */
+                s_focusIdx = prev == SC_EDIT_SERVER ? 4 : 1 + (int)mp::GetServerMode();
             else if (s_screen == SC_ROOM)
                 s_focusIdx = (strcmp(s.ownerCid, s.myCid) == 0) ? 2 : 1;
             else if (s_screen == SC_ROOM_CONFIG)
@@ -1628,7 +1679,8 @@ void DrawPanel() {
             } else if (textScreen) {
                 int dx = 0, dy = 0;
                 NavDirs(held, nsx, nsy, now, dx, dy);
-                const char* buf = (s_screen == SC_EDIT_NAME) ? s_nameBuf : s_codeBuf;
+                const char* buf = s_screen == SC_EDIT_NAME ? s_nameBuf
+                                : s_screen == SC_EDIT_SERVER ? s_urlBuf : s_codeBuf;
                 bool wasEmpty = !buf[0];
                 VirtualKeyboard::PadInput(edges, dx, dy);
                 if ((edges & nn::hid::B) && wasEmpty) {
@@ -1701,6 +1753,8 @@ void DrawPanel() {
         case SC_ROOM:        DrawRoom(u, s, a, b); break;
         case SC_ROOM_CONFIG: DrawRoomConfig(u, s, a, b); break;
         case SC_OPTIONS:     DrawOptions(u, s, a, b); break;
+        case SC_EDIT_SERVER: DrawTextScreen(u, a, b, "ONLINE SERVER", s_urlBuf, "SAVE", false,
+                                            OnUrlSubmit, "Empty = mikumod.evanthomas.dev", true); break;
     }
 
     EndWin();

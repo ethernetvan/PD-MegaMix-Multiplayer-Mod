@@ -17,6 +17,7 @@
 #include <mutex>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 #include <cstdint>
 
 namespace ImGui { void DbgSetCursor(float x, float y, bool click); }
@@ -33,14 +34,55 @@ static char         g_server[64]   = "";
 static int          g_rtt          = -1;
 static char         g_lastError[96] = "";
 static std::atomic<uint32_t> g_connectCount{0};
-/* server selection, mirrored from Config::mpServerMode (the net thread
- * never reads the std::string); g_modeGen bumps on every change */
-static std::atomic<bool>     g_cloud{false};
+/* server selection, mirrored from Config::mpServerMode / mpCloudUrl (the
+ * net thread never reads those std::strings); g_modeGen bumps on every
+ * change */
+static std::atomic<uint8_t>  g_mode{kServerLocal};
 static std::atomic<uint32_t> g_modeGen{0};
-static const char kCloudPath[] = "/switch";
+static char     s_cloudHost[128] = "mikumod.evanthomas.dev";   /* g_statusMtx */
+static char     s_cloudPath[64]  = "/switch";
+static uint16_t s_cloudPort      = 80;
 
-bool IsCloudMode() { return g_cloud.load(std::memory_order_acquire); }
-const char* CloudHost() { return Config::mpCloudHost.c_str(); }
+ServerMode GetServerMode() { return (ServerMode)g_mode.load(std::memory_order_acquire); }
+bool IsCloudMode() { return GetServerMode() == kServerCloud; }
+const char* CloudUrl() { return Config::mpCloudUrl.c_str(); }
+
+/* [scheme://]host[:port][/path] -> parts; port 80 and /switch by default */
+static bool ParseCloudUrl(const char* url, char* host, size_t hostN, uint16_t* port,
+                          char* path, size_t pathN) {
+    while (*url == ' ') url++;
+    for (const char* sch : {"ws://", "wss://", "http://", "https://"}) {
+        size_t n = strlen(sch);
+        if (strncasecmp(url, sch, n) == 0) { url += n; break; }
+    }
+    size_t hl = strcspn(url, ":/");
+    if (hl == 0 || hl >= hostN) return false;
+    for (size_t i = 0; i < hl; i++) {
+        char c = url[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '-' || c == '_'))
+            return false;
+        host[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
+    }
+    host[hl] = 0;
+    const char* p = url + hl;
+    unsigned pt = 80;
+    if (*p == ':') {
+        char* end = nullptr;
+        unsigned long v = strtoul(p + 1, &end, 10);
+        if (end == p + 1 || v == 0 || v > 65535) return false;
+        pt = (unsigned)v;
+        p = end;
+    }
+    *port = (uint16_t)pt;
+    /* nothing, or a /path without spaces ("/" alone = the default path) */
+    if (*p != 0 && (*p != '/' || strchr(p, ' '))) return false;
+    size_t pl = strlen(p);
+    if (pl <= 1) { snprintf(path, pathN, "/switch"); return true; }
+    if (pl >= pathN) return false;
+    memcpy(path, p, pl + 1);
+    return true;
+}
 
 const char* StateName(MpState s) {
     switch (s) {
@@ -61,6 +103,7 @@ void GetStatus(MpStatus* out) {
     out->state = GetState();
     out->connect_count = g_connectCount.load();
     out->cloud = IsCloudMode();
+    out->mode = (uint8_t)GetServerMode();
     std::lock_guard<std::mutex> lk(g_statusMtx);
     size_t ns_ = strnlen(g_server, sizeof(g_server));
     size_t ne_ = strnlen(g_lastError, sizeof(g_lastError));
@@ -452,14 +495,14 @@ enum class MpCmdType : uint8_t {
     None, Tap, Spam, SpamStop, BlockSet, BlockClear, Jump, Autopause, ListPvs,
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
     PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds,
-    Glow, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode
+    Glow, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode, CloudUrl
 };
 struct MpCmd {
     MpCmdType type;
     uint64_t  buttons;
     int32_t   a, b;      /* hold/gap, hz/secs, pv */
     int32_t   count;
-    char      str[40];
+    char      str[104];
     int32_t   pvs[24];
     int32_t   pvsN;
 };
@@ -554,10 +597,16 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         c.type = MpCmdType::RemoteAvatars;
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
+    } else if (strcmp(cmd, "cloud_url") == 0) {
+        /* {cmd:cloud_url, url} - same as the ONLINE pencil editor */
+        c.type = MpCmdType::CloudUrl;
+        int i = mpjson::Find(line, tok, ntok, "url");
+        if (i >= 0) mpjson::Copy(line, tok[i], c.str, sizeof(c.str));
     } else if (strcmp(cmd, "server_mode") == 0) {
-        /* {cmd:server_mode, mode:local|cloud} - same as the OPTIONS toggle */
+        /* {cmd:server_mode, mode:off|local|cloud} - same as the OPTIONS row */
         c.type = MpCmdType::ServerMode;
-        c.a = strstr(line, "\"cloud\"") != nullptr ? 1 : 0;
+        c.a = strstr(line, "\"cloud\"") ? kServerCloud
+            : strstr(line, "\"off\"") ? kServerOff : kServerLocal;
     } else if (strcmp(cmd, "glow") == 0) {
         /* {cmd:glow, dir:up|down} - debug: fire the rank-change glow */
         c.type = MpCmdType::Glow;
@@ -709,7 +758,8 @@ void OnFrame() {
                 break;
             case MpCmdType::ModuleDump:  moduledb::DbgDump(); break;
             case MpCmdType::RemoteAvatars: lobby::SetRemoteAvatars(c.a != 0); break;
-            case MpCmdType::ServerMode:  SetCloudMode(c.a != 0); break;
+            case MpCmdType::ServerMode:  SetServerMode((ServerMode)c.a); break;
+            case MpCmdType::CloudUrl:    SetCloudUrl(c.str); break;
             default: break;
         }
     }
@@ -989,7 +1039,8 @@ static bool TcpConnect(uint32_t ip_be, uint16_t port, uint32_t timeoutMs = 3000)
  * Upgrade: websocket, then wait (up to timeoutMs - a sleeping free-tier
  * server takes ~1 min to answer) for "HTTP/1.1 101". The response is read
  * byte by byte so no frame bytes are consumed with the header. */
-static bool WsHandshake(const char* host, uint16_t port, uint32_t timeoutMs) {
+static bool WsHandshake(const char* host, uint16_t port, const char* path,
+                        uint32_t timeoutMs) {
     static const char b64[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     uint8_t raw[16];
@@ -1015,7 +1066,7 @@ static bool WsHandshake(const char* host, uint16_t port, uint32_t timeoutMs) {
         "GET %s HTTP/1.1\r\nHost: %s%s\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
         "Sec-WebSocket-Version: 13\r\nUser-Agent: MegaMixSwitchMod/1\r\n\r\n",
-        kCloudPath, host, portSfx, key);
+        path, host, portSfx, key);
     if (n <= 0 || n >= (int)sizeof(req) || !SendRaw(req, (size_t)n)) {
         SetError("upgrade request send failed");
         return false;
@@ -1049,7 +1100,7 @@ static bool WsHandshake(const char* host, uint16_t port, uint32_t timeoutMs) {
     status[sl] = 0;
     int code = 0;
     sscanf(status, "HTTP/%*d.%*d %d", &code);
-    WriteLog("[MP] upgrade %s%s%s -> '%s' after %llu ms\n", host, portSfx, kCloudPath,
+    WriteLog("[MP] upgrade %s%s%s -> '%s' after %llu ms\n", host, portSfx, path,
              status, (unsigned long long)(NowMs() - t0));
     if (code != 101) {
         SetError("server answered HTTP %d (not a WebSocket)", code);
@@ -1140,7 +1191,7 @@ static void SessionLoop() {
     const uint32_t gen = g_modeGen.load();
 
     while (true) {
-        FlushOutgoing();      /* first: a lobby_leave queued by SetCloudMode */
+        FlushOutgoing();      /* first: a lobby_leave queued by SetServerMode */
         if (ModeChanged(gen)) {
             WriteLog("[MP] server mode changed, closing session\n");
             return;
@@ -1196,7 +1247,17 @@ static void SessionLoop() {
 /* Thread                                                              */
 /* ------------------------------------------------------------------ */
 
+static const char* ModeName(ServerMode m) {
+    return m == kServerOff ? "off" : m == kServerCloud ? "cloud" : "local";
+}
+
 static void NetThread(void*) {
+    /* Off: no network request, no sockets until a server is chosen */
+    if (GetServerMode() == kServerOff) {
+        SetState(MpState::Disabled);
+        WriteLog("[MP] server mode: off (idle)\n");
+        while (GetServerMode() == kServerOff) SleepMs(200);
+    }
     SetState(MpState::WaitingNetwork);
 
     WriteLog("[MP] nifm init...\n");
@@ -1263,8 +1324,14 @@ static void NetThread(void*) {
      * upgrade on /switch (both waits up to kCloudTimeoutMs for a sleeping
      * free-tier server), then the same hello/session as on the LAN. */
     auto attemptCloud = [&]() {
-        const char* host = Config::mpCloudHost.c_str();
-        const uint16_t port = (uint16_t)Config::mpCloudPort;
+        char host[sizeof(s_cloudHost)], path[sizeof(s_cloudPath)];
+        uint16_t port;
+        {
+            std::lock_guard<std::mutex> lk(g_statusMtx);
+            memcpy(host, s_cloudHost, sizeof(host));
+            memcpy(path, s_cloudPath, sizeof(path));
+            port = s_cloudPort;
+        }
         char ab[64];
         snprintf(ab, sizeof(ab), "%s:%u", host, port);
         SetServer(ab);
@@ -1277,7 +1344,7 @@ static void NetThread(void*) {
         WriteLog("[MP] online server %s -> %u.%u.%u.%u:%u\n", host, ip_be & 0xff,
                  (ip_be >> 8) & 0xff, (ip_be >> 16) & 0xff, ip_be >> 24, port);
         if (!TcpConnect(ip_be, port, kCloudTimeoutMs) ||
-            !WsHandshake(host, port, kCloudTimeoutMs) || !SayHello()) {
+            !WsHandshake(host, port, path, kCloudTimeoutMs) || !SayHello()) {
             CloseSock();
             return false;
         }
@@ -1288,12 +1355,17 @@ static void NetThread(void*) {
     };
     int round = 0;
     uint32_t gen = g_modeGen.load();
-    WriteLog("[MP] server mode: %s\n", IsCloudMode() ? "cloud" : "local");
+    WriteLog("[MP] server mode: %s\n", ModeName(GetServerMode()));
     while (true) {
         if (ModeChanged(gen)) {
             gen = g_modeGen.load();
             backoff = 0;
-            WriteLog("[MP] server mode: %s\n", IsCloudMode() ? "cloud" : "local");
+            WriteLog("[MP] server mode: %s\n", ModeName(GetServerMode()));
+        }
+        if (GetServerMode() == kServerOff) {
+            SetState(MpState::Disabled);
+            while (!ModeChanged(gen)) SleepMs(200);
+            continue;
         }
         if (IsCloudMode()) {
             if (!attemptCloud() && !ModeChanged(gen)) SetState(MpState::Error);
@@ -1317,22 +1389,68 @@ static void NetThread(void*) {
     }
 }
 
-void SetCloudMode(bool cloud) {
-    if (IsCloudMode() == cloud) return;
-    lobby::LeaveForServerSwitch();                   /* rooms don't move servers */
-    Config::mpServerMode = cloud ? "cloud" : "local";
-    Config::Save();
-    g_cloud.store(cloud, std::memory_order_release);
+static void Reconnect() {
     g_modeGen.fetch_add(1, std::memory_order_acq_rel);
-    {
-        std::lock_guard<std::mutex> lk(g_statusMtx);
-        g_lastError[0] = 0;
+    std::lock_guard<std::mutex> lk(g_statusMtx);
+    g_lastError[0] = 0;
+}
+
+void SetServerMode(ServerMode m) {
+    if (m > kServerCloud || GetServerMode() == m) return;
+    lobby::LeaveForServerSwitch();                   /* rooms don't move servers */
+    Config::mpServerMode = ModeName(m);
+    Config::Save();
+    g_mode.store(m, std::memory_order_release);
+    Reconnect();
+    WriteLog("[MP] server mode -> %s\n", ModeName(m));
+}
+
+/* parse into the net thread's copy; false (nothing stored) if invalid */
+static bool ApplyCloudUrl(const char* url) {
+    char host[sizeof(s_cloudHost)], path[sizeof(s_cloudPath)];
+    uint16_t port = 80;
+    if (!ParseCloudUrl(url, host, sizeof(host), &port, path, sizeof(path))) return false;
+    std::lock_guard<std::mutex> lk(g_statusMtx);
+    memcpy(s_cloudHost, host, sizeof(host));
+    memcpy(s_cloudPath, path, sizeof(path));
+    s_cloudPort = port;
+    return true;
+}
+
+bool SetCloudUrl(const char* url) {
+    char t[160];
+    snprintf(t, sizeof(t), "%s", url ? url : "");
+    char* b = t;
+    while (*b == ' ') b++;
+    for (size_t n = strlen(b); n && b[n - 1] == ' '; n--) b[n - 1] = 0;
+    if (!*b) {
+        snprintf(t, sizeof(t), "%s", kDefaultCloudUrl);
+        b = t;
     }
-    WriteLog("[MP] server mode -> %s\n", cloud ? "cloud" : "local");
+    if (!ApplyCloudUrl(b)) {
+        WriteLog("[MP] bad online server address '%s'\n", b);
+        return false;
+    }
+    if (Config::mpCloudUrl != b) {
+        Config::mpCloudUrl = b;
+        Config::Save();
+        WriteLog("[MP] online server -> %s\n", b);
+        if (IsCloudMode()) {
+            lobby::LeaveForServerSwitch();
+            Reconnect();
+        }
+    }
+    return true;
 }
 
 void Init() {
-    g_cloud.store(Config::mpServerMode == "cloud");
+    g_mode.store(Config::mpServerMode == "cloud" ? kServerCloud
+                 : Config::mpServerMode == "off" ? kServerOff : kServerLocal);
+    if (!ApplyCloudUrl(Config::mpCloudUrl.c_str())) {
+        WriteLog("[MP] bad cloud_url '%s', using %s\n", Config::mpCloudUrl.c_str(),
+                 kDefaultCloudUrl);
+        ApplyCloudUrl(kDefaultCloudUrl);
+    }
     lobby::Init();
     if (!ApiResolveAll()) {
         WriteLog("[MP] disabled: unresolved symbols\n");

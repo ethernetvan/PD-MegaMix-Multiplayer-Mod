@@ -346,8 +346,9 @@ class Server:
                     continue
                 msg.pop("cid", None)
                 msg["t"] = "dbg_cmd"
+                # no cid: every console; an unknown/offline cid: nobody
                 targets = ([self.clients[cid]] if cid in self.clients
-                           else list(self.clients.values()))
+                           else [] if cid else list(self.clients.values()))
                 n = 0
                 for c in targets:
                     try:

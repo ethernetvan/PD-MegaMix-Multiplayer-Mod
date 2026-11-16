@@ -29,9 +29,12 @@ To test the current implementation:
 ## Multiplayer server: local PC vs. online (Render)
 
 One codebase (`server/` + `web/`) runs both ways. Consoles pick the server on the
-multiplayer overlay: **Options -> Server -> LOCAL / ONLINE** (saved as
-`[multiplayer] server_mode = "local" | "cloud"` in `sdmc:/MikuMikuSwitchPlugin/config.toml`;
-also `python server/admin.py server_mode local|cloud`).
+multiplayer overlay: **Options -> Server -> OFF / LOCAL / ONLINE** (saved as
+`[multiplayer] server_mode = "off" | "local" | "cloud"` in `sdmc:/MikuMikuSwitchPlugin/config.toml`;
+also `python server/admin.py server_mode off|local|cloud`). OFF never touches the network.
+The pencil on the ONLINE card edits the online server address (`cloud_url`, default
+`mikumod.evanthomas.dev`; `host[:port][/path]`, optional `ws://`/`http://`, empty = default;
+also `admin.py cloud_url ADDRESS`).
 
 ### Local PC / LAN (default, unchanged)
 ```bash
@@ -42,7 +45,7 @@ python server/mp_server.py
   TCP 7777 (`server_ip` in config.toml is optional). Windows Firewall must allow Python.
 - Dashboard: `http://<pc-ip>:8080/` (it shows **Local Server** in the header). The same
   port also accepts consoles over WebSocket on `/switch` (handy to test the online
-  code path locally: `server_mode = "cloud"`, `cloud_host = "<pc-ip>"`, `cloud_port = 8080`).
+  code path locally: ONLINE with the address `<pc-ip>:8080`).
 - Dev UI: `npm --prefix web run dev` talks to the local server on 8080
   (`VITE_LOCAL_WS_PORT` changes the port, `VITE_WS_URL` forces any WebSocket URL).
 
@@ -65,7 +68,8 @@ The Switch mod has no TLS, so consoles connect with plain-HTTP WebSocket
 HTTPS (it 301-redirects `ws://`), so Cloudflare terminates the console's plain HTTP:
 - DNS: `mikumod` CNAME -> the service's `*.onrender.com` host, **Proxied** (orange cloud);
   add the custom domain in Render too.
-- SSL/TLS mode **Full (strict)** (Cloudflare -> Render over HTTPS).
+- SSL/TLS mode **Full (strict)** (Cloudflare -> Render over HTTPS). Not Flexible: then
+  Cloudflare reaches Render over HTTP and Render answers the console with a 301 to https.
 - **Always Use HTTPS off** for `mikumod.evanthomas.dev/switch*` (a Configuration Rule
   or the zone setting), no HSTS on the hostname, and no Automatic HTTPS Rewrites /
   Bot Fight Mode challenge on `/switch` (consoles can't solve challenges).

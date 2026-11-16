@@ -722,6 +722,39 @@ class LineReader(unittest.IsolatedAsyncioTestCase):
             ("10.0.0.2", 5)), ("5.6.7.8", 5))
 
 
+class AdminTargets(unittest.IsolatedAsyncioTestCase):
+    async def test_offline_cid_reaches_nobody(self):
+        import mp_server
+        mp_server.log = lambda m: None
+
+        class W(FakeWriter):
+            async def drain(self):
+                pass
+
+            def close(self):
+                pass
+
+        srv = RealServer(0, 0)
+        a, b = W(), W()
+        srv.clients = {"cid_a": SimpleNamespace(writer=a),
+                       "cid_b": SimpleNamespace(writer=b)}
+
+        async def admin(msg):
+            out = W()
+            await srv.admin_handle(reader_of((json.dumps(msg) + "\n").encode()),
+                                   out)
+            return out.data.decode().strip()
+
+        self.assertEqual(await admin({"cmd": "tap", "btn": "A", "cid": "gone"}),
+                         "ok 0 clients")
+        self.assertEqual((a.data, b.data), (b"", b""))
+        self.assertEqual(await admin({"cmd": "tap", "btn": "A", "cid": "cid_a"}),
+                         "ok 1 clients")
+        self.assertTrue(a.data and not b.data)
+        self.assertEqual(await admin({"cmd": "tap", "btn": "A"}), "ok 2 clients")
+        self.assertTrue(b.data)
+
+
 class SwitchOverWs(unittest.IsolatedAsyncioTestCase):
     """Console protocol on /switch of a real mp_server in cloud mode."""
 

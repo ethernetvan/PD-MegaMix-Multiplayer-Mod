@@ -22,16 +22,27 @@ struct MpStatus {
     char     last_error[96];
     uint32_t connect_count;
     bool     cloud;          /* online server mode (WebSocket) */
+    uint8_t  mode;           /* ServerMode */
 };
 
-/* Server selection: false = Local (LAN search / server_ip, raw TCP),
- * true = the online server Config::mpCloudHost over a WebSocket on plain
- * HTTP (ws://host:port/switch). SetCloudMode is for the game thread: it
- * saves config.toml, leaves a room on the old server and makes the net
- * thread drop the current session/search and reconnect in the new mode. */
+/* Server selection (Config::mpServerMode):
+ *   Off   - never connects (no network request, no sockets, no search)
+ *   Local - LAN search / server_ip, raw TCP
+ *   Cloud - the online server Config::mpCloudUrl, WebSocket over plain
+ *           HTTP (ws://host[:port]/switch)
+ * SetServerMode / SetCloudUrl are for the game thread: they save
+ * config.toml, leave a room on the old server and make the net thread drop
+ * the current session/search and reconnect in the new mode. */
+enum ServerMode : uint8_t { kServerOff = 0, kServerLocal = 1, kServerCloud = 2 };
+ServerMode GetServerMode();
+void SetServerMode(ServerMode m);
 bool IsCloudMode();
-void SetCloudMode(bool cloud);
-const char* CloudHost();
+/* host[:port][/path], optional ws:// or http:// (https/wss map to plain
+ * port 80: the console has no TLS); empty = the default server. False if
+ * it can't be parsed (nothing changes). */
+bool SetCloudUrl(const char* url);
+const char* CloudUrl();          /* game thread: as shown/saved */
+constexpr const char* kDefaultCloudUrl = "mikumod.evanthomas.dev";
 /* online mode: a free-tier server may need ~1 min to wake up */
 constexpr uint32_t kCloudTimeoutMs = 65000;
 

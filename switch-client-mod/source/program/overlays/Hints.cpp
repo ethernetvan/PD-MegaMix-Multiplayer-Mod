@@ -8,6 +8,7 @@
 #include "../nc/ui/customize_sel.hpp"
 #include "../AutoPlay.hpp"
 #include "../mp/MpLobby.hpp"
+#include "../mp/MpNet.hpp"
 #include "../Mode2DNoMV.hpp"
 #include "../ChartRandomizer.hpp"
 #include "Config.hpp"
@@ -293,7 +294,7 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
 
     mp::lobby::Snapshot sn;
     mp::lobby::GetSnapshot(&sn);
-    bool mpOn    = Config::mpEnabled;
+    bool mpOn    = Config::mpEnabled && mp::GetServerMode() != mp::kServerOff;
     bool inLobby = sn.code[0] != 0;
 
     ImVec2 mpos = ImGui::GetMousePos();

@@ -40,7 +40,8 @@ def main():
     sub.add_parser("module_dump")
     sub.add_parser("avatar_hide").add_argument("target_cid")
     sub.add_parser("remote_avatars").add_argument("state", choices=["on", "off"])
-    sub.add_parser("server_mode").add_argument("mode", choices=["local", "cloud"])
+    sub.add_parser("server_mode").add_argument("mode", choices=["off", "local", "cloud"])
+    sub.add_parser("cloud_url").add_argument("url", help='host[:port][/path]; "" = default')
     sub.add_parser("menu_cursor").add_argument("v", type=int)
     p = sub.add_parser("sel_lists"); p.add_argument("pvs", type=int, nargs="+")
     sub.add_parser("lobby_create")
@@ -106,6 +107,8 @@ def main():
         pl = {"cmd": "avatar_hide", "target": args.target_cid}
     elif args.cmd == "remote_avatars":
         pl = {"cmd": "remote_avatars", "on": args.state == "on"}
+    elif args.cmd == "cloud_url":
+        pl = {"cmd": "cloud_url", "url": args.url}
     elif args.cmd == "server_mode":
         pl = {"cmd": "server_mode", "mode": args.mode}
     elif args.cmd == "menu_cursor":
