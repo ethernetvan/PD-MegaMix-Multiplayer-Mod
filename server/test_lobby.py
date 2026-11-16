@@ -322,6 +322,9 @@ class T(unittest.TestCase):
         self.assertEqual(kicked[0][1]["reason"], "kicked")
         dump = self.lm.on_admin({"cmd": "lobbies"}, 101.0)
         self.assertIn(code, dump)
+        m = dump[code]["members"][0]
+        for k in ("score", "combo", "pct", "life", "final", "autoplay_pct"):
+            self.assertIn(k, m)
         self.lm.on_admin({"cmd": "set_leader", "code": code, "cid": "a"}, 102.0)
 
     def test_join_midround_spectator_then_player(self):

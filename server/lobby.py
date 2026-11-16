@@ -1088,7 +1088,12 @@ class LobbyManager:
                     "members": [{"cid": m.cid, "name": m.name,
                                  "connected": m.connected, "role": m.role,
                                  "loaded": m.loaded,
-                                 "module": self._client_modules.get(m.cid, -1)}
+                                 "module": self._client_modules.get(m.cid, -1),
+                                 "autoplay": m.autoplay,
+                                 "autoplay_pct": m.autoplay_pct,
+                                 "final": m.final is not None,
+                                 **{k: m.state.get(k, 0) for k in
+                                    ("score", "combo", "pct", "life")}}
                                 for m in l.members],
                 }
             return out
