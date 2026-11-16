@@ -141,7 +141,7 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
                       <span>
                         {m.name}
                         {m.autoplay && (
-                          <span className="badge auto">{autoLabel(m.autoplay_pct)}</span>
+                          <span className="badge auto">{autoLabel(m.autoplay_pct, m.autoplay_mode)}</span>
                         )}
                         {m.final && (
                           <span className="badge done">✓ finished</span>
@@ -249,7 +249,7 @@ function ResCard({
         />
         <span className="res-name">
           {r.name}
-          {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct)}</span>}
+          {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct, r.autoplay_mode)}</span>}
           {win && <span className="badge star">★ WINNER</span>}
           {tags.map((t) => (
             <span key={t} className="badge star">
@@ -495,7 +495,7 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
                     />
                     <span>
                       {r.name}
-                      {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct)}</span>}
+                      {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct, r.autoplay_mode)}</span>}
                     </span>
                   </span>
                 </td>
@@ -543,7 +543,7 @@ function Members({ l }: { l: LobbySnap }) {
               {m.mid === l.owner && <span className="badge">Owner</span>}
               {m.mid === l.leader && <span className="badge pick">Picker</span>}
               {m.role !== "player" && <span className="badge">{m.role}</span>}
-              {m.autoplay && <span className="badge auto">{autoLabel(m.autoplay_pct)}</span>}
+              {m.autoplay && <span className="badge auto">{autoLabel(m.autoplay_pct, m.autoplay_mode)}</span>}
               {!m.connected && <span className="badge off">offline</span>}
               {m.connected && !m.ready && (
                 <span className="badge warn">{m.reason || "not ready"}</span>

@@ -14,6 +14,68 @@ namespace AutoPlay {
 
 bool g_enabled = false;
 int32_t g_hitPct = 100;
+int32_t g_mode = Mode_Custom;
+
+/* Judgment windows (nc/game/hit_state.cpp NormalWindow): Cool +-0.03,
+ * Fine +-0.07, Safe +-0.10, Sad +-0.13 s. A mode "degrades" a note by
+ * injecting the press late; the press lands ~8-17 ms after the inject
+ * threshold (1 frame), inside the intended band. */
+static constexpr float kLateFine = 0.055f;   /* inject at <= -0.047 -> ~Fine */
+static constexpr float kLateSafe = 0.090f;   /* inject at <= -0.082 -> ~Safe */
+static constexpr float kLateSad  = 0.112f;   /* inject at <= -0.104 -> ~Sad  */
+static constexpr float kGiveUp   = -0.125f;  /* past this, don't bother      */
+
+static const char* const kTags[Mode_Count] = {
+    "", "AUTO", "AUTO PRO", "AUTO 97",
+    "AUTO STREAK", "AUTO HUMAN", "AUTO CLUTCH", "AUTO TIE"
+};
+
+static const char* const kNames[Mode_Count] = {
+    "custom", "auto", "pro", "97",
+    "streak", "human", "clutch", "tie"
+};
+
+const char* ModeTag() {
+    static char buf[24];
+    if (g_mode == Mode_Custom) {
+        if (g_hitPct >= 100) snprintf(buf, sizeof(buf), "AUTO");
+        else snprintf(buf, sizeof(buf), "AUTO %d%%", (int)g_hitPct);
+        return buf;
+    }
+    int32_t m = (g_mode >= 0 && g_mode < Mode_Count) ? g_mode : Mode_Auto;
+    return kTags[m];
+}
+
+const char* ModeName() {
+    int32_t m = (g_mode >= 0 && g_mode < Mode_Count) ? g_mode : Mode_Custom;
+    return kNames[m];
+}
+
+int32_t EffectivePct() {
+    switch (g_mode) {
+        case Mode_Pro:    return 97;
+        case Mode_97:     return 97;
+        case Mode_Streak: return 94;
+        case Mode_Human:  return 95;
+        case Mode_Clutch: return 95;
+        case Mode_Tie:    return 95;
+        case Mode_Custom: return g_hitPct;
+        default:          return 100;
+    }
+}
+
+int32_t ModeFromName(const char* s) {
+    if (!s) return -1;
+    if (!strcmp(s, "auto"))   return Mode_Auto;
+    if (!strcmp(s, "pro"))    return Mode_Pro;
+    if (!strcmp(s, "97") || !strcmp(s, "90")) return Mode_97;
+    if (!strcmp(s, "streak")) return Mode_Streak;
+    if (!strcmp(s, "human"))  return Mode_Human;
+    if (!strcmp(s, "clutch")) return Mode_Clutch;
+    if (!strcmp(s, "tie"))    return Mode_Tie;
+    if (!strcmp(s, "custom") || !strcmp(s, "pct")) return Mode_Custom;
+    return -1;
+}
 
 static std::atomic<int64_t> s_gameFrameMs{0};
 
@@ -37,11 +99,7 @@ void DrawIndicator() {
     if (!dl) return;
     const ImGuiIO& io = ImGui::GetIO();
     float k = io.DisplaySize.y / 720.0f;
-    const char* txt = (g_hitPct >= 100) ? "AUTO"
-                      : nullptr;
-    char buf[16];
-    if (!txt) { snprintf(buf, sizeof(buf), "AUTO %d%%", (int)g_hitPct);
-                txt = buf; }
+    const char* txt = ModeTag();
     float fs = ImGui::GetFont()->FontSize * 1.15f;
     ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0, txt);
     float padX = 8 * k, padY = 3 * k;
@@ -54,12 +112,64 @@ void DrawIndicator() {
                 IM_COL32(25, 25, 25, 255), txt);
 }
 
-/* deterministic per target index: pct=50 hits every other note; two
- * consoles with the same pct make the same judgments -> tie */
-static bool ShouldHit(int32_t idx) {
-    if (g_hitPct >= 100 || idx < 0) return true;
-    if (g_hitPct <= 0) return false;
-    return (int)(((int64_t)idx * g_hitPct) % 100) < g_hitPct;
+static int32_t TotalTargetIndex(PVGameArcade* game) {
+    int32_t mx = 0;
+    for (PvGameTarget* t = game->target; t != nullptr; t = t->next)
+        if (t->target_index > mx) mx = t->target_index;
+    return mx + 1;
+}
+
+/* deterministic per target index: >= 0 = hit, injected that many seconds
+ * late (degraded judgment); < 0 = skip (real miss). Same chart + same
+ * mode on two consoles -> identical judgments -> tie. */
+static float HitPlan(int32_t idx, int32_t total) {
+    if (idx < 0) return 0.0f;
+    switch (g_mode) {
+    case Mode_Pro:
+        /* ~1/32 notes get a degraded judgment, biased away from outright
+         * misses: ~50 % Fine, ~31 % Safe, ~13 % Sad, ~6 % miss */
+        if ((idx % 32) == 20) {
+            uint32_t h = ((uint32_t)idx * 7919u) >> 28;   /* 0..15 */
+            if (h < 8)  return kLateFine;
+            if (h < 13) return kLateSafe;
+            if (h < 15) return kLateSad;
+            return -1.0f;
+        }
+        return 0.0f;
+    case Mode_97:
+        return (idx % 32) == 20 ? -1.0f : 0.0f;
+    case Mode_Streak:
+        return (idx % 32) >= 30 ? -1.0f : 0.0f;
+    case Mode_Tie:
+        if (idx % 9 == 0) return kLateFine;
+        if (idx % 9 == 4) return kLateSafe;
+        return 0.0f;
+    case Mode_Human: {
+        uint32_t h = ((uint32_t)idx * 2654435761u) >> 24;   /* 0..255 */
+        if (h < 204) return 0.0f;        /* ~80 % Cool */
+        if (h < 240) return kLateFine;   /* ~14 % Fine */
+        if (h < 250) return kLateSafe;   /* ~4 % Safe  */
+        if (h < 253) return kLateSad;    /* ~1 % Sad   */
+        return -1.0f;                    /* ~1 % miss  */
+    }
+    case Mode_Clutch: {
+        float f = total > 1 ? (float)idx / (float)total : 1.0f;
+        if (f > 1.0f) f = 1.0f;
+        uint32_t h = ((uint32_t)idx * 2654435761u) >> 24;
+        int32_t cut = 165 + (int32_t)(90.0f * f);   /* ~65 % Cool early -> 100 % */
+        if ((int32_t)h < cut)      return 0.0f;
+        if ((int32_t)h < cut + 20) return kLateFine;
+        if ((int32_t)h < 248)      return kLateSafe;
+        return -1.0f;
+    }
+    case Mode_Custom:
+        if (g_hitPct >= 100) return 0.0f;
+        if (g_hitPct <= 0)   return -1.0f;
+        return ((int64_t)idx * g_hitPct) % 100 < g_hitPct ? 0.0f : -1.0f;
+    case Mode_Auto:
+    default:
+        return 0.0f;
+    }
 }
 
 static int32_t s_auto_down[8]   = { 0 };
@@ -159,13 +269,17 @@ void Update(PVGameArcade* game) {
     if (!first_target)
         return;
 
+    /* delayed judgments wait for their late offset; a straggler is still
+     * injected (degraded) until kGiveUp rather than dropped as a miss */
+    float plan = HitPlan(first_target->target_index, TotalTargetIndex(game));
+    float want = plan > 0.0f ? plan : 0.0f;
     float time_rem = first_target->flying_time_remaining;
-    if (time_rem > 0.008f || time_rem < -0.028f)
+    if (time_rem > 0.008f - want || time_rem < kGiveUp)
         return;
 
     /* a skipped chord counts as a miss; long-note ends are still released
      * below so a held note started earlier doesn't stay down */
-    const bool hit = ShouldHit(first_target->target_index);
+    const bool hit = plan >= 0.0f;
 
     // 4. Process initial note hit
     for (PvGameTarget* target = game->target; target != nullptr; target = target->next) {
@@ -299,9 +413,11 @@ void PostUpdate(PVGameArcade* game) {
         if (!first_target || t->target_index < first_target->target_index) { first_target = t; }
     }
     if (!first_target) return;
+    float plan = HitPlan(first_target->target_index, TotalTargetIndex(game));
+    float want = plan > 0.0f ? plan : 0.0f;
     float time_rem = first_target->flying_time_remaining;
-    if (time_rem > 0.008f || time_rem < -0.028f) return;
-    bool hit = ShouldHit(first_target->target_index);
+    if (time_rem > 0.008f - want || time_rem < kGiveUp) return;
+    bool hit = plan >= 0.0f;
 
     for (PvGameTarget* target = game->target; target != nullptr; target = target->next) {
         if (target->hit_state != 21 && target->hit_state != HitState_None) continue;
@@ -392,6 +508,7 @@ void ProcessSlideHit(
         s_last_hit_target = -1;
         s_last_hit_target_second = -1;
     }
+    const int32_t total = TotalTargetIndex(game);
 
     // Check both target indices to prevent duplicate trigger on paired sliders
     if (*target_index != -1 && (*target_index == s_last_hit_target || *target_index == s_last_hit_target_second)) {
@@ -410,9 +527,11 @@ void ProcessSlideHit(
         bool is_slide = t->slide_left || t->slide_right || t->slide_chain || (t->target_type >= 12 && t->target_type <= 16) || (t->target_type >= 23 && t->target_type <= 24);
         if (!is_slide) continue;
 
-        if (t->flying_time_remaining <= 0.038f && t->flying_time_remaining >= -0.04f) {
-            if (!ShouldHit(t->target_index))
-                continue;               /* missed slide (and its pair) */
+        float plan = HitPlan(t->target_index, total);
+        if (plan < 0.0f)
+            continue;                   /* missed slide (and its pair) */
+        if (t->flying_time_remaining <= 0.038f - plan &&
+            t->flying_time_remaining >= kGiveUp) {
             s_last_hit_target = t->target_index;
 
             // Chain slide

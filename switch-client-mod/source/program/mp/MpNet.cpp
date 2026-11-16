@@ -579,11 +579,13 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
     } else if (strcmp(cmd, "autoplay") == 0) {
-        /* {cmd:autoplay, on:bool, pct?:int} */
+        /* {cmd:autoplay, on:bool, pct?:int, mode?:name} */
         c.type = MpCmdType::Autoplay;
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
         c.b = -1; getInt("pct", &c.b);
+        int mi = mpjson::Find(line, tok, ntok, "mode");
+        if (mi >= 0) mpjson::Copy(line, tok[mi], c.str, sizeof(c.str));
     } else if (strcmp(cmd, "notify_style") == 0) {
         /* {cmd:notify_style, style:avatars|text|off} */
         c.type = MpCmdType::NotifyStyle;
@@ -724,8 +726,13 @@ void OnFrame() {
             case MpCmdType::Jump:     g_pendingJump.store(c.a); break;
             case MpCmdType::Autopause: g_autopauseArm.store(c.a); break;
             case MpCmdType::Autoplay: {
+                if (c.str[0]) {
+                    int32_t md = AutoPlay::ModeFromName(c.str);
+                    if (md >= 0) AutoPlay::g_mode = md;
+                }
                 if (c.b >= 0) {
                     AutoPlay::g_hitPct = c.b > 100 ? 100 : (c.b < 0 ? 0 : c.b);
+                    AutoPlay::g_mode = AutoPlay::Mode_Custom;
                 }
                 AutoPlay::g_enabled = c.a != 0;
                 lobby::ReportAutoPlay(AutoPlay::g_enabled);

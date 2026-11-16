@@ -47,6 +47,7 @@ export interface MemberSnap {
   reason: string;
   autoplay: boolean;
   autoplay_pct: number;
+  autoplay_mode?: string;
   avatar: string | null;
   back_in_sel: boolean;
   score: number;
@@ -74,6 +75,7 @@ export interface StandingRow {
   connected: boolean;
   autoplay: boolean;
   autoplay_pct: number;
+  autoplay_mode?: string;
   avatar: string | null;
 }
 

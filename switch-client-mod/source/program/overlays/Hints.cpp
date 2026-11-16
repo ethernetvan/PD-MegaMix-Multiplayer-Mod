@@ -315,9 +315,7 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
      * (right edge aligned to the badge); the lobby lines stack below it */
     float autoH = 0.0f;
     if (AutoPlay::g_enabled) {
-        char atag[16];
-        if (AutoPlay::g_hitPct >= 100) snprintf(atag, sizeof(atag), "AUTO");
-        else snprintf(atag, sizeof(atag), "AUTO %d%%", (int)AutoPlay::g_hitPct);
+        const char* atag = AutoPlay::ModeTag();
         ImVec2 asz = font->CalcTextSizeA(baseFontSz, FLT_MAX, 0.0f, atag);
         float padX = 6.0f * s, padY = 2.0f * s;
         ImVec2 p1(posX + w, posY + h + 4.0f * s + asz.y + padY * 2);
@@ -610,10 +608,11 @@ void ProcessInput() {
                     sound::PlaySelectSE();
                 }
             } else if (s_tap_count == 3) {
-                /* partial AutoPlay: cycle the hit rate and switch it on */
-                AutoPlay::g_hitPct = AutoPlay::g_hitPct > 75 ? 75
-                    : (AutoPlay::g_hitPct > 50 ? 50
-                    : (AutoPlay::g_hitPct > 25 ? 25 : 100));
+                /* cycle the AutoPlay bot mode and switch it on */
+                do {
+                    AutoPlay::g_mode =
+                        (AutoPlay::g_mode + 1) % AutoPlay::Mode_Count;
+                } while (AutoPlay::g_mode == AutoPlay::Mode_Custom);
                 AutoPlay::g_enabled = true;
                 mp::lobby::ReportAutoPlay(true);
                 sound::PlaySelectSE();

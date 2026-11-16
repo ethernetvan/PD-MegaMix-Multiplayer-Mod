@@ -21,6 +21,7 @@ def main():
     sub.add_parser("jump").add_argument("pv", type=int)
     sub.add_parser("autopause").add_argument("state", choices=["on", "off"])
     p = sub.add_parser("autoplay"); p.add_argument("state", choices=["on", "off"]); p.add_argument("--pct", type=int, default=None)
+    p.add_argument("--mode", choices=["auto", "pro", "97", "streak", "human", "clutch", "tie"], default=None)
     p = sub.add_parser("glow"); p.add_argument("dir", choices=["up", "down"])
     p = sub.add_parser("notify_style"); p.add_argument("style", choices=["avatars", "text", "off"])
     sub.add_parser("popup_test")
@@ -73,6 +74,8 @@ def main():
         pl = {"cmd": "autoplay", "on": args.state == "on"}
         if args.pct is not None:
             pl["pct"] = max(0, min(100, args.pct))
+        if args.mode is not None:
+            pl["mode"] = args.mode
     elif args.cmd == "menu_holds":
         pl = {"cmd": "menu_holds", "init": args.init,
               "score_a": args.score_a, "vp": args.vp,

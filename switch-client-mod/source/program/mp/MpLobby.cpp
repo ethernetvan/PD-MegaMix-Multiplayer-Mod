@@ -2054,8 +2054,10 @@ void CmdResumeReq() {
 void ReportAutoPlay(bool on) {
     if (!s_code[0] && s_phase == L_NONE) return;
     char m[64];
-    snprintf(m, sizeof(m), "{\"t\":\"autoplay\",\"on\":%s,\"pct\":%d}",
-             on ? "true" : "false", (int)AutoPlay::g_hitPct);
+    snprintf(m, sizeof(m),
+             "{\"t\":\"autoplay\",\"on\":%s,\"pct\":%d,\"mode\":\"%s\"}",
+             on ? "true" : "false", (int)AutoPlay::EffectivePct(),
+             AutoPlay::ModeName());
     SendLine(m);
 }
 

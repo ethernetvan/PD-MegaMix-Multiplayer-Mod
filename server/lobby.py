@@ -20,7 +20,7 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       avatar_get {img} (an opted-in console asks for a member's uploaded
       portrait; handled by mp_server, answered with avatar_px {img, rgba} or
       avatar_px {img, err});
-      autoplay {on, pct} (AutoPlay on/off plus hit-rate 0..100);
+      autoplay {on, pct, mode} (AutoPlay on/off, hit-rate 0..100, bot mode);
       avatar_img {module,w,h,rgba} (base64 portrait upload; handled by
       mp_server, not the engine).
 S->C: welcome/error/pong (existing);
@@ -79,7 +79,8 @@ class Member:
                  "back_in_sel", "state", "prev_combo_bucket", "low_life_armed",
                  "disconnect_at", "last_activity",
                  "ready", "ready_reason", "ready_pv", "autoplay",
-                 "autoplay_pct", "scene", "pause_req_at", "pause_req_kind")
+                 "autoplay_pct", "autoplay_mode", "scene",
+                 "pause_req_at", "pause_req_kind")
 
     def __init__(self, cid, name):
         self.cid = cid
@@ -99,6 +100,7 @@ class Member:
         self.ready_pv = -1
         self.autoplay = False
         self.autoplay_pct = 100
+        self.autoplay_mode = ""      # "auto"|"pro"|"97"|"streak"|"human"|"clutch"|"tie"|"custom"
         self.scene = None         # sel|results|game|other, None = unknown ("sel")
         self.pause_req_at = 0.0
         self.pause_req_kind = ""
@@ -214,6 +216,7 @@ class LobbyManager:
                              "ready": m.ready, "reason": m.ready_reason,
                              "autoplay": m.autoplay,
                              "autoplay_pct": m.autoplay_pct,
+                             "autoplay_mode": m.autoplay_mode,
                              "module": self._client_modules.get(m.cid, -1),
                              "chara": self._client_avatar.get(m.cid, (-1, 0))[0],
                              "mh": self._client_avatar.get(m.cid, (-1, 0))[1],
@@ -319,7 +322,8 @@ class LobbyManager:
         elif t == "kick":
             self._kick(cid, msg.get("cid"), now)
         elif t == "autoplay":
-            # autoplay {on, pct}: on/off flag plus optional hit-rate 0..100
+            # autoplay {on, pct, mode}: on/off flag, optional hit-rate 0..100
+            # and optional bot-mode name (auto|pro|97|streak|human|clutch|tie|custom)
             m = self._member(self._lobby_of(cid), cid)
             if m:
                 m.autoplay = bool(msg.get("on"))
@@ -328,6 +332,9 @@ class LobbyManager:
                                   if isinstance(pct, int)
                                   and not isinstance(pct, bool)
                                   else 100)
+                mode = msg.get("mode")
+                if isinstance(mode, str):
+                    m.autoplay_mode = mode[:16]
                 lobby = self._lobby_of(cid)
                 if lobby:
                     self._broadcast_lobby(lobby)
@@ -1091,6 +1098,7 @@ class LobbyManager:
                                  "module": self._client_modules.get(m.cid, -1),
                                  "autoplay": m.autoplay,
                                  "autoplay_pct": m.autoplay_pct,
+                                 "autoplay_mode": m.autoplay_mode,
                                  "final": m.final is not None,
                                  **{k: m.state.get(k, 0) for k in
                                     ("score", "combo", "pct", "life")}}

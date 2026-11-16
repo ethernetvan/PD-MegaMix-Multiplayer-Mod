@@ -396,6 +396,8 @@ class WebBridge:
                                 if self._member(l, x["cid"]) else False),
                      "autoplay_pct": (self._member(l, x["cid"]).autoplay_pct
                                 if self._member(l, x["cid"]) else 100),
+                     "autoplay_mode": (self._member(l, x["cid"]).autoplay_mode
+                                if self._member(l, x["cid"]) else ""),
                      "avatar": self._avatar_url(x["cid"])}
                     for x in rows]}
         for m in l.members:
@@ -404,6 +406,7 @@ class WebBridge:
                 "connected": m.connected, "role": m.role, "loaded": m.loaded,
                 "ready": m.ready, "reason": m.ready_reason,
                 "autoplay": m.autoplay, "autoplay_pct": m.autoplay_pct,
+                "autoplay_mode": m.autoplay_mode,
                 "avatar": self._avatar_url(m.cid),
                 "back_in_sel": m.back_in_sel,
                 "score": m.state.get("score", 0),
