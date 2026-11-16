@@ -392,6 +392,8 @@ class WebBridge:
                      "max_combo": x["max_combo"], "life": x["life"],
                      "rank": x["rank"], "final": x["final"],
                      "connected": x["connected"],
+                     "border": x["border"], "clear": x["clear"],
+                     "drop": x["drop"],
                      "autoplay": (self._member(l, x["cid"]).autoplay
                                 if self._member(l, x["cid"]) else False),
                      "autoplay_pct": (self._member(l, x["cid"]).autoplay_pct
@@ -400,6 +402,7 @@ class WebBridge:
                                 if self._member(l, x["cid"]) else ""),
                      "avatar": self._avatar_url(x["cid"])}
                     for x in rows]}
+        pos = lm.session_pos(l)
         for m in l.members:
             d["members"].append({
                 "mid": self.mid(m.cid), "name": m.name,
@@ -413,7 +416,11 @@ class WebBridge:
                 "combo": m.state.get("combo", 0),
                 "pct": m.state.get("pct", 0.0),
                 "life": m.state.get("life", 0),
-                "final": m.final})
+                "border": m.state.get("border", 0.0),
+                "final": m.final,
+                "session": {"pos": pos[m.cid], "wins": m.wins,
+                            "score": round(m.placement_score, 4),
+                            "places": list(m.places)}})
         return d
 
     # ------------------------------------------------- activity feed

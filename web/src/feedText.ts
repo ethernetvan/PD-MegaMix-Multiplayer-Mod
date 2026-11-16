@@ -18,6 +18,8 @@ export function feedText(e: FeedEntry): string {
           return `${e.name} hit a ${e.value} note combo`;
         case "low_life":
           return `${e.name}'s life is low (${e.value})`;
+        case "drop_out":
+          return `${e.name} dropped out (no life left)`;
         default:
           return `${e.name ?? "?"}: ${e.ev}`;
       }

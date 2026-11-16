@@ -54,13 +54,30 @@ export interface MemberSnap {
   combo: number;
   pct: number;
   life: number;
+  /* the clear % the console's game uses for this song + difficulty
+     (0 = not reported) */
+  border: number;
   final: {
     score: number;
     pct: number;
     max_combo: number;
     life: number;
     jc: number[];
+    border?: number;
+    /* the console's verdict on the final state; null = old client */
+    clear?: boolean | null;
+    drop?: boolean;
+    quit?: boolean;
   } | null;
+  session: SessionStats;
+}
+
+/* room session ranking (server/lobby.py _apply_session_ranking) */
+export interface SessionStats {
+  pos: number; /* 1-based place: wins, then placement score */
+  wins: number;
+  score: number; /* summed normalized placements */
+  places: [number, number, number]; /* times ranked 1st / 2nd / 3rd */
 }
 
 export interface StandingRow {
@@ -73,6 +90,9 @@ export interface StandingRow {
   rank: number;
   final: boolean;
   connected: boolean;
+  border: number;
+  clear: boolean | null;
+  drop: boolean;
   autoplay: boolean;
   autoplay_pct: number;
   autoplay_mode?: string;

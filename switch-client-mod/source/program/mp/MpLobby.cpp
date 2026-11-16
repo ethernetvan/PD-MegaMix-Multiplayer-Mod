@@ -48,6 +48,7 @@ struct MRec {
     int32_t score; float pct;
     int32_t max_combo; int32_t life; int rank; bool final;
     avatar::Ref av;
+    int32_t sr[5];   /* session ranking: pos, wins, 1st, 2nd, 3rd places */
 };
 static MRec s_members[8];
 static int  s_memberCount = 0;
@@ -138,6 +139,7 @@ static char  s_notReady[128] = "";
 
 static int32_t s_curScore = 0, s_curCombo = 0, s_curLife = 0;
 static float   s_curPct = 0.0f;
+static float   s_curBorder = 0.0f;   /* the song's clear %, from the game */
 static bool    s_topRightBusy = false;
 static int32_t s_lastSentScore = -1, s_lastSentCombo = -1,
                s_lastSentLife = -1;
@@ -233,14 +235,15 @@ static void RoutePlayerEvent(const char* k, const char* cid,
     bool onResults = s_resultsShownAt > 0;
     if (s_notifyStyle == 2) return;                        /* off */
     if (s_notifyStyle == 0) {                              /* avatars */
-        if ((strcmp(k, "combo") == 0 || strcmp(k, "low_life") == 0)
-                && onResults) return;
+        if ((strcmp(k, "combo") == 0 || strcmp(k, "low_life") == 0 ||
+             strcmp(k, "drop_out") == 0) && onResults) return;
         PushPopup(k, cid, nm, value);
         return;
     }
     /* text */
     if (strcmp(k, "combo") == 0) { if (!onResults) PushBanner("%s hit a big combo!", nm); }
     else if (strcmp(k, "low_life") == 0) { if (!onResults) PushBanner("%s is in danger!", nm); }
+    else if (strcmp(k, "drop_out") == 0) { if (!onResults) PushBanner("%s dropped out!", nm); }
     else if (strcmp(k, "leader") == 0) PushBanner("%s is the leader", nm);
     else if (strcmp(k, "joined") == 0) PushBanner("%s joined", nm);
     else if (strcmp(k, "left") == 0) PushBanner("%s left", nm);
@@ -251,7 +254,7 @@ static void RoutePlayerEvent(const char* k, const char* cid,
 
 void PopupTest() {
     static const char* k[] = {
-        "combo","low_life","joined","left",
+        "combo","low_life","drop_out","joined","left",
         "disconnected","reconnected","leader","owner"};
     for (auto& t : k)
         RoutePlayerEvent(t, s_myCid, s_myName,
@@ -494,6 +497,15 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
             }
             if ((j = mpjson::Find(line, tok + i, end - i, "img")) >= 0)
                 mpjson::Copy(line, tok[i + j], m.av.img, sizeof(m.av.img));
+            if ((j = mpjson::Find(line, tok + i, end - i, "sr")) >= 0 &&
+                tok[i + j].type == JSMN_ARRAY) {
+                int a = i + j + 1;
+                for (int k = 0; k < tok[i + j].size && k < 5 && a < end;
+                     k++, a += mpjson::Skip(tok, a, ntok)) {
+                    int sv = 0;
+                    if (mpjson::ToInt(line, tok[a], &sv)) m.sr[k] = sv;
+                }
+            }
             s_memberCount++;
             i = end;
         }
@@ -902,6 +914,7 @@ static void ProcessLine(const char* line) {
         /* the results screen has its own standings; don't cover its title */
         bool onResults = s_resultsShownAt > 0;
         bool player = strcmp(k, "combo") == 0 || strcmp(k, "low_life") == 0 ||
+            strcmp(k, "drop_out") == 0 ||
             strcmp(k, "joined") == 0 || strcmp(k, "left") == 0 ||
             strcmp(k, "disconnected") == 0 || strcmp(k, "reconnected") == 0 ||
             strcmp(k, "leader") == 0 || strcmp(k, "owner") == 0;
@@ -1164,11 +1177,12 @@ void Pump() {
     if (s_statePending && now - s_stateLastMs >= 50) {
         s_statePending = false;
         s_stateLastMs = now;
-        char m[128];
+        char m[160];
         snprintf(m, sizeof(m),
             "{\"t\":\"state\",\"round\":%d,\"score\":%d,\"combo\":%d,"
-            "\"pct\":%.2f,\"life\":%d}",
-            s_round, s_curScore, s_curCombo, (double)s_curPct, s_curLife);
+            "\"pct\":%.2f,\"life\":%d,\"border\":%.2f}",
+            s_round, s_curScore, s_curCombo, (double)s_curPct, s_curLife,
+            (double)s_curBorder);
         SendLine(m);
         s_lastSentScore = s_curScore; s_lastSentCombo = s_curCombo;
         s_lastSentPct = s_curPct; s_lastSentLife = s_curLife;
@@ -1196,6 +1210,38 @@ void Pump() {
 
 /* ============================ hook points ========================== */
 
+/* the song+difficulty clear % (e.g. 70 on this Extreme); the game's
+ * running border clear_border_eff only reaches it at the last note */
+static float ClearBorder(const PVGameData* pv) {
+    return pv->clear_border > 0.0f ? pv->clear_border : pv->clear_border_eff;
+}
+
+/* final {.., border, clear, drop}: clear reflects the FINAL state (a run
+ * that passed the border and then sank under it is NOT CLEAR); a song
+ * quit from the pause menu never clears; drop = all life lost */
+static void SendFinal(const PVGameData* pv, bool quit) {
+    if (!pv) return;
+    float border = ClearBorder(pv);
+    bool drop = !quit && pv->life <= 0;
+    bool clear = !quit && !drop && border > 0.0f &&
+                 pv->percentage >= border;
+    char m[320];
+    snprintf(m, sizeof(m),
+        "{\"t\":\"final\",\"round\":%d,\"score\":%d,\"pct\":%.2f,"
+        "\"max_combo\":%d,\"jc\":[%d,%d,%d,%d,%d],\"life\":%d,"
+        "\"border\":%.2f,\"clear\":%s,\"drop\":%s,\"quit\":%s}",
+        s_playedRound, pv->score, (double)pv->percentage, pv->max_combo,
+        pv->judge_count[0], pv->judge_count[1], pv->judge_count[2],
+        pv->judge_count[3], pv->judge_count[4], pv->life, (double)border,
+        clear ? "true" : "false", drop ? "true" : "false",
+        quit ? "true" : "false");
+    SendLine(m);
+    WriteLog("[MP-L] final r%d pct=%.2f border=%.2f/%.2f life=%d clear=%d "
+             "drop=%d quit=%d\n", s_playedRound, (double)pv->percentage,
+             (double)pv->clear_border, (double)pv->clear_border_eff,
+             pv->life, (int)clear, (int)drop, (int)quit);
+}
+
 void OnPvSelInit() {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
     /* quit from the pause menu during a round: our final was never sent,
@@ -1203,20 +1249,11 @@ void OnPvSelInit() {
     if (s_code[0] && (s_phase == L_PLAYING || s_phase == L_DROPPED) &&
         s_playedRound > 0 && s_finalSentRound != s_playedRound) {
         s_finalSentRound = s_playedRound;
-        PVGameData* pv = GetPVGameData();
-        if (pv) {
-            char m[256];
-            snprintf(m, sizeof(m),
-                "{\"t\":\"final\",\"round\":%d,\"score\":%d,\"pct\":%.2f,"
-                "\"max_combo\":%d,\"jc\":[%d,%d,%d,%d,%d],\"life\":%d}",
-                s_playedRound, pv->score, (double)pv->percentage, pv->max_combo,
-                pv->judge_count[0], pv->judge_count[1], pv->judge_count[2],
-                pv->judge_count[3], pv->judge_count[4], pv->life);
-            SendLine(m);
-        }
+        SendFinal(GetPVGameData(), true);
         SetPhase(L_RESULTS, "Left the round - waiting for the others");
     }
     s_selActive = true;
+    s_lastSelState = -1;
     s_autoReturn = false;
     s_quitting = false;
     s_retryWatch = false;
@@ -1462,8 +1499,9 @@ void OnPvSelFrame(const void* sel) {
         }
     }
 
-    /* leader: commit on any entry into state 10 */
-    if (s_phase == L_SELECT && s_amLeader && prevSt != 10 && state == 10 &&
+    /* leader: commit when the confirm panel starts the song (8 -> 10);
+     * B on the song list leaves through 6 -> 10 -> Dest */
+    if (s_phase == L_SELECT && s_amLeader && prevSt == 8 && state == 10 &&
         !s_committed) {
         s_committed = true;
         int32_t pv = selPv;
@@ -1605,6 +1643,7 @@ void OnPvGameFrame(PVGameData* pv) {
     s_curCombo = pv->combo;
     s_curPct = pv->percentage;
     s_curLife = pv->life;
+    s_curBorder = ClearBorder(pv);
     s_gamePaused = pv->paused != 0;
     {
         bool trBusy = false;
@@ -1827,17 +1866,7 @@ void OnStageResult(bool init) {
     if (init && s_code[0] && s_playedRound > 0 &&
         s_finalSentRound != s_playedRound) {
         s_finalSentRound = s_playedRound;
-        PVGameData* pv = GetPVGameData();
-        if (pv) {
-            char m[256];
-            snprintf(m, sizeof(m),
-                "{\"t\":\"final\",\"round\":%d,\"score\":%d,\"pct\":%.2f,"
-                "\"max_combo\":%d,\"jc\":[%d,%d,%d,%d,%d],\"life\":%d}",
-                s_playedRound, pv->score, (double)pv->percentage, pv->max_combo,
-                pv->judge_count[0], pv->judge_count[1], pv->judge_count[2],
-                pv->judge_count[3], pv->judge_count[4], pv->life);
-            SendLine(m);
-        }
+        SendFinal(GetPVGameData(), false);
         SetPhase(L_RESULTS, "Round over - waiting in results");
         s_resultInitAt = NowMs();
         input::ResetAll();     /* drop queued taps/spam: an A here = RETRY */
@@ -1900,6 +1929,9 @@ void GetSnapshot(Snapshot* out) {
         d.score = s_members[i].score;
         d.pct = s_members[i].pct;
         d.av = s_members[i].av;
+        d.srPos = s_members[i].sr[0];
+        d.wins = s_members[i].sr[1];
+        for (int k = 0; k < 3; k++) d.places[k] = s_members[i].sr[2 + k];
     }
     int lc = 0, pc = 0;
     for (int i = 0; i < s_memberCount; i++)

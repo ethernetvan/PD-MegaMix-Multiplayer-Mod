@@ -32,7 +32,8 @@ sees final standings, then returns to song select. A web page will later spectat
 ## Game facts (verified or user-provided)
 - Song select: D-pad L/R = difficulty; L/R/Y = filters/sort; X or R-stick = module picker (sel busy != 0).
   A on a song → confirm panel (state 8); A again without moving = Start → state 10 → Dest. The panel ignores
-  input for ~0.5s after appearing.
+  input for ~0.5s after appearing. B on the song list (back to the main menu) ALSO goes through state 10:
+  6 → 10 → Dest, so only an 8 → 10 edge is a song start (verified 2026-11-16 in the server's `SEL` lines).
 - Pause menu: Resume (default) / Retry / Lag Config / Options / Return to Song List; the cursor wraps both ways
   and opens on Resume every time. Plus, B, and A on Resume resume immediately (no countdown); Plus and B resume
   from any item. D-pad presses within ~100 ms of the menu opening are dropped. Plus does nothing during the
@@ -42,7 +43,13 @@ sees final standings, then returns to song select. A web page will later spectat
   dest and pv_sel init within ~1 s. Retry (from results or pause) restarts the song with `pv->loaded` staying 1.
 - No cursor signal exists for either menu (no AET layer-name call, no PVGameData byte); the only results-page
   signal is the AET in/loop/out call with `in = "win_vp_in"` (page 2).
-- Failing (life 0) ends the song early.
+- Failing (life 0) ends the song early; the results then read NOT CLEAR… + DROP×OUT.
+- Clear border (`PVGameData`, verified 2026-11-16 by disassembly + Ryujinx): `+0x2D0D0 clear_border` = the
+  song + difficulty clear % (70.0 on the Extreme of pv 246; set per song, not a fixed 80), `+0x2D0D4
+  clear_border_eff` = the running border (clear_border × reference score so far / total; it climbs during
+  the song and equals clear_border at the last note; the game's `percentage >= border` tests at 0x170974 /
+  0x1bb388 and the HUD border marker at 0x6893e0 read it). Great/Excellent borders are per-difficulty tables
+  at 0xb12774 (65/75/80/85/90) and 0xb12760 (80/85/90/95/97).
 - Song availability: `sorted_pv_lists[8*sort + 2*difficulty + edition]` in the selector (all lists of the current
   sort mode are built at pv_sel init; edition 1 only at Extreme). pv_db contains DLC the console doesn't own.
 
@@ -288,6 +295,35 @@ Commits `815f20b`, `79e244c`, `ce0a059` (on top of `f9f16c6`).
 - **Bottom gauge marker avatars + palette (`DrawGaugeRace`, `kRacePalette` in `MpUi.cpp`):** each other player's resolved portrait (`mp::avatar::Resolve`) is drawn in a mini pointy-top DIVA hexagon (`r = 13.5` in 720p, framed in that player's `RaceColor` gradient with white keyline) directly above their coloured triangle pointer on the bottom `%` gauge (`y = 667.5`). When markers sit within 25 px of each other, avatar centres fan out horizontally with a colour-matched stem connecting each hexagon to its exact `%` triangle tip. Swapped white out of `kRacePalette` in favour of Hot Pink (`(255, 75, 145)`) and Mint-Emerald (`(45, 225, 165)`).
 - **Results-screen crash fix (`init.cpp`, `MpLobby.cpp`, `ModLoader.hpp`, `result.cpp`):** crash report `01794330230_01001cc00fa1a000.log` symbolized to `StageResultSwitchDetailDispHook` -> `nc::DrawResultsWindowText` -> `libcxx_map::clear()` racing on `newlib`'s heap against `MpNet` (`MpLobby::PushLine` allocating `std::deque<std::string>` while receiving `board` messages from still-playing emulators), because `newlib`'s `__malloc_lock`/`__malloc_unlock` called weak no-op stubs `__libc_lock_acquire_recursive`/`__libc_lock_release_recursive`. Implemented a real atomic recursive `__malloc_lock`/`__malloc_unlock` keyed by `TPIDRRO_EL0` in `init.cpp`, replaced `MpLobby`'s `std::deque<std::string> s_inQ` with a fixed static ring buffer, replaced `libcxx_map::clear()`'s `std::vector` with a fixed stack array, and guarded `nc::DrawResultsWindowText` with `nc::ShouldUseConsoleStyleWin()`.
 - **Verified:** 6-player and 4-console rounds across 3 Ryujinx emulators (`Ryu1..3`) + physical Switch (`Evan`) + follower bots, including the Switch failing early into results and waiting 60+ s while the emulators finished the song and auto-returning to song select (`mm-re/screens/v6_nx_1st_gold.jpg`, `v6_nx_results_alive.jpg`, `v6_ryu1_2nd_pinkbar.png`).
+
+## Round 13: KNOWN_BUGS.md items (2026-11-16)
+- **B on song select no longer starts a round:** the leader commit in `OnPvSelFrame` fired on any entry into
+  pv_sel state 10, and B (back to the main menu) is 6 → 10 → Dest. It now needs the confirm-panel edge 8 → 10
+  (`s_lastSelState` is also reset on pv_sel init). Verified on Ryujinx: after a round, the new picker on the
+  unscrolled cursor pressed B → `state=10` / `DEST`, no `start_req`, no launch.
+- **Clear status from the console:** `state` carries `border` (the song's clear %), `final` carries `border`,
+  `clear` (the console's verdict on the FINAL state: life left and pct >= border; never after a pause-menu
+  quit), `drop` (all life lost) and `quit`. The server passes them through `board`/`standings` and the web
+  snapshot; the web results use the console's verdict (old clients: the reported border; no border: no label)
+  and the live gauge draws each player's own border tick. Verified: Ryu1 99.40 % vs border 70 → clear, Ryu2
+  life 0 → drop (the game showed NOT CLEAR… DROP×OUT too).
+- **Drop-out notification:** the server sends `event {kind: "drop_out"}` once per member and round when a
+  player who had life reaches 0 (`state`), or when their `final` has `drop`. Consoles route it like combo /
+  low_life (portrait popup tag "DROP OUT", text banner "X dropped out!", or off; hidden on the results
+  screen); the web feed shows it. Verified on Ryujinx (server log `dropped out`).
+- **Room session ranking:** per member `wins`, `placement_score`, `places` (times ranked 1st/2nd/3rd as shown
+  on the results, 1-3-3-4 ties) in `lobby.py`; applied once per round when its standings complete
+  (`_apply_session_ranking`): N = the round's players including members who left mid-round (placed last,
+  0.0), P = 1-indexed placement with ties averaged, wins += (P == 1), placement_score += (N-P)/(N-1); rounds
+  with N < 2 don't count; a member who leaves keeps their stats in `Lobby.session_kept` and gets them back on
+  rejoining, until the lobby empties and closes (new joiners start at 0). Order: wins, then placement
+  score. Consoles get `sr: [pos, wins, 1st, 2nd, 3rd]` per member in `lobby`; the ROOM screen's podium is the
+  session top 3 and the list is in session order with identical flat grey trophies (tall cup with handles and
+  the place number 1/2/3, short stem and base; `DrawTrophy`/`DrawTrophyRow`) and counts; the podium has no
+  sparkles and takes half the panel width so the list has more room. The
+  web Members panel is sorted the same way with trophies, and song select shows a "Session ranking" top 3.
+  Note: backing out of song select still leaves the room after 8 s (existing behaviour); the stats come back
+  when that player rejoins.
 
 ## Known quirks
 - Different routed subnets (PC 10.169.x, Switch 10.167.x): found automatically once the console has connected to the PC on that network before (remembered servers) or `server_ip` is within the PC's /22; otherwise set `server_ip` once.

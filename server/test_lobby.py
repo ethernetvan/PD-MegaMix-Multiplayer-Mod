@@ -932,3 +932,188 @@ class T5(unittest.TestCase):
         lb.group_paused = True
         self.lm.on_message("a", {"t": "resume_req", "round": rid}, 201.0)
         self.assertEqual(mb.last_activity, 201.0)
+
+
+
+class T6(T5):
+    """console-reported clear/border, drop_out events, session ranking."""
+
+    def _fin(self, c, rid, pct, score, **kw):
+        msg = {"t": "final", "round": rid, "score": score, "pct": pct,
+               "max_combo": 0, "jc": [0, 0, 0, 0, 0], "life": 100}
+        msg.update(kw)
+        self.lm.on_message(c, msg, 104.0)
+
+    def _state(self, c, rid, life, pct=50.0, border=None):
+        m = {"t": "state", "round": rid, "score": 1, "combo": 0,
+             "pct": pct, "life": life}
+        if border is not None:
+            m["border"] = border
+        self.lm.on_message(c, m, 103.5)
+
+    def test_clear_and_border_pass_through(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._state("a", rid, 120, border=60.0)
+        self.lm.tick(103.6)
+        b = [m for _, m in self.msgs(t="board")][-1]
+        self.assertEqual({r["cid"]: r["border"] for r in b["e"]}["a"], 60.0)
+        # a passed 60 % mid-song but ended under it: the console says so
+        self._fin("a", rid, 55.0, 100, border=60.0, clear=False)
+        self._fin("b", rid, 45.0, 90, border=40.0, clear=True)
+        rows, _ = self.lm._standings(lb, 104.0)
+        by = {r["cid"]: r for r in rows}
+        self.assertIs(by["a"]["clear"], False)
+        self.assertEqual(by["a"]["border"], 60.0)
+        self.assertIs(by["b"]["clear"], True)      # below 80 % yet cleared
+        self.assertEqual(by["b"]["border"], 40.0)
+
+    def test_old_client_clear_unknown(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._fin("a", rid, 90.0, 100)
+        rows, _ = self.lm._standings(lb, 104.0)
+        a = [r for r in rows if r["cid"] == "a"][0]
+        self.assertIsNone(a["clear"])
+        self.assertFalse(a["drop"])
+        self.assertIsNone([r for r in rows if r["cid"] == "b"][0]["clear"])
+
+    def test_drop_out_event_once(self):
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        rid = self._playing(lb, "abc")
+        self._state("a", rid, 0)                # life 0 before any life: ignored
+        self.assertFalse([m for _, m in self.msgs(t="event")
+                          if m["kind"] == "drop_out"])
+        self._state("a", rid, 30)
+        self._state("a", rid, 0)
+        self._state("a", rid, 0)
+        ev = [(c, m) for c, m in self.msgs(t="event") if m["kind"] == "drop_out"]
+        self.assertEqual(len(ev), 3)            # once, broadcast to a, b, c
+        self.assertEqual(ev[0][1]["cid"], "a")
+        self._fin("a", rid, 20.0, 10, life=0, drop=True, clear=False)
+        self.assertFalse([m for _, m in self.msgs(t="event")
+                          if m["kind"] == "drop_out"])
+        # b only reports the drop in its final
+        self._fin("b", rid, 20.0, 10, life=0, drop=True, clear=False)
+        ev = [m for _, m in self.msgs(t="event") if m["kind"] == "drop_out"]
+        self.assertEqual({m["cid"] for m in ev}, {"b"})
+        rows, _ = self.lm._standings(lb, 104.0)
+        self.assertTrue([r for r in rows if r["cid"] == "b"][0]["drop"])
+
+    def _round(self, lb, results):
+        """play one round; results = {cid: (pct, score)} (leader a starts)"""
+        lead = lb.leader()
+        rid = lb.seq + 1
+        self.lm.on_message(lead, {"t": "start_req", "pv": 1, "name": "s"},
+                           101.0)
+        for c in results:
+            self.lm.on_message(c, {"t": "loaded", "round": rid}, 102.0)
+        self.lm.tick(103.0)
+        for c, (pct, score) in results.items():
+            self._fin(c, rid, pct, score)
+        self.assertEqual(lb.phase, "RESULTS")
+        self.lm.on_message(lead, {"t": "back_in_sel", "round": rid}, 105.0)
+        self.assertEqual(lb.phase, "SELECT")
+        return rid
+
+    def _st(self, lb, c):
+        m = self.lm._member(lb, c)
+        return m.wins, round(m.placement_score, 4), list(m.places)
+
+    def test_session_ranking_scores(self):
+        for c in "abcd": self.mk(c)
+        lb = self._mk(4)
+        self._round(lb, {"a": (90, 1), "b": (80, 1), "c": (70, 1), "d": (60, 1)})
+        self.assertEqual(self._st(lb, "a"), (1, 1.0, [1, 0, 0]))
+        self.assertEqual(self._st(lb, "b"), (0, round(2 / 3, 4), [0, 1, 0]))
+        self.assertEqual(self._st(lb, "c"), (0, round(1 / 3, 4), [0, 0, 1]))
+        self.assertEqual(self._st(lb, "d"), (0, 0.0, [0, 0, 0]))
+        # ties average: b and c tie for 1st -> P = 1.5 each, no win
+        self._round(lb, {"a": (50, 1), "b": (90, 5), "c": (90, 5), "d": (60, 1)})
+        self.assertEqual(self._st(lb, "b"),
+                         (0, round(2 / 3 + 2.5 / 3, 4), [0, 2, 0]))
+        # shown rank of the tie is 2 (1-3-3-4 style: 2, 2) -> second places
+        self.assertEqual(self._st(lb, "c"),
+                         (0, round(1 / 3 + 2.5 / 3, 4), [0, 1, 1]))
+        self.assertEqual(self._st(lb, "a"), (1, 1.0, [1, 0, 0]))   # 4th: +0
+        self.assertEqual(self._st(lb, "d"), (0, round(1 / 3, 4), [0, 0, 1]))
+
+    def test_session_ranking_tie_for_first_no_win(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        self._round(lb, {"a": (90, 5), "b": (90, 5)})
+        self.assertEqual(self._st(lb, "a"), (0, 0.5, [0, 1, 0]))
+        self.assertEqual(self._st(lb, "b"), (0, 0.5, [0, 1, 0]))
+
+    def test_session_ranking_guardrail_solo(self):
+        self.mk("a")
+        lb = self._mk(1)
+        self._round(lb, {"a": (90, 5)})
+        self.assertEqual(self._st(lb, "a"), (0, 0.0, [0, 0, 0]))
+
+    def test_session_ranking_mid_round_leaver_last(self):
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        rid = self._playing(lb, players="abc")
+        self.lm.on_message("c", {"t": "lobby_leave"}, 103.8)
+        self._fin("a", rid, 50, 1)
+        self._fin("b", rid, 40, 1)
+        self.assertEqual(lb.phase, "RESULTS")
+        # N = 3 (leaver included, last): b (2nd of 3) still scores 0.5
+        self.assertEqual(self._st(lb, "a"), (1, 1.0, [1, 0, 0]))
+        self.assertEqual(self._st(lb, "b"), (0, 0.5, [0, 1, 0]))
+        self.assertEqual([m.cid for m in lb.members], ["a", "b"])
+
+    def test_session_order_and_lobby_sr(self):
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        # b: 1 win; c: 1 win + better placements; a: none
+        self._round(lb, {"a": (10, 1), "b": (90, 1), "c": (80, 1)})
+        self._round(lb, {"a": (20, 1), "b": (10, 1), "c": (90, 1)})
+        self.assertEqual([m.cid for m in self.lm.session_order(lb)],
+                         ["c", "b", "a"])
+        lob = self.msgs("a", "lobby")[-1][1]
+        sr = {m["cid"]: m["sr"] for m in lob["members"]}
+        self.assertEqual(sr["c"], [1, 1, 1, 1, 0])
+        self.assertEqual(sr["b"], [2, 1, 1, 0, 1])
+        self.assertEqual(sr["a"], [3, 0, 0, 1, 1])
+        # a late joiner starts at zero, after everyone with points
+        self.mk("d")
+        self.lm.on_message("d", {"t": "lobby_join", "code": lb.code}, 106.0)
+        lob = self.msgs("d", "lobby")[-1][1]
+        self.assertEqual({m["cid"]: m["sr"] for m in lob["members"]}["d"],
+                         [4, 0, 0, 0, 0])
+
+    def test_ranking_applied_once(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._fin("a", rid, 90, 1)
+        self._fin("b", rid, 80, 1)
+        self.lm.on_disconnect("b", 104.5)       # re-checks completion
+        self._fin("a", rid, 90, 1)              # duplicate final
+        self.assertEqual(self._st(lb, "a"), (1, 1.0, [1, 0, 0]))
+
+
+    def test_session_kept_on_rejoin_until_lobby_empties(self):
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        self._round(lb, {"a": (90, 1), "b": (80, 1), "c": (70, 1)})
+        self.lm.on_message("b", {"t": "lobby_leave"}, 106.0)
+        self.assertNotIn("b", [m.cid for m in lb.members])
+        self.lm.on_message("b", {"t": "lobby_join", "code": lb.code}, 107.0)
+        self.assertEqual(self._st(lb, "b"), (0, 0.5, [0, 1, 0]))
+        lob = self.msgs("b", "lobby")[-1][1]
+        self.assertEqual({m["cid"]: m["sr"] for m in lob["members"]}["b"],
+                         [2, 0, 0, 1, 0])
+        # everyone leaves: the lobby closes and its memory goes with it
+        code = lb.code
+        for c in "abc":
+            self.lm.on_message(c, {"t": "lobby_leave"}, 108.0)
+        self.assertNotIn(code, self.lm.lobbies)
+        self.lm.on_message("a", {"t": "lobby_create"}, 109.0)
+        lb2 = self.lm.lobbies[self.lm.by_cid["a"].code]
+        self.assertEqual(self._st(lb2, "a"), (0, 0.0, [0, 0, 0]))

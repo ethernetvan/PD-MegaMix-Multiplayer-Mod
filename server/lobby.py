@@ -6,8 +6,13 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       lobby_leave {}; kick {cid} (owner only); sel {pv, name} (leader, SELECT only);
       sel_ack {pv, has:bool, ok:bool, fb_pv:int (-1 none), fb_name:str};
       start_req {pv, name} (leader, SELECT only); launch_fail {round};
-      loaded {round}; state {round, score, combo, pct, life};
-      final {round, score, pct, max_combo, jc:[5], life}; back_in_sel {round};
+      loaded {round}; state {round, score, combo, pct, life, border};
+      final {round, score, pct, max_combo, jc:[5], life, border, clear, drop,
+             quit}; back_in_sel {round};
+      (border = the clear % the console's game uses for its song+difficulty,
+      0/absent unknown; clear = the console's own verdict on the FINAL state
+      (pct >= border with life left, never after a pause-menu quit), absent
+      on old clients; drop = all life lost; quit = left from the pause menu);
       scene {where: sel|results|game|other}; leader/owner back_in_sel in
       RESULTS ends the round for everyone (in PLAYING it ends when the
       standings complete); a member off song select at launch becomes a
@@ -25,8 +30,11 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       mp_server, not the engine).
 S->C: welcome/error/pong (existing);
       lobby {code, phase, leader, you, round, sel_pv,
-             members:[{cid,name,connected,role,loaded,module,chara,mh,img}]}
+             members:[{cid,name,connected,role,loaded,module,chara,mh,img,sr}]}
       (img: id of the member's uploaded portrait, "" none/hidden/relay off)
+      (sr: session ranking [pos, wins, firsts, seconds, thirds], pos = 1-based
+      place in the room's session leaderboard, see _apply_session_ranking;
+      a member who leaves and rejoins keeps it until the lobby empties)
       (phase in SELECT/LOADING/PLAYING/RESULTS; role in player/spectator/dropped)
       lobby_left {reason: left|kicked|closed};
       lobby_error {code: not_found|already_in_lobby|not_in_lobby|not_leader|bad_phase, msg};
@@ -35,9 +43,12 @@ S->C: welcome/error/pong (existing);
       launch {round, pv, name, players:[cid], spectators:[cid]};
       countdown {round, secs};
       start {round, dropped:[cid]};
-      board {round, e:[{cid,name,score,pct,life,rank,connected}]};
+      board {round, e:[{cid,name,score,pct,life,rank,connected,border}]};
       event {kind, cid, name, value};
-      standings {round, complete:bool, e:[{cid,name,score,pct,max_combo,life,rank,final:bool}]};
+      (kinds: combo, low_life, drop_out (all life lost, once per round),
+      joined, left, disconnected, reconnected, leader, owner);
+      standings {round, complete:bool, e:[{cid,name,score,pct,max_combo,life,rank,final:bool,
+                 border, clear:bool|null, drop:bool}]};
       (rank: tied rows share the LOWEST position of their group, 1-3-3-4);
       round_end {round, next_leader}.
 
@@ -74,13 +85,39 @@ def _competition_ranks(rows):
         i = j + 1
 
 
+def _session_placements(rows):
+    """1-indexed placement P per row of an already-sorted row list; rows
+    tied on (round(pct, 2), score) share the AVERAGE of their positions
+    (two tied for 4th both get 4.5)."""
+    out = []
+    i = 0
+    while i < len(rows):
+        key = (round(rows[i]["pct"], 2), rows[i]["score"])
+        j = i
+        while (j + 1 < len(rows) and
+               (round(rows[j + 1]["pct"], 2), rows[j + 1]["score"]) == key):
+            j += 1
+        out += [(i + 1 + j + 1) / 2.0] * (j - i + 1)
+        i = j + 1
+    return out
+
+
+def _f(v, default=0.0):
+    """number from a client message (bools and junk -> default)"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return default
+    return float(v)
+
+
 class Member:
     __slots__ = ("cid", "name", "connected", "role", "loaded", "final",
                  "back_in_sel", "state", "prev_combo_bucket", "low_life_armed",
                  "disconnect_at", "last_activity",
                  "ready", "ready_reason", "ready_pv", "autoplay",
                  "autoplay_pct", "autoplay_mode", "scene",
-                 "pause_req_at", "pause_req_kind")
+                 "pause_req_at", "pause_req_kind",
+                 "life_seen", "drop_sent",
+                 "wins", "placement_score", "places")
 
     def __init__(self, cid, name):
         self.cid = cid
@@ -104,6 +141,12 @@ class Member:
         self.scene = None         # sel|results|game|other, None = unknown ("sel")
         self.pause_req_at = 0.0
         self.pause_req_kind = ""
+        self.life_seen = False      # this round reported life > 0 once
+        self.drop_sent = False      # drop_out event sent this round
+        # lobby session ranking (late joiners start at zero)
+        self.wins = 0
+        self.placement_score = 0.0
+        self.places = [0, 0, 0]     # times ranked 1st / 2nd / 3rd
 
 
 class Round:
@@ -111,7 +154,7 @@ class Round:
                  "dropped", "launch_at", "leader_loaded_at", "started",
                  "start_sent", "countdown_at",
                  "first_final_at", "complete_at", "complete_announced",
-                 "leader_back")
+                 "leader_back", "ranked")
 
     def __init__(self, rid, pv, name, leader):
         self.id = rid
@@ -130,6 +173,7 @@ class Round:
         self.complete_at = None
         self.complete_announced = False
         self.leader_back = False
+        self.ranked = False        # session ranking applied
 
 
 class Lobby:
@@ -154,6 +198,9 @@ class Lobby:
         self.last_board_at = 0.0
         self.board_dirty = False
         self.prev_owner = None    # (cid, deadline) rejoin grace
+        # cid -> (wins, placement_score, places) of members who left; given
+        # back when they rejoin, gone with the lobby once it empties
+        self.session_kept = {}
 
     def effective_leader(self):
         if self.pick_mode == "owner":
@@ -202,7 +249,19 @@ class LobbyManager:
             if m.cid != skip:
                 self._send(m.cid, msg)
 
+    @staticmethod
+    def session_order(lobby):
+        """Members by session ranking: wins, then placement score (both
+        descending), join order breaking exact ties."""
+        return sorted(lobby.members,
+                      key=lambda m: (-m.wins, -m.placement_score))
+
+    def session_pos(self, lobby):
+        """cid -> 1-based session leaderboard position"""
+        return {m.cid: i + 1 for i, m in enumerate(self.session_order(lobby))}
+
     def _lobby_msg(self, lobby, you_cid):
+        pos = self.session_pos(lobby)
         return {"t": "lobby", "code": lobby.code, "phase": lobby.phase,
                 "leader": lobby.leader(), "you": you_cid,
                 "owner": lobby.owner_cid, "pick_mode": lobby.pick_mode,
@@ -220,7 +279,8 @@ class LobbyManager:
                              "module": self._client_modules.get(m.cid, -1),
                              "chara": self._client_avatar.get(m.cid, (-1, 0))[0],
                              "mh": self._client_avatar.get(m.cid, (-1, 0))[1],
-                             "img": self.avatar_img_of(m.cid)}
+                             "img": self.avatar_img_of(m.cid),
+                             "sr": [pos[m.cid], m.wins] + m.places}
                             for m in lobby.members]}
 
     def _broadcast_lobby(self, lobby):
@@ -409,6 +469,9 @@ class LobbyManager:
             self._error(cid, "full", "lobby is full")
             return
         m = Member(cid, self._name_of(cid))
+        kept = lobby.session_kept.pop(cid, None)
+        if kept is not None:
+            m.wins, m.placement_score, m.places = kept[0], kept[1], list(kept[2])
         m.role = "player" if lobby.phase == "SELECT" else "spectator"
         lobby.members.append(m)
         self.by_cid[cid] = lobby
@@ -451,6 +514,7 @@ class LobbyManager:
             return
         was_leader = lobby.leader() == cid
         m = lobby.members.pop(idx)
+        lobby.session_kept[cid] = (m.wins, m.placement_score, list(m.places))
         self.by_cid.pop(cid, None)
         self._send(cid, {"t": "lobby_left", "reason": reason})
         if not lobby.members:
@@ -725,6 +789,8 @@ class LobbyManager:
             m.back_in_sel = False
             m.prev_combo_bucket = 0
             m.low_life_armed = True
+            m.life_seen = False
+            m.drop_sent = False
             m.state = {"score": 0, "combo": 0, "pct": 0.0, "life": 127}
         lobby.round = r
         lobby.phase = "LOADING"
@@ -812,7 +878,9 @@ class LobbyManager:
         m.last_activity = now
         prev_bucket = m.prev_combo_bucket
         prev_life = m.state.get("life", 0)
-        m.state = {"score": score, "combo": combo, "pct": pct, "life": life}
+        border = _f(msg.get("border"), m.state.get("border", 0.0))
+        m.state = {"score": score, "combo": combo, "pct": pct, "life": life,
+                   "border": border}
         # a combo break re-arms the buckets: 50/100/... fire again
         if combo < m.prev_combo_bucket * 50:
             m.prev_combo_bucket = combo // 50
@@ -825,7 +893,19 @@ class LobbyManager:
             self._event(lobby, "low_life", cid, m.name, life)
         elif life > 60:
             m.low_life_armed = True
+        if _f(life) > 0:
+            m.life_seen = True
+        elif m.life_seen:
+            self._drop_out(lobby, m)
         lobby.board_dirty = True
+
+    def _drop_out(self, lobby, m):
+        """all life lost: one drop_out event per member and round"""
+        if m.drop_sent:
+            return
+        m.drop_sent = True
+        self.log(f"lobby {lobby.code}: {m.cid} dropped out")
+        self._event(lobby, "drop_out", m.cid, m.name)
 
     def _send_board(self, lobby):
         r = lobby.round
@@ -840,7 +920,8 @@ class LobbyManager:
                       "score": m.state.get("score", 0),
                       "pct": m.state.get("pct", 0.0),
                       "life": m.state.get("life", 0),
-                      "connected": m.connected})
+                      "connected": m.connected,
+                      "border": m.state.get("border", 0.0)})
         e.sort(key=lambda x: (-x["pct"], -x["score"]))
         _competition_ranks(e)
         self._broadcast(lobby, {"t": "board", "round": r.id, "e": e})
@@ -856,12 +937,21 @@ class LobbyManager:
         m = self._member(lobby, cid)
         if m is None:
             return
+        clear = msg.get("clear")
         m.final = {"score": msg.get("score", 0), "pct": msg.get("pct", 0.0),
                    "max_combo": msg.get("max_combo", 0),
-                   "jc": msg.get("jc", []), "life": msg.get("life", 0)}
+                   "jc": msg.get("jc", []), "life": msg.get("life", 0),
+                   "border": _f(msg.get("border"),
+                                m.state.get("border", 0.0)),
+                   # the console's verdict; None = an old client sent none
+                   "clear": clear if isinstance(clear, bool) else None,
+                   "drop": msg.get("drop") is True,
+                   "quit": msg.get("quit") is True}
         m.last_activity = now
         m.state["score"] = m.final["score"]
         m.state["pct"] = m.final["pct"]
+        if m.final["drop"]:
+            self._drop_out(lobby, m)
         if r.first_final_at is None and lobby.phase == "PLAYING":
             r.first_final_at = now
             self.log(f"lobby {lobby.code}: r{r.id} first final")
@@ -886,7 +976,11 @@ class LobbyManager:
                          "max_combo": f["max_combo"] if f else 0,
                          "life": f["life"] if f else 0,
                          "final": f is not None or not m.connected or stale,
-                         "connected": m.connected})
+                         "connected": m.connected,
+                         "border": (f["border"] if f else
+                                    m.state.get("border", 0.0)),
+                         "clear": f["clear"] if f else None,
+                         "drop": bool(f and f["drop"])})
         rows.sort(key=lambda x: (-x["pct"], -x["score"]))
         _competition_ranks(rows)
         complete = all(row["final"] for row in rows) if rows else True
@@ -909,11 +1003,44 @@ class LobbyManager:
         if complete:
             lobby.phase = "RESULTS"
             self.log(f"lobby {lobby.code}: r{r.id} standings complete")
+            if self._apply_session_ranking(lobby, now):
+                self._broadcast_lobby(lobby)
             self._send_standings(lobby, now)
             if r.leader_back:
                 self.log(f"lobby {lobby.code}: r{r.id} leader back, "
                          f"round ended with last final")
                 self._round_end(lobby, now)
+
+    def _apply_session_ranking(self, lobby, now):
+        """Once per round, when its standings complete: N = the round's
+        players (members who left mid-round included, placed last with a
+        0.0 score); for P = 1-indexed placement (ties share the average
+        position) wins += (P == 1), placement_score += (N - P) / (N - 1),
+        and the shown rank (1-3-3-4, as on the results) counts a 1st/2nd/
+        3rd place. Rounds with fewer than 2 players don't count. Leavers'
+        stats are kept (session_kept) and restored if they rejoin before
+        the lobby empties.
+        Returns True if anything was applied."""
+        r = lobby.round
+        if r is None or r.ranked or not r.started:
+            return False
+        r.ranked = True
+        rows, _ = self._standings(lobby, now)
+        leavers = [c for c in r.players if self._member(lobby, c) is None]
+        n = len(rows) + len(leavers)
+        if n < 2:
+            return False
+        for row, p in zip(rows, _session_placements(rows)):
+            m = self._member(lobby, row["cid"])
+            if p == 1:
+                m.wins += 1
+            m.placement_score += (n - p) / (n - 1)
+            if row["rank"] <= 3:
+                m.places[row["rank"] - 1] += 1
+        self.log(f"lobby {lobby.code}: r{r.id} session ranking (N={n}) " +
+                 ", ".join(f"{m.cid}:w{m.wins}/{m.placement_score:.2f}"
+                           for m in self.session_order(lobby)))
+        return True
 
     def _back_in_sel(self, cid, msg, now):
         lobby = self._lobby_of(cid)
@@ -1100,8 +1227,13 @@ class LobbyManager:
                                  "autoplay_pct": m.autoplay_pct,
                                  "autoplay_mode": m.autoplay_mode,
                                  "final": m.final is not None,
+                                 "wins": m.wins,
+                                 "placement_score": round(
+                                     m.placement_score, 4),
+                                 "places": list(m.places),
                                  **{k: m.state.get(k, 0) for k in
-                                    ("score", "combo", "pct", "life")}}
+                                    ("score", "combo", "pct", "life",
+                                     "border")}}
                                 for m in l.members],
                 }
             return out

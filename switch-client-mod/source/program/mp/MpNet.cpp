@@ -1500,7 +1500,7 @@ struct DbgSnap {
     uint8_t  byte2;
     int32_t  score, combo, max_combo, life;
     int32_t  judge[5];
-    float    pct;
+    float    pct, border, border_eff;
     int32_t  type, diff, pv_id;
     uint32_t ps, ip, iv, pe;   /* extra global flags */
     int32_t  res;
@@ -1526,13 +1526,14 @@ static void EmitState(const DbgSnap& cur, uint64_t st) {
         "{\"t\":\"dbg_state\",\"f\":%u,\"loaded\":%d,\"paused\":%d,\"byte2\":%u,"
         "\"score\":%d,\"combo\":%d,\"max_combo\":%d,\"life\":%d,\"pct\":%.2f,"
         "\"jc\":[%d,%d,%d,%d,%d],\"scoring\":%d,\"type\":%d,\"diff\":%d,\"pv\":%d,"
-        "\"ps\":%u,\"ip\":%u,\"iv\":%u,\"pe\":%u,\"res\":%d,\"st\":%llu}",
+        "\"ps\":%u,\"ip\":%u,\"iv\":%u,\"pe\":%u,\"res\":%d,\"st\":%llu,"
+        "\"bd\":%.2f,\"bde\":%.2f}",
         s_frame, cur.loaded, cur.paused, cur.byte2, cur.score, cur.combo,
         cur.max_combo, cur.life, (double)cur.pct,
         cur.judge[0], cur.judge[1], cur.judge[2], cur.judge[3], cur.judge[4],
         cur.scoring, cur.type, cur.diff, cur.pv_id,
         cur.ps, cur.ip, cur.iv, cur.pe, cur.res,
-        (unsigned long long)st);
+        (unsigned long long)st, (double)cur.border, (double)cur.border_eff);
     Enqueue(line);
 }
 
@@ -1553,6 +1554,8 @@ void OnPvGameFrame() {
     cur.max_combo = pv->max_combo;
     cur.life     = pv->life;
     cur.pct      = pv->percentage;
+    cur.border   = pv->clear_border;
+    cur.border_eff = pv->clear_border_eff;
     cur.scoring  = pv->scoring_enabled;
     memcpy(cur.judge, pv->judge_count, sizeof(cur.judge));
 

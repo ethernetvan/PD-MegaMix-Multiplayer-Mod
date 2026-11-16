@@ -1,4 +1,6 @@
-# Deploy: cd cloudflare && npx wrangler login && npx wrangler deploy
+# Deployed by Cloudflare Workers Builds on every push that touches cloudflare/*
+# (root directory "cloudflare", deploy command "npx wrangler deploy").
+# By hand: cd cloudflare && npx wrangler login && npx wrangler deploy
 name = "mikumod-switch"
 main = "worker.js"
 compatibility_date = "2026-11-01"

@@ -65,7 +65,10 @@ void DbgSelLists(const int32_t* pvs, int n);
 /* For MpUi: snapshot getters (copies; safe to call on UI thread). */
 struct MemberInfo { char cid[20]; char name[40]; bool connected, is_leader,
                     ready; char reason[24]; char role[12]; int32_t score; float pct;
-                    avatar::Ref av; /* Shared Set A slot 1 module (-1 unknown) + chara/mh/img */ };
+                    avatar::Ref av; /* Shared Set A slot 1 module (-1 unknown) + chara/mh/img */
+                    /* room session ranking: 1-based position (0 unknown),
+                     * wins, and times ranked 1st / 2nd / 3rd */
+                    int32_t srPos, wins, places[3]; };
 struct Snapshot {
     int      phase;           /* LPhase */
     bool     connected;

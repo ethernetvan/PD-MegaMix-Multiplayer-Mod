@@ -201,6 +201,13 @@ class Snap(unittest.TestCase):
         l = s["lobbies"][0]
         self.assertEqual(l["phase"], "RESULTS")
         self.assertTrue(l["standings"]["complete"])
+        # old-client finals: no console verdict; session ranking applied
+        self.assertTrue(all(r["clear"] is None and r["drop"] is False
+                            for r in l["standings"]["e"]))
+        bob = next(m for m in l["members"] if m["name"] == "Bob")
+        self.assertEqual(bob["session"],
+                         {"pos": 1, "wins": 1, "score": 1.0,
+                          "places": [1, 0, 0]})
         # no raw cid anywhere
         blob = json.dumps(s)
         for c in ("cid_alice_01", "cid_bob_0002", "cid_carol_03"):

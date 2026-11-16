@@ -7,7 +7,9 @@ import { canAdmin, serverNow } from "../state";
 import { useStore } from "../store";
 import type { LobbySnap, MemberSnap, PickMode, StandingRow } from "../types";
 import HexAvatar from "./HexAvatar";
+import Trophies from "./Trophies";
 import { autoLabel } from "../autoplay";
+import { clearStatus, hasSessionResults, sessionOrder } from "../session";
 import { memberAvatar, memberName, PhaseBadge } from "./Overview";
 
 const PICK_LABEL: Record<PickMode, string> = {
@@ -151,14 +153,26 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
                   </td>
                   <td className="num score">{fmtScore(m.score)}</td>
                   <td className="pct">
-                    <div className="bar gauge">
+                    <div
+                      className="bar gauge"
+                      style={
+                        m.border > 0
+                          ? ({ "--clear-at": `${Math.min(100, m.border)}%` } as CSSProperties)
+                          : undefined
+                      }
+                      title={m.border > 0 ? `clear at ${fmtPct(m.border)}` : undefined}
+                    >
                       <i
                         style={{
                           width: `${100 - Math.min(100, m.pct)}%`,
                         }}
                       />
-                      <span className="gauge-clear" aria-hidden />
-                      <span className="gauge-border" aria-hidden />
+                      {m.border > 0 && (
+                        <>
+                          <span className="gauge-clear" aria-hidden />
+                          <span className="gauge-border" aria-hidden />
+                        </>
+                      )}
                     </div>
                     <span className="pct-num">{fmtPct(m.pct)}</span>
                   </td>
@@ -229,7 +243,7 @@ function ResCard({
   const score = useCountUp(r.score, delay + 150);
   const jc = m?.final?.jc;
   const tot = (jc ?? []).reduce((a, b) => a + (b || 0), 0);
-  const clear = !m?.final ? "dnf" : r.pct >= 80 ? "clear" : "fail";
+  const clear = clearStatus(r, !!m?.final);
   const d = { "--d": `${delay}ms` } as CSSProperties;
   return (
     <div
@@ -257,12 +271,17 @@ function ResCard({
             </span>
           ))}
         </span>
-        <span className={`res-clear ${clear}`}>
+        <span
+          className={`res-clear ${clear}`}
+          title={r.border > 0 ? `clear at ${fmtPct(r.border)}` : undefined}
+        >
           {clear === "clear"
             ? "STAGE CLEAR"
             : clear === "fail"
               ? "NOT CLEAR…"
-              : "DROP×OUT"}
+              : clear === "dnf"
+                ? "DROP×OUT"
+                : ""}
         </span>
         <span className="res-score">{fmtScore(score)}</span>
       </div>
@@ -408,6 +427,32 @@ function ResultsBoard({ l }: { l: LobbySnap }) {
   );
 }
 
+/* top three of the room session ranking (wins, then placement score) */
+function SessionPodium({ l }: { l: LobbySnap }) {
+  if (!hasSessionResults(l.members)) return null;
+  const top = sessionOrder(l.members).slice(0, 3);
+  return (
+    <div className="session">
+      <h4>Session ranking</h4>
+      <ol className="session-top">
+        {top.map((m, i) => (
+          <li key={m.mid} className={`sp${i + 1}${m.connected ? "" : " off"}`}>
+            <span className={`rank-num r${i + 1}`}>{i + 1}</span>
+            <HexAvatar
+              name={m.name}
+              src={m.avatar ?? undefined}
+              size={i === 0 ? 46 : 38}
+              ring={i === 0}
+            />
+            <span className="sp-name">{m.name}</span>
+            <Trophies places={m.session.places} />
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
   if (l.phase === "SELECT") {
     const notReady = l.members.filter((m) => m.connected && !m.ready);
@@ -424,6 +469,7 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
             <span className="pv-chip">PV {l.sel.pv}</span>
           </p>
         )}
+        <SessionPodium l={l} />
         {notReady.length > 0 && (
           <ul className="notready">
             {notReady.map((m) => (
@@ -520,9 +566,11 @@ function Members({ l }: { l: LobbySnap }) {
   const { state } = useStore();
   return (
     <section className="panel">
-      <h3>Members</h3>
+      <h3>
+        Members <span className="dim">· by session wins</span>
+      </h3>
       <ul className="members">
-        {l.members.map((m, i) => (
+        {sessionOrder(l.members).map((m, i) => (
           <li key={m.mid} className={m.connected ? "" : "off"}>
             <span className="mem-hex">
               <HexAvatar
@@ -539,6 +587,7 @@ function Members({ l }: { l: LobbySnap }) {
               <span className="mem-num">{i + 1}</span>
             </span>
             <span className="mem-name">{m.name}</span>
+            {m.session && <Trophies places={m.session.places} size={16} />}
             <span className="mem-badges">
               {m.mid === l.owner && <span className="badge">Owner</span>}
               {m.mid === l.leader && <span className="badge pick">Picker</span>}

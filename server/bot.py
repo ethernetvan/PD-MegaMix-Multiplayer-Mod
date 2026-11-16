@@ -21,6 +21,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 BASE_PVS = [249, 1, 3, 8, 15, 21, 30, 44, 55, 100]
+BOT_BORDER = 60.0   # clear % a bot reports (real consoles send their song's)
 
 
 def load_pvs():
@@ -263,15 +264,17 @@ class Bot:
                 life = 127 if random.random() > 0.05 else random.randint(10, 60)
                 self.send({"t": "state", "round": self.round, "score": score,
                            "combo": combo, "pct": min(100.0, score / 3000.0),
-                           "life": life})
+                           "life": life, "border": BOT_BORDER})
             last = now
             await asyncio.sleep(0.2)
         if self.playing:
             self.playing = False
             self.set_scene("results")
+            pct = min(100.0, score / 3000.0)
             self.send({"t": "final", "round": self.round, "score": score,
-                       "pct": min(100.0, score / 3000.0), "max_combo": combo,
-                       "jc": [5, 10, 8, 4, 2], "life": 80})
+                       "pct": pct, "max_combo": combo,
+                       "jc": [5, 10, 8, 4, 2], "life": 80,
+                       "border": BOT_BORDER, "clear": pct >= BOT_BORDER})
             self.final_round = self.round
             print(f"-- sent final r{self.round}")
 
@@ -316,10 +319,12 @@ class Bot:
             self.send({"t": "loaded", "round": self.round})
         elif c == "fail":
             self.send({"t": "final", "round": self.round, "score": 0,
-                       "pct": 0, "max_combo": 0, "jc": [0]*5, "life": 0})
+                       "pct": 0, "max_combo": 0, "jc": [0]*5, "life": 0,
+                       "border": BOT_BORDER, "clear": False, "drop": True})
         elif c == "final":
             self.send({"t": "final", "round": self.round, "score": 9999,
-                       "pct": 42.0, "max_combo": 10, "jc": [1]*5, "life": 90})
+                       "pct": 42.0, "max_combo": 10, "jc": [1]*5, "life": 90,
+                       "border": BOT_BORDER, "clear": 42.0 >= BOT_BORDER})
         elif c == "pause":
             self.send({"t": "pause_req", "round": self.round})
         elif c == "resume":

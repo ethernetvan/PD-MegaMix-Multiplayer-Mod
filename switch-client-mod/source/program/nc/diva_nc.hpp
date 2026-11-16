@@ -820,8 +820,8 @@ struct PVGameData
 	int64_t qword2D2F8;                          // 0x2D0C0
 	uint8_t gap2D300[4];                         // 0x2D0C8
 	float percentage;                            // 0x2D0CC
-	float float2D308;                            // 0x2D0D0
-	float float2D30C;                            // 0x2D0D4
+	float clear_border;                          // 0x2D0D0 song+difficulty clear % (70.0 on an Extreme)
+	float clear_border_eff;                      // 0x2D0D4 running border: clear_border x reference score so far / total (= clear_border at the end); the game's pct >= test and the HUD border marker use it
 	uint8_t gap2D310[13];                        // 0x2D0D8
 	uint8_t byte2D31D;                           // 0x2D0E5
 	uint8_t gap2D31E;                            // 0x2D0E6

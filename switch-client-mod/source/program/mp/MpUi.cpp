@@ -741,6 +741,70 @@ static ImU32 MemberDot(const MemberInfo& m) {
     return !m.connected ? kDim : (m.ready ? kGreen : kYellow);
 }
 
+/* flat grey trophy (all three identical, Switch-menu style): a tall
+ * rounded cup holding a large place number, short stem, flat base; h tall,
+ * centred on c.x, top at c.y */
+static void DrawTrophy(const Ui& u, ImVec2 c, float h, int place) {
+    const ImU32 col = kMuted;
+    float x = c.x, t = c.y, w = h * 0.40f;          /* cup half-width */
+    float cupB = t + h * 0.74f;                     /* cup bottom */
+    /* handles: half-ellipse loops on the cup's sides, from near the rim
+     * down to about the cup's middle */
+    for (int side = -1; side <= 1; side += 2) {
+        ImVec2 hc(x + side * w, t + h * 0.31f);
+        float rx = h * 0.15f, ry = h * 0.20f;
+        for (int k = 0; k <= 12; k++) {
+            float an = -1.5707963f + 3.1415926f * (float)k / 12.0f;
+            u.dl->PathLineTo(ImVec2(hc.x + side * rx * cosf(an),
+                                    hc.y + ry * sinf(an)));
+        }
+        u.dl->PathStroke(col, 0, h * 0.08f);
+    }
+    u.dl->AddRectFilled(ImVec2(x - w, t), ImVec2(x + w, cupB), col,
+                        w * 0.85f, ImDrawFlags_RoundCornersBottom);
+    u.dl->AddRectFilled(ImVec2(x - h * 0.07f, cupB - h * 0.02f),
+                        ImVec2(x + h * 0.07f, t + h * 0.88f), col);
+    u.dl->AddRectFilled(ImVec2(x - h * 0.26f, t + h * 0.88f),
+                        ImVec2(x + h * 0.26f, t + h), col, h * 0.05f);
+    char d[2] = { (char)('0' + place), 0 };
+    float sc = h * 0.62f / u.Size("0", 1.0f).y;
+    u.TextCentered(ImVec2(x - w, t), ImVec2(x + w, cupB - h * 0.04f), d, sc, kBg);
+}
+
+/* [1] n  [2] n  [3] n - times ranked 1st/2nd/3rd this room session; left
+ * edge at a.x, vertically centred on a.y; gap = space after each count;
+ * returns the width (draw=false only measures) */
+static float DrawTrophyRow(const Ui& u, ImVec2 a, float h,
+                           const int32_t places[3], bool draw = true,
+                           float gap = 12.0f) {
+    float x = a.x, sc = h * 0.70f / u.Size("0", 1.0f).y;
+    float iw = h * 1.00f;                       /* icon box incl. handles */                       /* icon box incl. handles */
+    for (int i = 0; i < 3; i++) {
+        char n[8]; snprintf(n, sizeof(n), "%d", places[i]);
+        ImVec2 ns = u.Size(n, sc);
+        if (draw) {
+            DrawTrophy(u, ImVec2(x + iw * 0.5f, a.y - h * 0.5f), h, i + 1);
+            u.Text(ImVec2(x + iw + 4 * u.k, a.y - ns.y * 0.5f), n, sc,
+                   places[i] ? kText : kDim);
+        }
+        x += iw + 3 * u.k + ns.x + (i < 2 ? gap * u.k : 0);
+    }
+    return x - a.x;
+}
+
+/* member indices in room session order (server position, join order
+ * breaking ties and unknowns last) */
+static int SessionOrder(const Snapshot& s, int* order) {
+    int n = s.memberCount;
+    for (int i = 0; i < n; i++) order[i] = i;
+    auto key = [&](int i) { return s.members[i].srPos > 0 ? s.members[i].srPos : 99; };
+    for (int i = 1; i < n; i++)          /* stable insertion sort */
+        for (int j = i; j > 0 && key(order[j]) < key(order[j - 1]); j--) {
+            int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t;
+        }
+    return n;
+}
+
 /* your own avatar follows the save immediately; others come from the server */
 static mp::avatar::Ref MemberRef(const Snapshot& s, const MemberInfo& m) {
     int32_t local = mp::avatar::LocalModule();
@@ -1098,23 +1162,26 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
 
     float cy0 = top + 16 * u.k;
     float cy1 = b.y - 44 * u.k;
-    float splitX = a.x + (b.x - a.x) * 0.58f;
+    float splitX = a.x + (b.x - a.x) * 0.54f;
 
-    /* ---- podium: first three members in join order ---- */
+    /* ---- podium: the top three of the room session ranking (wins,
+     * then placement score; join order until a round has counted) ---- */
+    int order[8];
+    SessionOrder(s, order);
     int n = s.memberCount < 3 ? s.memberCount : 3;
     float colW = (splitX - a.x - 30 * u.k) / 3.0f;
-    float rads[3]  = { 82 * u.k, 68 * u.k, 58 * u.k };
-    float plateW[3] = { 76 * u.k, 64 * u.k, 56 * u.k };
+    float rads[3]  = { 76 * u.k, 63 * u.k, 54 * u.k };
+    float plateW[3] = { 70 * u.k, 59 * u.k, 52 * u.k };
     /* avatar bottoms align here; the whole podium block (~2r + plate +
      * name) sits around the vertical middle of the content area */
     float baseY = (cy0 + cy1) * 0.5f + 12 * u.k;
     for (int i = 0; i < n; i++) {
-        const MemberInfo& m = s.members[i];
+        const MemberInfo& m = s.members[order[i]];
         float cx = a.x + 30 * u.k + colW * (i + 0.5f);
         float r = rads[i];
         ImVec2 ac(cx, baseY - r);
         bool you = strcmp(m.cid, s.myCid) == 0;
-        DrawAvatar(u, ac, r, MemberRef(s, m), you, m.connected, true);
+        DrawAvatar(u, ac, r, MemberRef(s, m), you, m.connected, false);
         /* status dot on the lower-right edge */
         float dr = 9 * u.k;
         ImVec2 dc(ac.x + r * 0.64f, ac.y + r * 0.68f);
@@ -1136,10 +1203,16 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         u.Text(ImVec2(cx - nsz.x * 0.5f, ny), nm, nscale, m.connected ? kText : kDim);
         char cap[48];
         RoleCaption(s, m, cap, sizeof(cap));
+        float ty = ny + nsz.y + 6 * u.k;
         if (cap[0]) {
             ImVec2 csz = u.Size(cap, 1.2f);
             u.Text(ImVec2(cx - csz.x * 0.5f, ny + nsz.y + 3 * u.k), cap, 1.2f, kMuted);
+            ty += csz.y + 2 * u.k;
         }
+        float th = 20 * u.k;
+        float tw = DrawTrophyRow(u, ImVec2(0, 0), th, m.places, false);
+        DrawTrophyRow(u, ImVec2(cx - tw * 0.5f, ty + 4 * u.k + th * 0.5f), th,
+                      m.places);
     }
     if (n == 0)
         u.TextCentered(ImVec2(a.x, cy0), ImVec2(splitX, cy1), "Waiting for the room list...", 1.45f, kMuted);
@@ -1150,7 +1223,7 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     float ly = cy0 + 6 * u.k;
     bool assignMode = owner && strcmp(s.pickMode, "assigned") == 0;
     for (int i = 0; i < s.memberCount; i++) {
-        const MemberInfo& m = s.members[i];
+        const MemberInfo& m = s.members[order[i]];
         bool you = strcmp(m.cid, s.myCid) == 0;
         bool lead = strcmp(m.cid, s.leaderCid) == 0;
         ImVec2 ra(lx, ly + i * rowH), rb(b.x - 30 * u.k, ra.y + rowH - 6 * u.k);
@@ -1176,6 +1249,14 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
         u.dl->AddCircle(dc, 6 * u.k, kBg, 16, 2.0f * u.k);
         float nameX = ra.x + 94 * u.k;
         float nameR = rb.x - (owner && !you ? 64 * u.k : 8 * u.k);
+        /* session trophies, right-aligned before the kick button */
+        {
+            float th = 20 * u.k;
+            float tw = DrawTrophyRow(u, ImVec2(0, 0), th, m.places, false, 8.0f);
+            DrawTrophyRow(u, ImVec2(nameR - tw, (ra.y + rb.y) * 0.5f),
+                          th, m.places, true, 8.0f);
+            nameR -= tw + 12 * u.k;
+        }
         u.TextLeft(ImVec2(nameX, ra.y), ImVec2(nameR, rb.y), m.name, 1.6f,
                    m.connected ? kText : kDim);
         if (lead) {
@@ -2235,6 +2316,7 @@ void DrawPopups() {
     static const struct { const char* k; const char* tag; ImU32 c; } T[] = {
         {"combo", "COMBO %d", IM_COL32(255, 201, 51, 255)},
         {"low_life", "DANGER", IM_COL32(255, 85, 85, 255)},
+        {"drop_out", "DROP OUT", IM_COL32(241, 80, 175, 255)},
         {"joined", "JOINED", IM_COL32(70, 230, 130, 255)},
         {"left", "LEFT", IM_COL32(150, 150, 150, 255)},
         {"disconnected", "OFFLINE", IM_COL32(150, 150, 150, 255)},

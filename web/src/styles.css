@@ -1365,6 +1365,98 @@ tr.off td {
   margin-left: 0;
 }
 
+/* session trophies: [1] n [2] n [3] n */
+.trophies {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-disp);
+  font-weight: 700;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tro {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tro.zero {
+  opacity: 0.4;
+}
+
+.trophy .cup {
+  fill: currentColor;
+}
+
+.trophy .handle {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+.trophy text {
+  font-family: var(--font-disp);
+  font-weight: 800;
+  font-size: 10px;
+  fill: var(--ink);
+}
+
+.trophy.t1 {
+  color: var(--yellow);
+}
+
+.trophy.t2 {
+  color: #cfd8e3;
+}
+
+.trophy.t3 {
+  color: #d68a4a;
+}
+
+/* song select: top three of the session ranking */
+.session h4 {
+  margin: 10px 0 6px;
+  font-family: var(--font-disp);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+}
+
+.session-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-top li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 8px;
+  clip-path: var(--notch-sm);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(101, 255, 255, 0.18);
+}
+
+.session-top li.sp1 {
+  border-color: rgba(255, 201, 51, 0.6);
+}
+
+.session-top li.off {
+  opacity: 0.45;
+}
+
+.sp-name {
+  font-family: var(--font-disp);
+  font-weight: 600;
+  font-size: 16px;
+}
+
 /* loading checklist */
 .checklist li {
   display: flex;
