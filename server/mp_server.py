@@ -34,6 +34,7 @@ import netcheck
 sys.stdout.reconfigure(errors="replace")
 
 PROTO = 1
+CONSOLE_IDLE_S = 15.0   # drop a pinging console after this long without a line
 MOD_VERSION_EXPECTED = None  # set via --mod-version-expected
 
 
@@ -244,9 +245,23 @@ class Server:
         self.lobby.on_hello(client.cid, client.name, client.mod, time.time())
         await self.drain_outbox()
 
+        pinging = False     # consoles ping every 2 s; bots never do
         try:
             while True:
-                line = await reader.readline()
+                if pinging:
+                    # a console that stops pinging is gone even if its
+                    # connection never closed (cloud proxies can keep the
+                    # server side of a dead socket open); drop it so it
+                    # leaves "online consoles" and its room
+                    try:
+                        line = await asyncio.wait_for(reader.readline(),
+                                                      timeout=CONSOLE_IDLE_S)
+                    except asyncio.TimeoutError:
+                        log(f"TIMEOUT {client.cid} '{client.name}' "
+                            f"(no message for {CONSOLE_IDLE_S:.0f}s)")
+                        break
+                else:
+                    line = await reader.readline()
                 if not line:
                     break
                 line = line.strip()
@@ -259,6 +274,7 @@ class Server:
                     continue
                 t = msg.get("t")
                 if t == "ping":
+                    pinging = True
                     writer.write((json.dumps({"t": "pong", "seq": msg.get("seq"),
                                               "ct": msg.get("ct")}) + "\n").encode())
                     await writer.drain()
@@ -277,6 +293,11 @@ class Server:
                            "launch_fail", "loaded", "state", "final",
                            "back_in_sel", "ready", "set_pick_mode", "autoplay",
                            "pause_req", "resume_req", "avatar", "scene"):
+                    if t == "set_name":
+                        nm = str(msg.get("name", "")).strip()[:32]
+                        if nm and nm != client.name:
+                            log(f"RENAME {client.cid} '{client.name}' -> '{nm}'")
+                            client.name = nm
                     self.lobby.on_message(client.cid, msg, time.time())
                     await self.drain_outbox()
                 elif t == "avatar_img":
