@@ -21,12 +21,9 @@ which must be reproduced pixel-for-pixel.
 2. [The porting rule: restyle vs. parity](#2-the-porting-rule-restyle-vs-parity)
 3. [Feature catalog](#3-feature-catalog)
    - 3.1 [Multiplayer (flagship)](#31-multiplayer-flagship)
-   - 3.2 [New Classics](#32-new-classics)
-   - 3.3 [Mod loading & content limits](#33-mod-loading--content-limits)
-   - 3.4 [Graphics restoration](#34-graphics-restoration)
-   - 3.5 [Gameplay & input tools](#35-gameplay--input-tools)
-   - 3.6 [Overlay UI & developer tools](#36-overlay-ui--developer-tools)
-   - 3.7 [Server, web dashboard & cloud](#37-server-web-dashboard--cloud)
+   - 3.2 [Gameplay & input tools](#32-gameplay--input-tools)
+   - 3.3 [Overlay UI & developer tools](#33-overlay-ui--developer-tools)
+   - 3.4 [Server, web dashboard & cloud](#34-server-web-dashboard--cloud)
 4. [Client architecture](#4-client-architecture)
 5. [Multiplayer client internals](#5-multiplayer-client-internals)
 6. [Wire protocol](#6-wire-protocol)
@@ -68,9 +65,10 @@ The repository is four cooperating components plus tooling:
 
 The client mod began as a fork of lsmsmx's exlaunch port for MegaMix (a
 DivaModLoader-style environment for Switch). It inherits DML-style features
-(mod_ folders, raised limits, external save data) plus ported MM+ mods (Debug
-mode, Freecam, Challenge Time, Bone Control). On top of that this repository
-adds **New Classics** (a custom PV gameplay mode) and the **entire multiplayer
+(mod_ folders, raised limits, external save data), graphics restoration and
+ported MM+ mods. Those inherited features, New Classics, and the debug/freecam
+tooling are out of scope for the PC port and are not cataloged here. On top
+of them this repository adds the **entire multiplayer
 stack** (client, protocol, server, dashboard, cloud). For a PC port, the
 multiplayer stack is the main novel work: most inherited features either already
 exist on PC natively or exist as the original MM+ mods this code was ported
@@ -96,8 +94,7 @@ Every user-visible element in the mod falls into one of three classes:
 - **Parity:** hexagonal portraits, in-game leaderboard, bottom race gauge with
   avatar markers, rank placement badge + rank-change effects, countdown/GO!,
   waiting/banner overlays, results hexagon clusters, AUTO pills, the MP badge on
-  song select, all New Classics in-game UI (it is built from the game's own
-  AET/sprite assets and is definitionally game-native).
+  song select.
 - **Neutral:** all debug/developer ImGui windows (memory scanner, res scaler,
   post-process, FPS, dim, volume, state switcher, save backup, motion player,
   wind control, quick jump, extra menu, plugin help, debug window).
@@ -106,7 +103,7 @@ Every user-visible element in the mod falls into one of three classes:
 
 ## 3. Feature catalog
 
-Legend: **[MP]** multiplayer feature · **[NC]** New Classics · **[UI]** has
+Legend: **[MP]** multiplayer feature · **[UI]** has
 user-visible UI (see §12 for classification) · **[CFG]** has config.toml keys.
 
 ### 3.1 Multiplayer (flagship)
@@ -272,114 +269,7 @@ overlay open/close, cursor move/click (720p coords), menu cursor forcing,
 `lobby_create/join/leave`, `menu_holds`, `glow`, `notify_style`, `popup_test`,
 `server_mode`, `cloud_url`, avatar peek/poke/dump.
 
-### 3.2 New Classics
-
-`switch-client-mod/source/program/nc/` — a custom gameplay mode (Future
-Tone–style targets and mechanics) layered over the stock game. Config:
-`new_classics` (default on).
-
-- **Game styles**: `arcade` / `console` / `mixed` / `max` selectable per song
-  via the **GSWindow** style picker in song select — a native-looking panel
-  built from the game's own AET layers (`pvsel::GSWindow`, set
-  `AetSelSetID 14010050`). **[UI→PARITY]**
-- **Custom note/target system** (`nc/game/`): target spawning/tracking,
-  hit-state judgment (Cool ±0.03 s / Fine ±0.07 / Safe ±0.10 / Sad ±0.13),
-  **tech zones**, **chance time**, **note links** (multi-target chains),
-  scoring with bonuses, custom sound effects, DSC opcode extensions and
-  loading (`nc/game/dsc.cpp`), NC song/chart database entries.
-- **NC results screens** (`nc/ui/result*.cpp`): dedicated results scenes in two
-  variants — `nsw_` (Switch style) and `ps4_` (FT/PS4 style, used when
-  `force_ft_ui`/`ft_ui`). **[UI→PARITY]**
-- **Customization selection UI** (`nc/ui/customize_sel.cpp`): NC options dialog
-  (3 pages) styled like the game's own dialogs. **[UI→PARITY]**
-- **NC save data** (`nc/save_data.cpp`): `ConfigSet` (64 B) + `SharedData`
-  (256 B) structs persisted alongside save data — NC options incl. stick-SE
-  settings, and shadow score storage.
-- **Input** (`nc/input.cpp`): hooks the pad pipeline for NC-specific input
-  incl. double-tap/repeat detection; also drives `mp::lobby` input
-  application (shared hook path).
-- **Sound DB** (`nc/sound_db.cpp`): NC cue registration.
-- Conditional hooks: `TaskPvGame*`/`GetHitState*` gameplay hooks install
-  unconditionally; the pv_sel and results switch-hooks install only when
-  `new_classics = true`. When NC is off and FT UI is off, multiplayer installs
-  its own fallback scene hooks (`mp/MpSceneHooks.cpp`) — i.e. **MP currently
-  depends on NC's song-select/results hook points unless the MP-only fallback
-  is active**.
-
-### 3.3 Mod loading & content limits
-
-DivaModLoader-style content support — most of this is **already native on PC**
-(via DivaModLoader for MM+), so the port mainly needs to *not conflict*.
-
-- `ModLoader` — `mod_`-prefixed romfs folders under
-  `sdmc:/atmosphere/contents/<TID>/romfs/mods` with priority ordering
-  (config-managed), same convention as PC DML.
-- `DatabaseLoader` — resolves/mixes-in database files (`pv_db`, mdata) from mod
-  folders with an RAM cache to avoid SD polling.
-- `StrArray` — str_array code-injection so modules/custom items get proper
-  localized names without crashes; `mod_str_array.toml` support (incl. custom
-  hairs).
-- `SaveDataSystem` — external savedata at `sdmc:/DMLSwitchPort/Save/`:
-  unlimited score/module/custom-item entries outside the game's save file.
-- `PvLoader` — song-ID limit raised to **24576**; PV truncation NOPs; `.movie`
-  property detection used by No-Movie mode.
-- `SpriteLoader` — sprset limit 4096 → **32768**; related flag widening.
-- `AetDB` — AET set limit 83 → **256** (binary-search lookup instead of sparse
-  index).
-- `SpriteDrawLimitPatch` — dynamic vertex buffer for sprite draw limits.
-- `MemoryHooks` — heap/allocator hooks: SEGA allocator redirects, cross-pool
-  rescue, O(1) sprite-fixup ID restoration replacing O(Max_ID) waste.
-- `FsHooks` — Atmosphere romfs path plumbing + `osage_play_data` folder cache
-  for debug output.
-- Lyric-entry limit 150 → **1000**; no module/COS limits; ExPatch (Extreme
-  unlock).
-
-### 3.4 Graphics restoration
-
-`FTRestoration.cpp` + `PostProcessUI` — a large suite that restores/extends
-Future Tone–era rendering features the Switch build cut. All are config or
-overlay driven.
-
-- **AA**: MLAA restore (incl. PC UV formula, area-texture binding, pass-2/3
-  artifact fixes), FXAA (with tunable subpix/edge thresholds), TAA restore
-  (with flicker/history fixes), or off. `anti_aliasing`, `enable_taa`,
-  `fxaa_*`.
-- **SSS** (subsurface scattering) restore: `enable_sss`.
-- **Resolution**: `game_res` internal res override (hdtv720/1080, wqhd, wvga,
-  qvga–wqxga…), `ssaa_mode`, `res_scaler` (manual scaler when `disable_adp`),
-  `disable_adp` (kills Switch adaptive performance scaling),
-  `force_30fps_rendering`.
-- **Filters**: `mag_filter` = nearest / bilinear / sharpen_5tap / sharpen_4tap
-  / cone_4tap / cone_2tap.
-- **Post-process** **[UI→NEUTRAL]**: `exposure`, `gamma`, `tone_map_method`,
-  `saturate_coef`, `exposure_pse` (bloom/PSE scale), `dim` — live-adjustable
-  via the post-process overlay; setter/getter hooks enforce them around
-  `Render::tone_map`.
-- **Shadows/reflections**: `ft_shadows` / `ft_reflect` / `ft_refract` presets,
-  or `advanced_graphics` for explicit `shadow_map_*`/`shadow_viewport_*`/
-  `shadow_tex_*`/`reflect_*`/`refract_*` resolutions; `shadow_intensity`
-  (0–1.4), `reflection_quality`; force-disable toggles for reflections,
-  shadows, self-shadow, DOF.
-- **Content/perf toggles**: `noMV` (no movie), `backMV`, `no3D`,
-  `extraFtGraphics` (extra FT render bits + blur buffers), leaf-effect fix,
-  bloom fix for 1080p+.
-- **Customization-menu FT style** (`cstm_menu_ft_style`): forces parallel
-  lighting + exposure for FT look, toon/NPR removal. `[UI→PARITY]` (changes
-  the game's own menu lighting).
-- **`Mode2DNoMV`**: "2D mode" — strips 3D/movie DSC opcodes at load (chara
-  visibility, stage fades, color LUTs), blocks movie playback, restores state
-  on song exit; plus `g_noMovie`/`g_force2D` flags surfaced in Hints badges.
-- **`TheaterRestoration`**: restores the 5-entry PV theater/advertise movie
-  menu (Mega39s OP + diva_adv movies) — menu layer init, button pointers,
-  selected-index persistence, preview images. **[UI→PARITY]** (it rebuilds a
-  cut game menu with the game's own UI).
-- **`SprBackFix` (BackgroundScaleFix)**: corrects background sprite scaling
-  when internal resolution ≠ display resolution.
-- **`Sound`/`SustainAudio`**: nn::audio WaveBuffer hooks implementing volume
-  boosts (`bgmBoost`, `btnBoost`, `seBoost`) and `acapellaMode` (vocal-track
-  isolation) — see §3.5/Volume overlay.
-
-### 3.5 Gameplay & input tools
+### 3.2 Gameplay & input tools
 
 - **AutoPlay** (`AutoPlay.cpp`) **[UI→PARITY for the in-game indicator]**:
   hands-free note hitting with bot "skill" modes — `custom` (pct), `auto`,
@@ -403,18 +293,9 @@ overlay driven.
   **disable_lyrics**, **force_japanese** (language force),
   **force_ft_ui**/`ft_ui` (FT-styled UI surfaces where implemented).
 - **Hints** (`overlays/Hints.cpp`) **[UI→PARITY w/ RESTYLE glyphs]**: in-game
-  hint line rendered in the game's own hint-bar style — e.g. "ZL: NC options",
-  "Plus: plugin help", 2D/NO-MOVIE/RANDOMIZER status badges, MP state pills.
+  hint line rendered in the game's own hint-bar style — e.g. "Plus: plugin help", 2D/NO-MOVIE/RANDOMIZER status badges, MP state pills.
   Uses Switch button glyph pills that must become PC-appropriate glyphs.
-- **Freecam** **[debug-gated]**: L+R+Minus toggle; D-pad move, right stick
-  look, B/X down/up, L/R zoom, Y+L/R roll, R3 turbo; works in PV, rhythm game,
-  and customization menu; render-while-paused support.
-- **DebugMode** **[debug-gated]**: L+R+Plus toggle; state switching, mouse
-  emulation (L3, ZL/ZR clicks, Y speed boost), fast travels
-  (L+R+D-pad → test mode / data test / CS menu / data menu), `emu_states.txt`
-  file-driven state jumps, osage_play_data generation.
-
-### 3.6 Overlay UI & developer tools
+### 3.3 Overlay UI & developer tools
 
 All of these are ImGui-rendered on top of the frame via the NVN present hook.
 Unless noted they are **NEUTRAL** (debug chrome — keep functionality, free
@@ -462,7 +343,7 @@ restyle on PC).
   (debug windows → sub-overlays → MP panel → MP gameplay HUD → keyboard →
   render).
 
-### 3.7 Server, web dashboard & cloud
+### 3.4 Server, web dashboard & cloud
 
 - **`mp_server.py`** — asyncio server; transports + sessions + lobby manager
   + avatar store + admin port + web bridge; UDP discovery responder; client
@@ -509,15 +390,12 @@ restyle on PC).
   `InstallAtOffset(<main-module vaddr>)` and `exl::patch::CodePatcher` for
   inline ARM64 instruction patches. `FUNCTION_PTR` declares typed game
   functions. All offsets target main 1.0.6.
-- **Init order** (`main.cpp`): `exl_main` → `Config::init` → MP socket guards
-  → `mp::Init` (if enabled) → `ModLoader` → `DebugMode` → custom patches →
-  `FTRestoration` → `Dimming` → freecam → `nvn_hooks::InstallHooks` →
-  `ImGui::Init` → `nc::init` → (MP scene-hooks fallback) → `shared_hooks` →
-  keyboard → `FsHooks` → `SustainAudio` → `SaveBackup` → `Mode2DNoMV` →
-  `VolumeOverlay` → `MemoryHooks`. The `MainHook` (on `nnMain`) then inits
-  `SaveDataSystem`, `DatabaseLoader`, `moduledb`, `StrArray`, `SpriteLoader`,
-  `PvLoader`, `AetDB`, `SpriteDrawLimitPatch`, `AutoPlay`, `SprBackFix`,
-  `TheaterRestoration`.
+- **Init order** (MP-relevant, `main.cpp`): `Config::init` → MP socket
+  guards → `mp::Init` (if enabled) → `nvn_hooks::InstallHooks` →
+  `ImGui::Init` → selector/results/PV-game hooks (on Switch these live in the
+  New Classics hook files, or `mp::scenehooks::Install` when those are off) →
+  keyboard; the `nnMain` hook then runs `mp::moduledb::Init` and
+  `AutoPlay::init`.
 - **Rendering**: `nvn_hooks` wraps `nvnQueuePresentTexture` (resolved via
   `nvnBootstrapLoader`/proc-address hook) → each frame runs
   `nvnImguiCalc()` → all overlays draw into ImGui → NVN-backed ImGui backend
@@ -538,14 +416,10 @@ restyle on PC).
 | `main.cpp`, `lib.hpp`, `macros.hpp`, `offsets.hpp`, `Types.hpp`, `patches.hpp`, `setting.hpp`, `version.hpp` | entry, exlaunch glue, shared constants/structs |
 | `Config.cpp/.hpp`, `toml.hpp` | TOML config read/write (`MikuMikuSwitchPlugin/config.toml`), all config keys |
 | `logger.cpp/.hpp`, `loggers.hpp` | `hook_log.txt` logging (unflushed on Ryujinx) |
-| `ModLoader`, `DatabaseLoader`, `StrArray`, `SpriteLoader`, `PvLoader`, `AetDB`, `SaveDataSystem`, `FsHooks`, `MemoryHooks`, `SpriteDrawLimitPatch`, `SprBackFix.hpp` | §3.3 content/limit subsystems |
-| `FTRestoration`, `Dimming`, `Mode2DNoMV`, `TheaterRestoration`, `Sound` | §3.4 graphics/audio |
-| `AutoPlay`, `ChartRandomizer`, `TouchSlider`, `keyboard`, `keyboard_sliders`, `hid.hpp` | §3.5 input/gameplay |
-| `DebugMode`, `freecam`, `nvn_hooks`, `ImGui.hpp`, `ImGuiOverlay.cpp`, `Allocator.hpp` | debug/render infrastructure |
-| `overlays/` | §3.6 ImGui windows |
+| `AutoPlay`, `ChartRandomizer`, `TouchSlider`, `keyboard`, `keyboard_sliders`, `hid.hpp` | §3.2 input/gameplay |
+| `nvn_hooks`, `ImGui.hpp`, `ImGuiOverlay.cpp`, `Allocator.hpp` | render/overlay infrastructure |
+| `overlays/` | §3.3 ImGui windows |
 | `mp/` | §5 multiplayer client |
-| `nc/` | §3.2 New Classics |
-| `shared_nc_ft/` | hooks shared by NC and FT-UI paths |
 
 Flat object dir + case-insensitive filesystem ⇒ **all filenames must be
 globally unique** (hence the `Mp`/`Nc` prefixes).
@@ -563,7 +437,7 @@ the platform-independent parts wholesale.
 | `MpNet` | Net thread: network bring-up, discovery/connection state machine, nonblocking TCP, WebSocket client (cloud), NDJSON frame I/O, ping/watchdog/reconnect, fixed outbound ring (128×~512 B) + 64 KiB avatar blob path, `dbg_cmd` dispatch |
 | `MpJson` | Minimal JSON parse/emit helpers (no heap churn) |
 | `MpLobby` | Game-thread consumer of inbound lines; **phase machine** `NONE/SELECT/LAUNCHING/LOADING/PLAYING/SPECTATING/DROPPED/RESULTS`; snapshot (`Snapshot`) consumed by all UI; telemetry emission (`state`/`final`/`scene`/`sel`/`back_in_sel`/ready reasons); hooks on selector init/destroy/frame, PV-game frame, StageResult init/destroy |
-| `MpSceneHooks` | MP-only selector/results hooks used when NC is off (and FT UI off) |
+| `MpSceneHooks` | MP-only selector/results hooks (used on Switch when the New Classics hooks are not installed) |
 | `MpInput` | HID-level injection/blocking via `GetNpadState` hooks across all Npad styles; merged poll dedupe (edge detection must combine sources); Minus never blocked; ImGui pad polling bypass handling |
 | `MpMenu` | **Blind menu model** — the game exposes no cursor signal for pause/results menus, so this counts the presses the game actually receives (post-block/inject, debounced) and predicts page/cursor; anchors: StageResult init/dest, `win_vp_in` AET layer, `pv->paused` edges, pv_sel init; frame-counted hold timings (`menu_holds` tunable): init ≈96, score-page A ≈66, VP ≈120, menu ≈51, nav ≈21 frames |
 | `MpModuleDb` | Captures the game's merged module table (`gm_module_tbl` parser hook); per-entry FNV-1a signature (chara/cos/sort_index) for cross-console module identity; drives avatar announce + availability |
@@ -708,16 +582,7 @@ On PC the same path works, but a TLS-capable client could skip the Worker.
 `enable_touch`, `enable_keyboard`, `bgmBoost`, `btnBoost`, `seBoost`,
 `acapellaMode`, `ft_ui`.
 
-**Graphics**: `disable_adp`, `enable_sss`, `cstm_menu_ft_style`, `enable_taa`,
-`anti_aliasing` (`mlaa|fxaa|off`), `mag_filter`, `extraFtGraphics`, `ssaa_mode`,
-`force_disable_reflections`, `force_disable_shadows`,
-`force_disable_self_shadow`, `force_disable_DOF`, `noMV`, `backMV`, `no3D`,
-`exposure`, `gamma`, `tone_map_method`, `saturate_coef`, `exposure_pse`, `dim`,
-`fxaa_subpix`, `fxaa_edge_threshold`, `fxaa_edge_threshold_min`, `game_res`,
-`ft_shadows`, `ft_reflect`, `ft_refract`, `advanced_graphics`,
-`force_30fps_rendering`, `res_scaler`, `reflection_quality`,
-`shadow_intensity`, `shadow_map_1..6_w/h`, `shadow_viewport_w/h`,
-`shadow_tex_1/2_w/h`, `reflect_w/h`, `refract_w/h`.
+(Graphics, New Classics, and mod-loader keys also exist in this file but are out of scope for the port.)
 
 **[multiplayer]**: `enabled` (default true), `server_mode`
 (`off|local|cloud`, default `local`), `cloud_url`
@@ -727,7 +592,6 @@ On PC the same path works, but a TLS-capable client could skip the Worker.
 `client_id` (autogenerated 16-hex).
 
 **Other state files**: `mp_servers.txt` (remembered LAN servers, max 4),
-`sdmc:/DMLSwitchPort/` legacy dirs (Save/, lang2/mod_str_array.toml, Dump/),
 `MikuMikuSwitchPlugin/Save` + `Backups/`, `emu_states.txt` (state jump file).
 
 ---
@@ -744,15 +608,8 @@ On PC the same path works, but a TLS-capable client could skip the Worker.
 | L3+R3+R | volume overlay |
 | L3+R3 pure hold ≥0.8 s, release | cycle input display: off → gamepad → (keyboard if `enable_keyboard`) → off |
 | ZL+ZR hold 0.5 s | toggle ImGui/game focus ("mouth focus") |
-| L+R+Minus | freecam toggle |
-| L+R+Plus | debug mode toggle |
-| L+R+D-pad ↑/↓/←/→ | fast travel: test mode / data test / CS menu / data-menu |
-| L3 | debug mouse toggle; ZL/ZR = clicks; Y-hold = faster cursor |
 | ZR ×3 (song select) | cycle AutoPlay bot mode |
 | Minus hold 3 s (in lobby) | MP emergency exit |
-
-Freecam: D-pad move · right stick look · B/X down/up · L/R zoom · Y+L/R roll ·
-R3 turbo.
 
 PC port: replace with PC-idiomatic bindings (function keys, Ctrl/Shift
 chords, or an ImGui menu); keep MP emergency-exit semantics on a sensible key.
@@ -788,12 +645,8 @@ chords, or an ImGui menu); keep MP emergency-exit semantics on a sensible key.
 | **Banners/popups** | In-song event notifications — portrait popups (avatars style) or text banners; placement/behavior preserved |
 | **Standings / results hexes** | Results screen cluster: one hexagon per player, podium ordering; **ties render as a connected cluster** with stacked names |
 | **Song-select MP badge** | "Multiplayer" state pill + AUTO pill + "X is picking…" line integrated into the game's selector UI; replaces AutoPlay badge slot |
-| **Hints bar** | Game-style hint line (ZL NC options / Plus help / 2D / NO-MOVIE / RANDOM badges) — keep layout/positioning, swap Switch glyphs for PC glyphs |
-| **NC gameplay UI** | All NC targets/effects/chance-time/tech-zone/HUD — game-native AET+spr assets by construction |
-| **NC results + GSWindow + customize dialog** | Native-looking scenes built on the game's AET layers (`nsw_`/`ps4_` variants) |
+| **Hints bar** | Game-style hint line (Plus help / MP / AUTO / RANDOM badges) — keep layout/positioning, swap Switch glyphs for PC glyphs |
 | **Emergency-exit ring** | Filling-circle hold indicator, Minus-3s semantics |
-| **Theater menu** | Restored 5-movie theater menu using the game's own buttons/layers |
-| **Customization-menu FT lighting** | `cstm_menu_ft_style` visual treatment |
 
 ### 12.3 NEUTRAL — debug chrome (any reasonable PC equivalent)
 
@@ -809,7 +662,6 @@ mod settings), MP debug/telemetry displays.
 | Switch subsystem | PC/Steam equivalent |
 |---|---|
 | exlaunch `subsdk9` + `main.npdm`, Atmosphere `exefs` | MM+ injection: **DivaModLoader plugin** (DLL) or equivalent; the same "module loaded into the game" model |
-| `mod_` romfs folders, pv_db merge, str_array, raised limits, external save | **Already native on MM+ via DML** — drop these features or only keep what MM+ lacks |
 | All `InstallAtOffset` main-module vaddrs (build 1.0.6) | Re-derive for the MM+ executable; the *semantic* hook points carry over: `TaskPvGame*`, song-selector init/ctrl/disp/dest, `StageResult` init/dest, `gm_module_tbl` parser, `sorted_pv_lists`, `win_vp_in` layer, pause flag, AET/spr loaders, score/hit-state funcs |
 | `nn::socket`, `nn::nifm` | Winsock2/`asio`; adapter enumeration via Win32 (`GetAdaptersAddresses`) for subnet sweep + a remembered-server file |
 | `nn::hid` `GetNpadState` hook chain | Hook MM+'s input poll (same semantic layer the Switch code hooks) — injection/blocking/dedup logic ports directly |
@@ -840,7 +692,7 @@ choreography) is platform-agnostic — the port is essentially "same
 6. Port AutoPlay/MP integration, avatars (needs a PC-side way to decode the
    module card texture — the spr/texture formats are shared conceptually but
    the decode path is platform work).
-7. Bring over whichever §3.3–3.5 features MM+ doesn't already provide.
+7. Bring over whichever §3.2 gameplay tools are wanted.
 
 ### Landmines
 

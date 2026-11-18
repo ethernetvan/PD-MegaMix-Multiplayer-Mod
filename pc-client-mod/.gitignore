@@ -1,0 +1,11 @@
+build/
+dist/MegaMixMP/*.dll
+*.pdb
+dist/MegaMixMP/mp_config.toml
+dist/MegaMixMP/mp_log.txt
+dist/MegaMixMP/mp_servers.txt
+mp_config.toml
+mp_log.txt
+mp_servers.txt
+
+__pycache__/
