@@ -14,6 +14,10 @@ def B(c): bot.stdin.write(c+"\n"); bot.stdin.flush()
 for i in range(50):
     if code[0]: break
     time.sleep(0.2)
+BOTPY=r"C:\Users\cl672\Documents\Coding\MegaMix-Switch-Mods\server\bot.py"
+extra=[subprocess.Popen([sys.executable,"-u",BOTPY,"--name",nm,"--port","17777","--join",code[0],"--behavior","follower","--load-delay","2","--song-secs","40","--speed",sp],
+    stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,text=True) for nm,sp in (("SlowBot","0.45"),("MidBot","0.75"),("FastBot","1.3"))]
+time.sleep(2)
 off=size(SLOG); admin({"cmd":"lobby_join","code":code[0]}); time.sleep(3)
 admin({"cmd":"autoplay","on":True,"pct":95}); time.sleep(1)
 B("pick 28"); time.sleep(3); B("start")
@@ -29,5 +33,5 @@ w,h=frames[0].size
 S_=Image.new("RGB",(w,h*len(frames)))
 for i,f in enumerate(frames): S_.paste(f,(0,i*h))
 S_.save(os.path.join(OUT,"bar_burst.png"))
-admin({"cmd":"autoplay","on":False}); bot.kill(); time.sleep(1); admin({"cmd":"lobby_leave"})
+admin({"cmd":"autoplay","on":False}); bot.kill(); [b.kill() for b in extra]; time.sleep(1); admin({"cmd":"lobby_leave"})
 print("done",flush=True)

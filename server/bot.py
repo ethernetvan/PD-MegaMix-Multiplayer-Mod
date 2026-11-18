@@ -259,7 +259,7 @@ class Bot:
             now = time.time()
             if not self.paused:
                 elapsed += now - last
-                score += random.randint(400, 900)
+                score += int(random.randint(400, 900) * self.a.speed)
                 combo += random.randint(1, 4)
                 life = 127 if random.random() > 0.05 else random.randint(10, 60)
                 self.send({"t": "state", "round": self.round, "score": score,
@@ -387,6 +387,8 @@ def main():
     ap.add_argument("--load-delay", type=float, default=3)
     ap.add_argument("--song-secs", type=float, default=60)
     ap.add_argument("--fail-at", type=float, default=0)
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="score/percentage gain multiplier (race tests)")
     ap.add_argument("--vote", choices=["delay", "never", "instant"],
                     default="delay",
                     help="how auto bots answer pause/resume votes")
