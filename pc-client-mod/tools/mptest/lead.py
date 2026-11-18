@@ -2,7 +2,7 @@
 import socket, json, time, os, sys, ctypes, subprocess, struct
 from PIL import ImageGrab
 OUT=r"C:\Users\cl672\Documents\Coding\mm-re\tmp\ab"
-SLOG=r"C:\Users\cl672\Documents\Coding\mm-re\tmp\pc_server.log"
+SLOG=r"C:\Users\cl672\Documents\Coding\mm-re\tmp\pc_server2.log"
 MLOG=r"C:\Users\cl672\Documents\Coding\MegaMix-Switch-Mods\pc-client-mod\dist\MegaMixMP\mp_log.txt"
 CID="pc00000000000001"
 k=ctypes.windll.kernel32; u=ctypes.windll.user32
@@ -129,3 +129,17 @@ def back_to_select():
     if pv()[1]!=1: tap("Plus"); time.sleep(2.5)
     tap("Down",4); time.sleep(2.2); tap("A")
     ok=wait_log("SEL 'PcRenamed' INIT",off,25); time.sleep(3); return ok
+
+def ensure_select(tries=12):
+    """get the PC to song select from wherever it is (solo)"""
+    for i in range(tries):
+        off=size(SLOG)
+        p=pv()
+        if p[0]==1:
+            back_to_select()
+        else:
+            tap("A"); time.sleep(2.2)
+        if wait_log("SEL '",off,1.5) and "INIT" in since(SLOG,off) : time.sleep(2); return True
+        lines=[l for l in since(SLOG,off).splitlines() if "SEL '" in l]
+        if lines and "DEST" not in lines[-1]: return True
+    return False
