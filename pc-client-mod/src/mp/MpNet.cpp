@@ -512,7 +512,7 @@ enum class MpCmdType : uint8_t {
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
     PauseReq, ResumeReq,
     PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds,
-    Glow, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode, CloudUrl, Keylog, RawTap, VkTap, WatchP, WatchOff, DevTap, TraceTap
+    Glow, SprTest, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode, CloudUrl, Keylog, RawTap, VkTap, WatchP, WatchOff, DevTap, TraceTap
 };
 struct MpCmd {
     MpCmdType type;
@@ -630,6 +630,11 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         /* {cmd:glow, dir:up|down} - debug: fire the rank-change glow */
         c.type = MpCmdType::Glow;
         c.a = (strstr(line, "\"down\"") != nullptr) ? 0 : 1;
+    } else if (strcmp(cmd, "sprtest") == 0) {
+        /* {cmd:sprtest, prio:N} - debug: game-sprite test rect on the clear
+         * gauge at sprite priority N (-1 off) */
+        c.type = MpCmdType::SprTest;
+        c.a = -1; getInt("prio", &c.a);
     } else if (strcmp(cmd, "menu_holds") == 0) {
         /* {cmd:menu_holds, init, score_a, vp, menu, nav} - results page
          * hold times (ms); -1 keeps the current value */
@@ -814,6 +819,7 @@ void OnFrame() {
                 menu::SetResHolds(c.pvs[0], c.pvs[1], c.pvs[2],
                                   c.pvs[3], c.pvs[4]);
                 break;
+            case MpCmdType::SprTest: input::g_sprTestPrio = c.a; break;
             case MpCmdType::Glow:
                 mp::lobby::TriggerRankGlow(c.a != 0);
                 break;

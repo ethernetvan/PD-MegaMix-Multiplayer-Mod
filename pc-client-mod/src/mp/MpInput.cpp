@@ -939,6 +939,25 @@ static bool __fastcall LoaderFinishUpDetour(void* a1) {
     return done;
 }
 
+/* dbg sprtest: a translucent red rect over the clear gauge drawn through
+ * the game's own sprite queue at priority g_sprTestPrio (720p coords) */
+int g_sprTestPrio = -1;
+static void SprTestDraw() {
+    if (g_sprTestPrio < 0) return;
+    alignas(16) static uint8_t a[0x200];
+    memset(a, 0, sizeof(a));
+    ((void* (__fastcall*)(void*))(ExeBase() + 0x5B78D0))(a);   /* DefaultSprArgs */
+    *(uint32_t*)(a + 0x00) = 4;                                 /* SPR_KIND_MULTI */
+    a[0x08] = 40; a[0x09] = 40; a[0x0A] = 255; a[0x0B] = 200;   /* BGRA red */
+    *(uint32_t*)(a + 0x0C) |= 0x08000000;                       /* SPR_ATTR_MATRIX */
+    *(int32_t*)(a + 0x1C) = g_sprTestPrio;
+    *(int32_t*)(a + 0x20) = 13; *(int32_t*)(a + 0x24) = 13;     /* HD 1280x720 */
+    float* tr = (float*)(a + 0x34); tr[0] = 130.0f; tr[1] = 690.0f; tr[2] = 0.0f;
+    *(uint32_t*)(a + 0x12C) |= 1;                               /* SPRITE_SIZE */
+    float* sz = (float*)(a + 0x130); sz[0] = 1100.0f; sz[1] = 24.0f;
+    ((void* (__fastcall*)(void*))(ExeBase() + 0x5B49C0))(a);   /* put_sprite */
+}
+
 static int __fastcall PvUpdateDetour(void* a1, float a2, void* a3) {
     static int s_updHeld = 0;
     if (mp::lobby::LoaderHeld()) {
@@ -947,7 +966,9 @@ static int __fastcall PvUpdateDetour(void* a1, float a2, void* a3) {
         return 0;
     }
     PauseTick();
-    return s_pvUpdateHook.call<int>(a1, a2, a3);
+    int r = s_pvUpdateHook.call<int>(a1, a2, a3);
+    SprTestDraw();
+    return r;
 }
 
 void InstallLoaderHook() {
