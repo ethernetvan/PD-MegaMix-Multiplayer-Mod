@@ -11,6 +11,7 @@
 #include "../platform/MpLog.hpp"
 #include "../mp/MpNet.hpp"
 #include "../mp/MpMenu.hpp"
+#include "../mp/MpInput.hpp"
 #include "diva.h"
 #include "hooks.h"
 #include "addresses.h"
@@ -157,6 +158,7 @@ HOOK(bool, __fastcall, TaskPvGameInit, addr::TaskPvGameInit, uint64_t a1) {
 HOOK(bool, __fastcall, TaskPvGameCtrl, addr::TaskPvGameCtrl, uint64_t a1) {
     bool r = originalTaskPvGameCtrl(a1);
     mp::OnPvGameFrame();
+    mp::input::SprTestDraw();
     return r;
 }
 HOOK(bool, __fastcall, TaskPvGameDest, addr::TaskPvGameDest, uint64_t a1) {

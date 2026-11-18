@@ -91,7 +91,8 @@ int  PauseMenuTaskState();
 /* Native pause control (see MpInput.cpp "native pause control"). */
 bool GamePaused();                         /* in a song and paused */
 void PauseWant(int want, uint32_t hold_ms = 0);  /* 1 pause, 0 run, -1 off */
-extern int g_sprTestPrio;                  /* dbg sprtest, -1 off */
+extern int g_sprTestPrio;
+void SprTestDraw();                        /* game thread, PV task ctrl */                  /* dbg sprtest, -1 off */
 void PauseWantRelease();                   /* drop a persistent target */
 void SetBackgroundPause(bool gameDefault); /* false = don't pause unfocused */
 /* PVGameLoaderFinishUp hook (exe+0x262730): the MP start gate. */

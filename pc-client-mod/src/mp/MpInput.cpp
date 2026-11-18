@@ -942,7 +942,7 @@ static bool __fastcall LoaderFinishUpDetour(void* a1) {
 /* dbg sprtest: a translucent red rect over the clear gauge drawn through
  * the game's own sprite queue at priority g_sprTestPrio (720p coords) */
 int g_sprTestPrio = -1;
-static void SprTestDraw() {
+void SprTestDraw() {
     if (g_sprTestPrio < 0) return;
     alignas(16) static uint8_t a[0x200];
     memset(a, 0, sizeof(a));
@@ -966,9 +966,7 @@ static int __fastcall PvUpdateDetour(void* a1, float a2, void* a3) {
         return 0;
     }
     PauseTick();
-    int r = s_pvUpdateHook.call<int>(a1, a2, a3);
-    SprTestDraw();
-    return r;
+    return s_pvUpdateHook.call<int>(a1, a2, a3);
 }
 
 void InstallLoaderHook() {
