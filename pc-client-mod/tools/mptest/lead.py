@@ -11,10 +11,12 @@ k.ReadProcessMemory.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ct
 def pid():
     o=subprocess.run(["tasklist","/FI","IMAGENAME eq DivaMegaMix.exe","/FO","CSV","/NH"],capture_output=True,text=True).stdout
     return int(o.split(",")[1].strip('"')) if "Diva" in o else 0
-_H=[None,0]
+_H=[None,0,0.0]
 def H():
-    p=pid()
-    if p!=_H[1]: _H[0]=k.OpenProcess(0x410,False,p) if p else None; _H[1]=p
+    # tasklist is slow: re-check the pid at most every 3 s
+    if _H[0] is None or time.time()-_H[2]>3:
+        p=pid(); _H[2]=time.time()
+        if p!=_H[1]: _H[0]=k.OpenProcess(0x410,False,p) if p else None; _H[1]=p
     return _H[0]
 def rd(a,n):
     b=ctypes.create_string_buffer(n); r=ctypes.c_size_t(0)
