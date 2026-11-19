@@ -48,6 +48,7 @@ struct MRec {
     int32_t max_combo; int32_t life; int rank; bool final;
     avatar::Ref av;
     int32_t sr[5];   /* session ranking: pos, wins, 1st, 2nd, 3rd places */
+    bool autoplay;
 };
 static MRec s_members[8];
 static int  s_memberCount = 0;
@@ -583,6 +584,8 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
             }
             if ((j = mpjson::Find(line, tok + i, end - i, "img")) >= 0)
                 mpjson::Copy(line, tok[i + j], m.av.img, sizeof(m.av.img));
+            if ((j = mpjson::Find(line, tok + i, end - i, "autoplay")) >= 0)
+                m.autoplay = line[tok[i + j].start] == 't';
             if ((j = mpjson::Find(line, tok + i, end - i, "sr")) >= 0 &&
                 tok[i + j].type == JSMN_ARRAY) {
                 int a = i + j + 1;
@@ -2035,6 +2038,7 @@ void GetSnapshot(Snapshot* out) {
         d.srPos = s_members[i].sr[0];
         d.wins = s_members[i].sr[1];
         for (int k = 0; k < 3; k++) d.places[k] = s_members[i].sr[2 + k];
+        d.autoplay = s_members[i].autoplay;
     }
     int lc = 0, pc = 0;
     for (int i = 0; i < s_memberCount; i++)
@@ -2152,6 +2156,7 @@ void LeaveForServerSwitch() {
 bool OverlayOpen() { return s_overlayOpen; }
 void ToggleOverlay() { s_overlayOpen = !s_overlayOpen; }
 void SetOverlayOpen(bool open) {
+    if (open != s_overlayOpen) PanelSE(open ? 0 : 1);
     s_overlayOpen = open;
 }
 /* ms timestamp of the last overlay close (-1 = none); used by Hints to

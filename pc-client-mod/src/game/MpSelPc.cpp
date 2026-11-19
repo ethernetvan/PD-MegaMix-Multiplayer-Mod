@@ -276,6 +276,7 @@ namespace mp { namespace input {
     void Apply(diva::InputState* st);
     void ApplyPost(diva::InputState* st, bool notDispatchable);
 } }
+namespace mp { namespace lobby { void PumpPanelSE(); } }
 HOOK(void, __fastcall, PollInputRepeatAndDouble, addr::PollInputRepeatAndDouble,
      diva::InputState* st, float a2) {
     originalPollInputRepeatAndDouble(st, a2);
@@ -283,6 +284,7 @@ HOOK(void, __fastcall, PollInputRepeatAndDouble, addr::PollInputRepeatAndDouble,
     int n = s_calls.fetch_add(1);
     if (n < 3 || n == 600) WriteLog("[MP] input poll #%d st=%p\n", n, (void*)st);
     mp::input::Apply(st);
+    mp::lobby::PumpPanelSE();
 }
 
 /* Last per-frame writer per InputState: the game may clear the live

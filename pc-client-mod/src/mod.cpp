@@ -127,6 +127,7 @@ static void MpImGuiInit(HWND hwnd) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigWindowsMoveFromTitleBarOnly = true;
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
 
@@ -197,18 +198,20 @@ static void MpNewFrame(IDXGISwapChain* swap) {
     }
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    /* dbg cursor injection (admin `cursor` cmd): queued after the backend's
+     * real-mouse event so the injected position is the last one consumed
+     * by NewFrame and actually wins over the physical cursor. */
+    if (ImGui::s_dbgPending) {
+        ImGui::s_dbgPending = false;
+        ImGuiIO& io0 = ImGui::GetIO();
+        float s = io0.DisplaySize.y / 720.0f;
+        io0.AddMousePosEvent(ImGui::s_dbgX * s, ImGui::s_dbgY * s);
+        io0.AddMouseButtonEvent(0, ImGui::s_dbgClick);
+    }
     ImGui::NewFrame();
 
     ImGuiIO& io = ImGui::GetIO();
     io.MouseDrawCursor = mp::lobby::OverlayOpen();
-
-    /* dbg cursor injection (admin `cursor` cmd) */
-    if (ImGui::s_dbgPending) {
-        ImGui::s_dbgPending = false;
-        float s = io.DisplaySize.y / 720.0f;
-        io.AddMousePosEvent(ImGui::s_dbgX * s, ImGui::s_dbgY * s);
-        io.AddMouseButtonEvent(0, ImGui::s_dbgClick);
-    }
 }
 
 static void MpDrawAll(IDXGISwapChain* swap) {

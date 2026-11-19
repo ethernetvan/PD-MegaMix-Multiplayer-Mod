@@ -79,6 +79,7 @@ void DbgSelLists(const int32_t* pvs, int n);
 struct MemberInfo { char cid[20]; char name[40]; bool connected, is_leader,
                     ready; char reason[24]; char role[12]; int32_t score; float pct;
                     avatar::Ref av; /* Shared Set A slot 1 module (-1 unknown) + chara/mh/img */
+                    bool     autoplay;  /* member reports AutoPlay */
                     /* room session ranking: 1-based position (0 unknown),
                      * wins, and times ranked 1st / 2nd / 3rd */
                     int32_t srPos, wins, places[3]; };
@@ -146,5 +147,10 @@ bool PadModeActive();
 void RequestPadMode();
 void ReportAutoPlay(bool on);
 void GetSnapshot(Snapshot* out);
+
+/* panel sound effects: queue on the UI thread, played by the game thread's
+ * input-poll hook. kind: 0 = enter, 1 = cancel, 2 = select. */
+void PanelSE(int kind);
+void PumpPanelSE();
 
 } // namespace mp::lobby
