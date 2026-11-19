@@ -59,6 +59,8 @@ static std::atomic<uint32_t> g_modeGen{0};
 static char     s_cloudHost[128] = "mikumod.evanthomas.dev";   /* g_statusMtx */
 static char     s_cloudPath[64]  = "/switch";
 static uint16_t s_cloudPort      = 80;
+static int      s_lastHttpCode   = 0;   /* net thread: last non-101 upgrade answer */
+static uint32_t s_rateLimitMs    = 0;   /* net thread: HTTP-429 backoff ratchet */
 
 ServerMode GetServerMode() { return (ServerMode)g_mode.load(std::memory_order_acquire); }
 bool IsCloudMode() { return GetServerMode() == kServerCloud; }
@@ -1182,9 +1184,11 @@ static bool WsHandshake(const char* host, uint16_t port, const char* path,
     WriteLog("[MP] upgrade %s%s%s -> '%s' after %llu ms\n", host, portSfx, path,
              status, (unsigned long long)(NowMs() - t0));
     if (code != 101) {
+        s_lastHttpCode = code;
         SetError("server answered HTTP %d (not a WebSocket)", code);
         return false;
     }
+    s_lastHttpCode = 0;
     s_ws = true;
     WsDecReset();
     return true;
@@ -1428,6 +1432,7 @@ static void NetThread(void*) {
             return false;
         }
         backoff = 0;
+        s_rateLimitMs = 0;          /* connected: drop any 429 backoff */
         SessionLoop();
         CloseSock();
         return true;
@@ -1463,7 +1468,20 @@ static void NetThread(void*) {
                 attempt(ip_be, port);
             }
         }
-        const uint32_t wait = backoffSeq[backoff < 3 ? backoff++ : 3];
+        uint32_t wait;
+        if (IsCloudMode() && s_lastHttpCode == 429) {
+            /* rate limited: 5 s doubling to 120 s (resets on a successful
+             * connect); a normal failure falls back to backoffSeq but the
+             * ratchet survives until the next 429 or connect */
+            s_rateLimitMs = s_rateLimitMs < 5000 ? 5000
+                : (s_rateLimitMs > 60000 ? 120000 : s_rateLimitMs * 2);
+            wait = s_rateLimitMs;
+            WriteLog("[MP] HTTP 429 rate limited - retry in %u s\n",
+                     (unsigned)(wait / 1000));
+        } else {
+            wait = backoffSeq[backoff < 3 ? backoff++ : 3];
+        }
+        s_lastHttpCode = 0;
         for (uint32_t t = 0; t < wait && !ModeChanged(gen); t += 100) SleepMs(100);
     }
 }

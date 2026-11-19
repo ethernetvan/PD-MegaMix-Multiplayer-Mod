@@ -5,6 +5,7 @@
 #include "MpAvatar.hpp"
 #include "MpNet.hpp"
 #include "../Config.hpp"
+#include "../game/MpAutoPlay.hpp"
 #include "../platform/MpLog.hpp"
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -314,6 +315,40 @@ static void SettingsTab(const Snapshot& sn) {
     if (ImGui::Checkbox("Status chip", &chip)) {
         Config::mpShowStatus = chip;
         Config::Save();
+    }
+
+    ImGui::Spacing();
+    /* AutoPlay */
+    ImGui::Text("AutoPlay");
+    ImGui::SameLine(160 * sc);
+    bool ap = AutoPlay::g_enabled;
+    if (ImGui::Checkbox("##autoplay", &ap)) {
+        AutoPlay::g_enabled = ap;
+        ReportAutoPlay(ap);
+    }
+    if (AutoPlay::g_enabled) {
+        static const char* const kApModes[] = {
+            "Custom", "Auto", "Pro", "97", "Streak", "Human", "Clutch", "Tie"
+        };
+        ImGui::TextDisabled("Mode");
+        ImGui::SameLine(160 * sc);
+        int am = AutoPlay::g_mode;
+        if (am < 0 || am >= AutoPlay::Mode_Count) am = AutoPlay::Mode_Auto;
+        ImGui::SetNextItemWidth(160 * sc);
+        if (ImGui::Combo("##apmode", &am, kApModes, AutoPlay::Mode_Count)) {
+            AutoPlay::g_mode = am;
+            ReportAutoPlay(true);
+        }
+        if (AutoPlay::g_mode == AutoPlay::Mode_Custom) {
+            ImGui::TextDisabled("Hit %");
+            ImGui::SameLine(160 * sc);
+            int pct = AutoPlay::g_hitPct;
+            ImGui::SetNextItemWidth(200 * sc);
+            if (ImGui::SliderInt("##appct", &pct, 0, 100)) {
+                AutoPlay::g_hitPct = pct;
+                ReportAutoPlay(true);
+            }
+        }
     }
 }
 

@@ -89,6 +89,8 @@ static int64_t s_launchStartMs = 0;
 static int   s_launchStage = 0;
 static int   s_launchTries = 0;
 static int64_t s_launchStageAt = 0;
+static int   s_launchBTaps = 0;      /* B taps used closing an open panel */
+static int64_t s_launchBTapAt = 0;
 static int64_t s_pvLoadedAt = 0;   /* first frame pv->loaded was seen */
 static bool  s_loadedSent = false;
 static bool  s_startSeen = false;
@@ -479,6 +481,7 @@ static void ResetLobbyState() {
     s_loadedSent = false; s_startSeen = false;
     s_statePending = false;
     s_launchStage = 0; s_jumpVerify = 0;
+    s_launchBTaps = 0; s_launchBTapAt = 0;
     s_jumpFailedDiff = false;
     s_launchBlocking = false; s_amLeader = false;
     ReleaseLoaderHold("room state reset");
@@ -1677,8 +1680,32 @@ void OnPvSelFrame(const void* sel) {
             ClearAllInput();
             PushBanner("You don't have this song - spectating");
         } else if (s_launchStage == 0) {
-            if (state == 6 && !busy && !inCust2) {
+            if (state == 8) {
+                /* the start-confirm panel was open when the leader
+                 * launched: close it with B (1 s spacing, it can miss
+                 * presses while animating) so the normal flow can pick
+                 * up in the song list. NEVER tap B in state 6 - that
+                 * backs out of the selector entirely. */
                 s_launchBlocking = true;
+                SetBlocks(MASK_ALL_NO_MINUS, true);
+                if (now - s_launchBTapAt >= 1000) {
+                    if (s_launchBTaps >= 4) {
+                        char m[64];
+                        snprintf(m, sizeof(m),
+                            "{\"t\":\"launch_fail\",\"round\":%d}", s_round);
+                        SendLine(m);
+                        SetPhase(L_SPECTATING, "Spectating (launch failed)");
+                        ClearAllInput();
+                        PushBanner("Couldn't join this round - spectating");
+                    } else {
+                        s_launchBTapAt = now;
+                        s_launchBTaps++;
+                        input::Tap(nn::hid::B, 80, 80, true);
+                    }
+                }
+            } else if (state == 6 && !busy && !inCust2) {
+                s_launchBlocking = true;
+                s_launchBTaps = 0;
                 SetBlocks(MASK_ALL_NO_MINUS, true);
                 int32_t target = s_folTarget > 0 ? s_folTarget : s_localPv;
                 if (selPv == target) {
@@ -1750,7 +1777,10 @@ void OnPvGameFrame(diva::PVGameData* pv) {
             g_current_game && g_current_game->play) {
             int steps = 0;
             for (PvGameTarget* t = g_current_game->target;
-                 t != nullptr && steps < 64; t = t->next, steps++) {
+                 t != nullptr && steps < 64 &&
+                 (uintptr_t)t - (uintptr_t)g_current_game->target_buffer <
+                     sizeof(g_current_game->target_buffer);
+                 t = t->next, steps++) {
                 if (!t->note_active ||
                     (t->hit_state != 21 && t->hit_state != HitState_None))
                     continue;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(MegaMixMP CXX C)
+project(MegaMixMP CXX C ASM_MASM)
 
 option(MP_DEV_TOOLS "RE/debug instrumentation (watchpoints, keylog, vk/dik taps)" OFF)
 
@@ -17,6 +17,8 @@ add_library(MegaMixMP SHARED
     src/platform/MpSock.cpp
     src/game/diva.cpp
     src/game/MpSelPc.cpp
+    src/game/MpAutoPlay.cpp
+    src/game/MpAutoPlayAsm.asm
     src/mp/MpNet.cpp
     src/mp/MpLobby.cpp
     src/mp/MpMenu.cpp
@@ -53,7 +55,12 @@ target_compile_definitions(MegaMixMP PRIVATE
     $<$<BOOL:${MP_DEV_TOOLS}>:MP_DEV_TOOLS>
 )
 
-target_compile_options(MegaMixMP PRIVATE /W3 /wd4530 /utf-8)
+target_compile_options(MegaMixMP PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:/W3>
+    $<$<COMPILE_LANGUAGE:CXX>:/wd4530>
+    $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
+    $<$<COMPILE_LANGUAGE:C>:/W3>
+    $<$<COMPILE_LANGUAGE:C>:/utf-8>)
 set_source_files_properties(third_party/safetyhook/src/Zydis.c PROPERTIES LANGUAGE C)
 
 target_link_libraries(MegaMixMP PRIVATE

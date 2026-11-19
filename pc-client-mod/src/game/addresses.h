@@ -79,6 +79,11 @@ constexpr size_t InputOffAbsTapped  = 0x19C8;
 constexpr size_t InputOffPositions  = 0xE0;
 constexpr size_t InputPosStickBase  = 0x14;   /* position index of L-stick X; L Y/R X/R Y follow */
 
+/* --- PV arcade controller / key getters (AutoPlay) --- */
+constexpr size_t PvArcadeCtrl        = 0x14026AFD0; // arcade ctrl: rcx = PVGameArcade*, xmm1 = dt
+constexpr size_t GetPvKeyStateDown   = 0x140274930; // int64(handler, key): handler+0x68+key*8
+constexpr size_t GetPvKeyStateTapped = 0x140274960; // int64(handler, key): handler+0xA8+key*8
+
 /* --- Customize select (module picker) --- */
 constexpr size_t CustomizeSelTaskInit = 0x140687D10; // Switch CustomizeSelTask init
 constexpr size_t CustomizeSelTaskDest = 0x140687D80; // Switch CustomizeSelTask dest

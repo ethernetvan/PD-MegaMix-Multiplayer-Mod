@@ -22,6 +22,7 @@
 #include "mp/MpUi.hpp"
 #include "mp/MpInput.hpp"
 #include "mp/MpSpr.hpp"
+#include "game/MpAutoPlay.hpp"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -249,6 +250,7 @@ static void MpDrawAll(IDXGISwapChain* swap) {
         mp::lobby::DrawRankGlow();
         mp::lobby::DrawGaugeRace();
     }
+    AutoPlay::DrawIndicator();
     mp::lobby::DrawPopups();
     mp::lobby::DrawCountdown();
     if (sn.waitingStart && sn.countdownMs < 0) mp::lobby::DrawWaiting();

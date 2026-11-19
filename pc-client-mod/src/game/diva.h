@@ -20,11 +20,17 @@ struct vector { T* begin_; T* end_; T* cap_; };
 } // namespace prj
 
 struct PVGameData;
-struct SpriteVertex { int32_t v[8]; };
 
 namespace diva {
 struct vec2 { float x, y; };
 struct vec3 { float x, y, z; };
+
+struct SpriteVertex
+{
+	diva::vec3 pos;
+	diva::vec2 uv;
+	uint32_t color;
+};
 
 struct PvDscTarget
 {

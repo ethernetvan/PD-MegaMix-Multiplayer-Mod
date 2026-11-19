@@ -1,30 +1,12 @@
 #pragma once
 // PC port: stubs for Switch-side helpers that have no H1 equivalent on PC.
-// AutoPlay is report-only (g_enabled stays false); moduledb returns defaults;
-// the virtual keyboard and Hints UI are not ported yet.
+// moduledb returns defaults; the virtual keyboard and Hints UI are not
+// ported yet. AutoPlay is a real module now (game/MpAutoPlay.hpp) — it is
+// included here so the stub-era include sites keep working.
 #include <cstdint>
 #include <cstddef>
 #include <string>
-
-namespace AutoPlay {
-enum Mode : int { Mode_Off = 0, Mode_Safe = 1, Mode_SomeSad = 2,
-                  Mode_AllSad = 3, Mode_Custom = 4, Mode_Count = 5 };
-extern bool g_enabled;     /* always false on PC (report-only) */
-extern int  g_hitPct;
-extern int  g_mode;
-void init();
-void OnGameTaskFrame();
-void Update(float dt);
-void PostUpdate(float dt);
-void IndicatorVisible(bool v);
-bool IndicatorVisible();
-void DrawIndicator(float x, float y, float s);
-void ProcessSlideHit(int hitType);
-int  ModeFromName(const char* name);
-const char* ModeName(int mode = -1);
-const char* ModeTag(int mode);
-int  EffectivePct();
-} // namespace AutoPlay
+#include "game/MpAutoPlay.hpp"
 
 namespace CustomizeSelUi {
 bool IsInCustomizeScene();

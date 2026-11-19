@@ -15,6 +15,7 @@
 #include "diva.h"
 #include "hooks.h"
 #include "addresses.h"
+#include "MpAutoPlay.hpp"
 #include <cstring>
 #include <atomic>
 #include <string>
@@ -157,11 +158,14 @@ HOOK(bool, __fastcall, TaskPvGameInit, addr::TaskPvGameInit, uint64_t a1) {
 }
 HOOK(bool, __fastcall, TaskPvGameCtrl, addr::TaskPvGameCtrl, uint64_t a1) {
     bool r = originalTaskPvGameCtrl(a1);
+    AutoPlay::OnGameTaskFrame();
     mp::OnPvGameFrame();
     mp::input::SprTestDraw();
     return r;
 }
 HOOK(bool, __fastcall, TaskPvGameDest, addr::TaskPvGameDest, uint64_t a1) {
+    g_current_game = nullptr;
+    AutoPlay::OnGameEnd();
     return originalTaskPvGameDest(a1);
 }
 
@@ -571,5 +575,6 @@ void InstallMpGameHooks() {
     INSTALL_HOOK(CustomizeSelTaskDest);
     INSTALL_HOOK(PollInputRepeatAndDouble);
     INSTALL_HOOK(SetInputNotDispatchable);
+    AutoPlay::init();
     WriteLog("[MP] game hooks installed\n");
 }
