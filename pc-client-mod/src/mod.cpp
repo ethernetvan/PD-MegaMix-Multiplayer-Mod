@@ -21,6 +21,7 @@
 #include "mp/MpLobby.hpp"
 #include "mp/MpUi.hpp"
 #include "mp/MpInput.hpp"
+#include "mp/MpSpr.hpp"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -342,6 +343,7 @@ __declspec(dllexport) void Init() {
     mp::input::InstallPauseTaskHook();
     mp::input::InstallLoaderHook();
     mp::input::InstallKbPollHook();   /* focus gate for the keyboard */
+    mp::spr::Install();               /* put_sprite hook: race fill under markers */
 #ifdef MP_DEV_TOOLS
     mp::input::InstallTappedHook();
     mp::input::InstallDiHooks();

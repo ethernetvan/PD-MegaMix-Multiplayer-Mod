@@ -2,6 +2,7 @@
 #include "MpAvatar.hpp"
 #include "MpInput.hpp"
 #include "MpNet.hpp"
+#include "MpSpr.hpp"
 #include "../Stubs.hpp"            /* AutoPlay stub */
 #include "../Config.hpp"
 #include "../MpFont.hpp"
@@ -772,15 +773,21 @@ void DrawGaugeRace() {
     Snapshot s;
     GetSnapshot(&s);
     if (!s.inSong || s.boardCount == 0 || OverlayOpen() ||
-        s.resultsAgeMs >= 0) { s_raceN = 0; return; }
+        s.resultsAgeMs >= 0) {
+        s_raceN = 0;
+        mp::spr::RaceFillPublish(s.myPct, 0, nullptr, nullptr);
+        return;
+    }
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    if (!dl) return;
+    if (!dl) { mp::spr::RaceFillPublish(s.myPct, 0, nullptr, nullptr); return; }
     const ImGuiIO& io = ImGui::GetIO();
     float k = io.DisplaySize.y / 720.0f;
     float dt = io.DeltaTime;
+    /* the clear gauge bar spans 194..1846 px in the game's FHD sprite
+     * space (traced via the put_sprite hook) - map pct the same way */
     auto X = [&](float p) {
         p = p < 0 ? 0 : (p > 100 ? 100 : p);
-        return (130.0f + 11.0f * p) * k;
+        return (194.0f + 16.52f * p) * (k / 1.5f);
     };
     /* smooth each other player's pct toward its target */
     int n = 0;
@@ -814,34 +821,29 @@ void DrawGaugeRace() {
                 bool tb = dc_[i]; dc_[i] = dc_[j]; dc_[j] = tb;
                 mp::avatar::Ref ta = av_[i]; av_[i] = av_[j]; av_[j] = ta;
             }
-    float myx = X(s.myPct);
-    /* lead fill over [x(myPct), x(d)] for whoever is ahead; drawing
-     * nearest-last makes each visible segment a lead over the next */
-    bool anyLead = false;
-    for (int i = 0; i < n; i++) {           /* farthest first */
-        float d = ds_[i];
-        if (d <= s.myPct + 0.05f) continue;
-        anyLead = true;
-        ImU32 c = cs_[i];
-        int a = dc_[i] ? 80 : 235;
-        ImVec2 p0(myx, 692 * k), p1(X(d), 710 * k);
-        dl->AddRectFilledMultiColor(
-            p0, p1, _shade(c, 1.35f, a), _shade(c, 1.35f, a),
-            _shade(c, 1.0f, a), _shade(c, 1.0f, a));
-        dl->AddLine(ImVec2(p0.x, p0.y), ImVec2(p1.x, p0.y),
-                    IM_COL32(255, 255, 255, dc_[i] ? 28 : 70), 1.0f);
-        dl->AddRectFilled(ImVec2(p1.x - 2 * k, p0.y), p1,
-                          _shade(c, 0.6f, a), 0);
+    /* lead fill: drawn through the game's own sprite queue by the
+     * put_sprite hook (MpSpr.cpp) so it lands UNDER the gauge's
+     * BORDER/G/E markers — ImGui can only draw on top. Publish farthest
+     * first so each segment paints over the previous one's tail. */
+    {
+        float pct[8]; uint32_t col[8]; int m = 0;
+        for (int i = 0; i < n; i++) {
+            if (ds_[i] <= s.myPct + 0.05f) continue;
+            int a = dc_[i] ? 80 : 235;
+            ImU32 c = (cs_[i] & 0x00FFFFFFu) | ((ImU32)a << 24);
+            pct[m] = ds_[i];
+            col[m] = (c & 0xFF00FF00u) | ((c & 0xFFu) << 16) |
+                     ((c >> 16) & 0xFFu);          /* ImU32 ABGR -> BGRA */
+            m++;
+        }
+        mp::spr::RaceFillPublish(s.myPct, m, pct, col);
     }
-    /* dark seam where the local player's own fill ends */
-    if (anyLead)
-        dl->AddRectFilled(ImVec2(myx, 692 * k), ImVec2(myx + 2 * k, 710 * k),
-                          IM_COL32(0, 0, 0, 170), 0);
     /* spread avatar centres slightly when markers sit at the same % so
      * every portrait stays visible; ds_ is sorted largest-first (right-to-left) */
     float tx[8], ax[8];
     for (int i = 0; i < n; i++) tx[i] = ax[i] = X(ds_[i]);
-    const float minSep = 25.0f * k, xMin = 130.0f * k, xMax = 1230.0f * k;
+    const float minSep = 25.0f * k,
+                xMin = (194.0f / 1.5f) * k, xMax = (1846.0f / 1.5f) * k;
     for (int pass = 0; pass < 5; pass++) {
         for (int i = n - 2; i >= 0; i--)
             if (ax[i] < ax[i + 1] + minSep) {
@@ -1126,8 +1128,32 @@ void DrawPopups() {
         float age = lage[shown];
         float a = age < 200 ? age / 200.0f
                 : age > 2600 ? (3000.0f - age) / 400.0f : 1.0f;
+        int ti = -1;
+        for (int t = 0; t < (int)(sizeof(T) / sizeof(T[0])); t++)
+            if (strcmp(T[t].k, p.kind) == 0) { ti = t; break; }
+        if (ti < 0) continue;
+        char tag[48];
+        snprintf(tag, sizeof(tag), T[ti].tag,
+                 strcmp(p.kind, "combo") == 0 ? (int)p.value : 0);
+        ImFont* f = ImGui::GetFont();
+        float nsz = f->FontSize * 1.1f, tsz = f->FontSize * 1.25f;
+        /* truncate the name to 220k with ".." */
+        char nm[44]; strncpy(nm, p.name, sizeof(nm) - 1);
+        nm[sizeof(nm) - 1] = 0;
+        float maxw = 220 * k;
+        int nl = (int)strlen(nm);
+        while (nl > 0 &&
+               f->CalcTextSizeA(nsz, FLT_MAX, 0, nm).x > maxw) {
+            nm[--nl] = 0;
+            if (nl >= 2) { nm[nl - 1] = '.'; nm[nl - 2] = '.'; }
+        }
+        float nw = f->CalcTextSizeA(nsz, FLT_MAX, 0, nm).x;
+        float tw = f->CalcTextSizeA(tsz, FLT_MAX, 0, tag).x;
+        float pw = (nw > tw ? nw : tw) + 20 * k;
+        if (pw > 260 * k) pw = 260 * k;
+        /* out of song: centre the whole card (avatar + text box) */
         float x = s.inSong ? 10 * k
-                  : (io.DisplaySize.x - 300 * k) * 0.5f;
+                  : (io.DisplaySize.x - (56 * k + pw)) * 0.5f;
         float y = s.inSong ? (140 + shown * 58) * k
                   : (60 + shown * 58) * k;
         x -= (1.0f - a) * 60 * k;
@@ -1135,42 +1161,18 @@ void DrawPopups() {
         mp::avatar::Ref mod;
         for (int m = 0; m < s.memberCount; m++)
             if (strcmp(s.members[m].cid, p.cid) == 0) { mod = MemberRef(s, s.members[m]); break; }
-        Ui u; u.dl = dl; u.font = ImGui::GetFont(); u.k = k;
-        u.fs = ImGui::GetFont()->FontSize;
+        Ui u; u.dl = dl; u.font = f; u.k = k;
+        u.fs = f->FontSize;
         DrawAvatar(u, ImVec2(x + 26 * k, y + 26 * k), 24 * k, mod,
                    false, true, false);
-        char tag[48]; const char* tagp = "";
-        for (auto& t : T)
-            if (strcmp(t.k, p.kind) == 0) {
-                snprintf(tag, sizeof(tag), t.tag,
-                         strcmp(p.kind, "combo") == 0 ? (int)p.value : 0);
-                tagp = tag;
-                ImU32 c = t.c;
-                ImFont* f = ImGui::GetFont();
-                float nsz = f->FontSize * 1.1f, tsz = f->FontSize * 1.25f;
-                /* truncate the name to 220k with ".." */
-                char nm[44]; strncpy(nm, p.name, sizeof(nm) - 1);
-                nm[sizeof(nm) - 1] = 0;
-                float maxw = 220 * k;
-                int nl = (int)strlen(nm);
-                while (nl > 0 &&
-                       f->CalcTextSizeA(nsz, FLT_MAX, 0, nm).x > maxw) {
-                    nm[--nl] = 0;
-                    if (nl >= 2) { nm[nl - 1] = '.'; nm[nl - 2] = '.'; }
-                }
-                float nw = f->CalcTextSizeA(nsz, FLT_MAX, 0, nm).x;
-                float tw = f->CalcTextSizeA(tsz, FLT_MAX, 0, tagp).x;
-                float pw = (nw > tw ? nw : tw) + 20 * k;
-                if (pw > 260 * k) pw = 260 * k;
-                dl->AddRectFilled(ImVec2(x + 56 * k, y),
-                                  ImVec2(x + 56 * k + pw, y + 50 * k),
-                                  IM_COL32(0, 0, 0, (int)(a * 170)), 10 * k);
-                dl->AddText(f, nsz, ImVec2(x + 66 * k, y + 4 * k),
-                            IM_COL32(255, 255, 255, (int)(a * 255)), nm);
-                dl->AddText(f, tsz, ImVec2(x + 66 * k, y + 26 * k),
-                            c & 0x00ffffff | ((ImU32)(a * 255) << 24), tagp);
-                break;
-            }
+        ImU32 c = T[ti].c;
+        dl->AddRectFilled(ImVec2(x + 56 * k, y),
+                          ImVec2(x + 56 * k + pw, y + 50 * k),
+                          IM_COL32(0, 0, 0, (int)(a * 170)), 10 * k);
+        dl->AddText(f, nsz, ImVec2(x + 66 * k, y + 4 * k),
+                    IM_COL32(255, 255, 255, (int)(a * 255)), nm);
+        dl->AddText(f, tsz, ImVec2(x + 66 * k, y + 26 * k),
+                    c & 0x00ffffff | ((ImU32)(a * 255) << 24), tag);
     }
 }
 
@@ -1539,7 +1541,7 @@ void DrawWaiting() {
     ImVec2 ds = ImGui::GetIO().DisplaySize;
     float k = ds.y / 720.0f;
     ImGui::SetNextWindowPos(
-        ImVec2(ds.x * 0.5f - 150 * k, ds.y * 0.4f), ImGuiCond_Always);
+        ImVec2(ds.x * 0.5f, ds.y * 0.4f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
     ImGui::SetNextWindowBgAlpha(0.6f);
     if (!BeginWin("##mpwait", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -1550,7 +1552,7 @@ void DrawWaiting() {
     }
     ImGui::Text("Waiting for players... %d/%d loaded",
                 s.loadedCount, s.playerCount);
-    ImGui::TextDisabled("don't unpause - the game resumes automatically");
+    ImGui::TextDisabled("the song starts when everyone has loaded");
     EndWin();
 }
 

@@ -6,6 +6,7 @@
 #include "MpInput.hpp"
 #include "MpLobby.hpp"
 #include "MpMenu.hpp"
+#include "MpSpr.hpp"
 #include "../platform/MpLog.hpp"
 #include "../Config.hpp"
 #include "../game/diva.h"
@@ -512,7 +513,7 @@ enum class MpCmdType : uint8_t {
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
     PauseReq, ResumeReq,
     PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds,
-    Glow, SprTest, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode, CloudUrl, Keylog, RawTap, VkTap, WatchP, WatchOff, DevTap, TraceTap
+    Glow, SprTest, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode, CloudUrl, Keylog, RawTap, VkTap, WatchP, WatchOff, DevTap, TraceTap, SprTrace
 };
 struct MpCmd {
     MpCmdType type;
@@ -725,6 +726,10 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         c.type = MpCmdType::WatchP;
     } else if (strcmp(cmd, "watchoff") == 0) {
         c.type = MpCmdType::WatchOff;
+    } else if (strcmp(cmd, "sprtrace") == 0) {
+        /* {cmd:sprtrace, n:N} - log the next N put_sprite submissions */
+        c.type = MpCmdType::SprTrace;
+        c.a = 1500; getInt("n", &c.a);
     }
 #endif
     else {
@@ -814,6 +819,7 @@ void OnFrame() {
             case MpCmdType::WatchOff:   input::WatchOff(); break;
             case MpCmdType::DevTap:     input::DevTap(c.a, c.b); break;
             case MpCmdType::TraceTap:   input::SetTraceTap(c.a); break;
+            case MpCmdType::SprTrace:   spr::TraceArm(c.a); break;
 #endif
             case MpCmdType::MenuHolds:
                 menu::SetResHolds(c.pvs[0], c.pvs[1], c.pvs[2],
@@ -1602,8 +1608,8 @@ void OnPvGameFrame() {
     cur.max_combo = pv->max_combo;
     cur.life     = pv->life;
     cur.pct      = pv->percentage;
-    cur.border   = 0;   /* no clear_border on PC (FT-based PVGameData) */
-    cur.border_eff = 0;
+    cur.border   = pv->clear_border;
+    cur.border_eff = pv->clear_border_eff;
     cur.scoring  = pv->scoring_enabled;
     memcpy(cur.judge, pv->judge_count, sizeof(cur.judge));
 

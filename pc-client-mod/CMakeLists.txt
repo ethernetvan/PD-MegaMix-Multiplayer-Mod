@@ -25,6 +25,7 @@ add_library(MegaMixMP SHARED
     src/mp/MpPanelPc.cpp
     src/mp/MpOverlayPc.cpp
     src/mp/MpAvatarStub.cpp
+    src/mp/MpSpr.cpp
     third_party/safetyhook/src/safetyhook.cpp
     third_party/safetyhook/src/Zydis.c
     third_party/imgui/imgui.cpp

@@ -3,7 +3,7 @@ from lead import *
 from t_mp_util import *
 admin({"cmd":"lobby_leave"}); time.sleep(1); print("sel",ensure_select(),flush=True)
 code=[None]
-bot=subprocess.Popen([sys.executable,"-u",r"C:\Users\cl672\Documents\Coding\MegaMix-Switch-Mods\server\bot.py","--name","BarBot","--port","17777","--create","--behavior","follower","--load-delay","2","--song-secs","40"],
+bot=subprocess.Popen([sys.executable,"-u",r"C:\Users\cl672\Documents\Coding\MegaMix-Switch-Mods\server\bot.py","--name","BarBot","--port","17777","--create","--behavior","follower","--load-delay","2","--song-secs","300"],
     stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding="utf-8",errors="replace")
 def pump():
     for l in bot.stdout:
@@ -15,8 +15,8 @@ for i in range(50):
     if code[0]: break
     time.sleep(0.2)
 BOTPY=r"C:\Users\cl672\Documents\Coding\MegaMix-Switch-Mods\server\bot.py"
-extra=[subprocess.Popen([sys.executable,"-u",BOTPY,"--name",nm,"--port","17777","--join",code[0],"--behavior","follower","--load-delay","2","--song-secs","40","--speed",sp],
-    stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,text=True) for nm,sp in (("SlowBot","0.45"),("MidBot","0.75"),("FastBot","1.3"))]
+extra=[subprocess.Popen([sys.executable,"-u",BOTPY,"--name",nm,"--port","17777","--join",code[0],"--behavior","follower","--load-delay","2","--song-secs","300","--speed",sp],
+    stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,text=True) for nm,sp in (("SlowBot","0.45"),("MidBot","0.75"),("FastBot","1.3"),("MaxBot","12"))]
 time.sleep(2)
 off=size(SLOG); admin({"cmd":"lobby_join","code":code[0]}); time.sleep(3)
 admin({"cmd":"autoplay","on":True,"pct":95}); time.sleep(1)

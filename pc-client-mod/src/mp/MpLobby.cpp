@@ -952,7 +952,7 @@ static void ProcessLine(const char* line) {
             s_voteKind[0] = 0;
             PushBanner("%s vote expired", "Pause/resume");
         } else {
-            PushBanner("%s vote: %d/%d agreed - press + to agree (%ds)",
+            PushBanner("%s vote: %d/%d agreed - press Pause to agree (%ds)",
                        strcmp(s_voteKind, "pause") == 0 ? "Pause" : "Resume",
                        s_voteAgreed, s_voteNeed, s_voteEndsIn);
         }
@@ -1304,8 +1304,8 @@ void Pump() {
 
 /* the song+difficulty clear % (e.g. 70 on this Extreme); the game's
  * running border clear_border_eff only reaches it at the last note */
-static float ClearBorder(const diva::PVGameData*) {
-    return 0.0f;   /* no clear_border fields on PC (FT-based PVGameData) */
+static float ClearBorder(const diva::PVGameData* pv) {
+    return pv->clear_border > 0.0f ? pv->clear_border : pv->clear_border_eff;
 }
 
 /* final {.., border, clear, drop}: clear reflects the FINAL state (a run
@@ -1333,7 +1333,7 @@ static void SendFinal(const diva::PVGameData* pv, bool quit) {
     s_finalLineRound = s_playedRound;
     WriteLog("[MP-L] final r%d pct=%.2f border=%.2f/%.2f life=%d clear=%d "
 "drop=%d quit=%d\n", s_playedRound, (double)pv->percentage,
-             0.0, 0.0,
+             (double)pv->clear_border, (double)pv->clear_border_eff,
              pv->life, (int)clear, (int)drop, (int)quit);
 }
 

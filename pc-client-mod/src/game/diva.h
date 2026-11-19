@@ -224,8 +224,8 @@ struct PVGameData
 	int64_t qword2D2F8;
 	uint8_t gap2D300[4];
 	float percentage;
-	float float2D308;
-	float float2D30C;
+	float clear_border;     /* song+difficulty clear % (Switch +0x2D0D0) */
+	float clear_border_eff; /* running border, reaches clear_border at the end */
 	uint8_t gap2D310[13];
 	uint8_t byte2D31D;
 	uint8_t gap2D31E;
