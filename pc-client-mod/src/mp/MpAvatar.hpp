@@ -24,8 +24,10 @@ void OnWelcome();
 
 /* pv_sel frame (game thread): module poll + sprite-set loads. */
 void GamePump();
-/* Top of nvnImguiCalc (present thread): readback, decode, upload, frees. */
+/* OnFrame (present thread): staging readback, decode, upload, frees. */
 void RenderPump();
+/* D3DInit: the device/context the GPU work runs on. */
+void SetDevice(void* dev, void* ctx);
 
 /* UI thread. Portrait for `module`; marks it wanted.
  * Returns 1 = ready (*tex / uv0..uv1 = square crop), 0 = loading,

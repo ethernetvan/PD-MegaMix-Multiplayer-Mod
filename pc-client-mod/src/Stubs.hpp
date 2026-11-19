@@ -13,14 +13,21 @@ bool IsInCustomizeScene();
 bool IsOpen();
 } // namespace CustomizeSelUi
 
-/* module db: report-only stub (avatar::Resolve always falls to silhouette) */
+/* module db: the game's merged module table, read straight out of memory
+ * (MpModuleDb.cpp — PC port of switch-client-mod MpModuleDb.cpp). */
 namespace moduledb {
-struct Info { int32_t id; int32_t chara; int32_t sort_index; std::string name; };
+struct Info { int32_t id, chara, sortIndex, cos; uint32_t sig; };
 bool Available();
 void MarkReady();
-const Info* Find(int32_t id);
+/* false: no such module on this console, or the table isn't loaded yet.
+ * sig = FNV-1a 32 over chara, cos, sort_index (LE int32 each), never 0:
+ * language-independent, and differs when a mod reuses an official id. */
+bool Find(int32_t module, Info* out);
+/* chara 0..9 -> that character's default module; -1 for anything else */
 int32_t DefaultModuleFor(int32_t chara);
 void DbgDump();
+/* internal (MpAvatar.cpp): the raw table entry for sprite-set/spr ids */
+const uint8_t* RawEntry(int32_t id);
 } // namespace moduledb
 
 /* Song-select status hints (Switch pill). H2 — stubbed. */

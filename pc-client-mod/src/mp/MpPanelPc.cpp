@@ -32,13 +32,37 @@ static void HexPts(ImVec2 c, float r, ImVec2 out[6], float rotDeg = -90.0f) {
         out[i] = ImVec2(c.x + r * cosf(a), c.y + r * sinf(a));
     }
 }
+/* triangle-fan fill of a pointy-top hexagon (portrait clipped to the hex
+ * shape, same as the race/results draws in MpUi.cpp) */
+static void HexTex(ImDrawList* dl, ImVec2 c, float r, ImTextureID tex,
+                   ImVec2 uv0, ImVec2 uv1) {
+    ImVec2 p[7];
+    p[0] = c;
+    HexPts(c, r, p + 1);
+    dl->PushTextureID(tex);
+    dl->PrimReserve(18, 7);
+    const ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
+    for (int i = 0; i < 7; i++) {
+        ImVec2 uv(uv0.x + (p[i].x - c.x + r) / (2.0f * r) * (uv1.x - uv0.x),
+                  uv0.y + (p[i].y - c.y + r) / (2.0f * r) * (uv1.y - uv0.y));
+        dl->PrimWriteVtx(p[i], uv, IM_COL32_WHITE);
+    }
+    for (int i = 0; i < 6; i++) {
+        dl->PrimWriteIdx(base);
+        dl->PrimWriteIdx((ImDrawIdx)(base + 1 + i));
+        dl->PrimWriteIdx((ImDrawIdx)(base + 1 + (i + 1) % 6));
+    }
+    dl->PopTextureID();
+}
+
 static void DrawHexAvatar(ImDrawList* dl, ImVec2 c, float r,
                           const mp::avatar::Ref& av, bool connected) {
     ImVec2 pts[6];
     HexPts(c, r, pts);
     void* tex = nullptr; float uv0[2], uv1[2];
     if (mp::avatar::Resolve(av, &tex, uv0, uv1) == 1 && tex) {
-        dl->AddImage((ImTextureID)tex, pts[4], pts[2], ImVec2(uv0[0],uv0[1]), ImVec2(uv1[0],uv1[1]));
+        HexTex(dl, c, r, (ImTextureID)tex, ImVec2(uv0[0], uv0[1]),
+               ImVec2(uv1[0], uv1[1]));
     } else {
         dl->AddConvexPolyFilled(pts, 6, IM_COL32(60, 66, 74, 255));
         /* silhouette: head + shoulders */

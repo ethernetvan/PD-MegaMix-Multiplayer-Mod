@@ -19,7 +19,7 @@ if (-not (Test-Path $cmake)) { throw "Windows cmake not found at $cmake" }
 $ninja = "$env:APPDATA\Python\Python313\Scripts\ninja.exe"
 if (-not (Test-Path $ninja)) { $ninja = 'ninja' }
 
-$devArg = if ($Dev) { ' -DMP_DEV_TOOLS=ON' } else { '' }
+$devArg = if ($Dev) { ' -DMP_DEV_TOOLS=ON' } else { ' -DMP_DEV_TOOLS=OFF' }
 & $env:ComSpec /c "`"$vcvars`" && `"$cmake`" -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release$devArg -DCMAKE_MAKE_PROGRAM=`"$ninja`" && `"$cmake`" --build build"
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 

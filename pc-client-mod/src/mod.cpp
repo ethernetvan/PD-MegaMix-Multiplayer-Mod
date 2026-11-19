@@ -22,6 +22,7 @@
 #include "mp/MpUi.hpp"
 #include "mp/MpInput.hpp"
 #include "mp/MpSpr.hpp"
+#include "mp/MpAvatar.hpp"
 #include "game/MpAutoPlay.hpp"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
@@ -364,6 +365,7 @@ __declspec(dllexport) void D3DInit(IDXGISwapChain* swap, ID3D11Device* dev,
                                    ID3D11DeviceContext* ctx) {
     s_dev = dev;
     s_ctx = ctx;
+    mp::avatar::SetDevice(dev, ctx);
     DXGI_SWAP_CHAIN_DESC desc;
     swap->GetDesc(&desc);
     /* s_hwnd stays unset: MpNewFrame subclasses the window on the first
@@ -386,6 +388,7 @@ __declspec(dllexport) void OnFrame(IDXGISwapChain* swap) {
     mp::input::PollMerged();
     if (!s_imguiReady) return;
     PanelHotkeys();
+    mp::avatar::RenderPump();   /* GPU readback/decode on the present thread */
     MpNewFrame(swap);
     MpDrawAll(swap);
     ImGui::Render();
