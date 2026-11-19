@@ -255,6 +255,7 @@ static void MpDrawAll(IDXGISwapChain* swap) {
         mp::lobby::DrawGaugeRace();
     }
     AutoPlay::DrawIndicator();
+    mp::lobby::DrawSelBadge(off);
     mp::lobby::DrawPopups();
     mp::lobby::DrawCountdown();
     if (sn.waitingStart && sn.countdownMs < 0) mp::lobby::DrawWaiting();

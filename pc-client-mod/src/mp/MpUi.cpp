@@ -1610,4 +1610,161 @@ void DrawEmergency() {
     dl->PopClipRect();
 }
 
+/* ================================================================
+ * Song-select MP badge (port of the Switch DrawMpBadge in Hints.cpp;
+ * the ZR glyph becomes an F8 key cap). Drawn on the background list
+ * inside the HUD block, so coordinates are HUD-space: hudOff is the
+ * HUD rect's origin in real display coords (for the mouse test).
+ * ============================================================== */
+void DrawSelBadge(ImVec2 hudOff) {
+    Snapshot sn;
+    GetSnapshot(&sn);
+    if (!sn.inSongSelect || CustomizeSelUi::IsInCustomizeScene() ||
+        CustomizeSelUi::IsOpen())
+        return;
+    /* the whole overlay covers this spot while it is open */
+    if (OverlayOpen())
+        return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImDrawList* drawList = ImGui::GetBackgroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float s = io.DisplaySize.y / 720.0f;
+    float w = 150.0f * s, h = 58.0f * s;
+    float posX = io.DisplaySize.x - w - (24.0f * s);
+    float posY = 64.0f * s;
+
+    bool mpOn    = Config::mpEnabled && mp::GetServerMode() != mp::kServerOff;
+    bool inLobby = sn.code[0] != 0;
+
+    ImVec2 mpos(io.MousePos.x - hudOff.x, io.MousePos.y - hudOff.y);
+    bool hovered = mpos.x >= posX && mpos.x <= posX + w &&
+                   mpos.y >= posY && mpos.y <= posY + h;
+
+    drawList->AddRectFilled(ImVec2(posX, posY), ImVec2(posX + w, posY + h),
+                            IM_COL32(18, 22, 26, 230), 10.0f * s);
+    drawList->AddRect(ImVec2(posX, posY), ImVec2(posX + w, posY + h),
+                      hovered ? IM_COL32(0, 195, 227, 255) : IM_COL32(255, 255, 255, 35),
+                      10.0f * s, 0, hovered ? 2.0f : 1.2f);
+
+    float baseFontSz = font->FontSize;
+    const char* title = "Multiplayer";
+    /* F8 key cap top-right: opens the panel */
+    float gw = 28.0f * s, gh = 18.0f * s;
+    ImVec2 gpos(posX + w - gw - 10.0f * s, posY + 7.0f * s);
+    drawList->AddRectFilled(gpos, ImVec2(gpos.x + gw, gpos.y + gh),
+                            IM_COL32(52, 58, 66, 255), 3.0f * s);
+    drawList->AddRect(gpos, ImVec2(gpos.x + gw, gpos.y + gh),
+                      hovered ? IM_COL32(0, 195, 227, 255) : IM_COL32(255, 255, 255, 140),
+                      3.0f * s, 0, 1.0f);
+    ImVec2 gsz = font->CalcTextSizeA(baseFontSz * 0.85f, FLT_MAX, 0.0f, "F8");
+    drawList->AddText(font, baseFontSz * 0.85f,
+                      ImVec2(gpos.x + (gw - gsz.x) * 0.5f,
+                             gpos.y + (gh - gsz.y) * 0.5f - 0.5f),
+                      IM_COL32(230, 235, 240, 255), "F8");
+    /* gold AUTO pill directly under the badge when AutoPlay is on
+     * (right edge aligned to the badge); the lobby lines stack below it */
+    float autoH = 0.0f;
+    if (AutoPlay::g_enabled) {
+        const char* atag = AutoPlay::ModeTag();
+        ImVec2 asz = font->CalcTextSizeA(baseFontSz, FLT_MAX, 0.0f, atag);
+        float padX = 6.0f * s, padY = 2.0f * s;
+        ImVec2 p1(posX + w, posY + h + 4.0f * s + asz.y + padY * 2);
+        ImVec2 p0(p1.x - asz.x - padX * 2, posY + h + 4.0f * s);
+        drawList->AddRectFilled(p0, p1, IM_COL32(255, 201, 51, 235), 5.0f * s);
+        drawList->AddRect(p0, p1, IM_COL32(0, 0, 0, 120), 5.0f * s, 0, 1.2f * s);
+        drawList->AddText(font, baseFontSz,
+                          ImVec2(p0.x + padX, p0.y + padY),
+                          IM_COL32(25, 25, 25, 255), atag);
+        autoH = p1.y - p0.y + 2.0f * s;
+    }
+    drawList->AddText(font, baseFontSz, ImVec2(posX + 12.0f * s, posY + 6.0f * s),
+                      mpOn ? IM_COL32(255, 255, 255, 255) : IM_COL32(165, 175, 185, 200), title);
+
+    /* state pill: OFF / DISCONNECTED / ROOM: CODE */
+    char label[24];
+    ImU32 stateColor;
+    if (!mpOn) {
+        snprintf(label, sizeof(label), "OFF");
+        stateColor = IM_COL32(150, 158, 166, 255);
+    } else if (inLobby && !sn.connected) {
+        snprintf(label, sizeof(label), "RECONNECTING");
+        stateColor = IM_COL32(255, 170, 70, 255);
+    } else if (inLobby) {
+        snprintf(label, sizeof(label), "ROOM: %s", sn.code);
+        stateColor = IM_COL32(90, 205, 130, 255);
+    } else if (sn.connected) {
+        snprintf(label, sizeof(label), "CONNECTED");
+        stateColor = IM_COL32(0, 195, 227, 255);
+    } else {
+        snprintf(label, sizeof(label), "DISCONNECTED");
+        stateColor = IM_COL32(230, 120, 90, 255);
+    }
+    ImU32 stateBg = (stateColor & 0x00FFFFFF) | (40u << 24);
+
+    float capW = w - 24.0f * s, capH = 24.0f * s;
+    ImVec2 capMin(posX + 12.0f * s, posY + 27.0f * s), capMax(capMin.x + capW, capMin.y + capH);
+    drawList->AddRectFilled(capMin, capMax, stateBg, 12.0f * s);
+    drawList->AddRect(capMin, capMax, stateColor, 12.0f * s, 0, 1.2f);
+    ImVec2 lblSz = font->CalcTextSizeA(baseFontSz * 1.05f, FLT_MAX, 0.0f, label);
+    drawList->AddText(font, baseFontSz * 1.05f,
+                      ImVec2(capMin.x + (capW - lblSz.x) * 0.5f,
+                             capMin.y + (capH - lblSz.y) * 0.5f - 0.5f),
+                      stateColor, label);
+
+    /* in a lobby: who is picking, right-aligned under the badge */
+    if (inLobby) {
+        float y = posY + h + 6.0f * s + autoH;
+        const char* lname = "";
+        for (int i = 0; i < sn.memberCount; i++)
+            if (strcmp(sn.members[i].cid, sn.leaderCid) == 0)
+                lname = sn.members[i].name;
+        bool meLeader = strcmp(sn.leaderCid, sn.myCid) == 0;
+        char who[48];
+        snprintf(who, sizeof(who), "%s", meLeader ? "You're" : (lname[0] ? lname : "Leader"));
+        float maxW = 300.0f * s, fsz = baseFontSz * 1.0f;
+        char line[128];
+        int len = (int)strlen(who);
+        if (!sn.connected) {
+            int left = sn.offlineMs >= 0 ? 30 - sn.offlineMs / 1000 : 30;
+            snprintf(line, sizeof(line), "Connection lost - leaving room in %ds",
+                     left < 0 ? 0 : left);
+        } else for (;;) {
+            snprintf(line, sizeof(line), "%.*s%s picking a song  (%d)", len, who,
+                     len < (int)strlen(who) ? ".." : "", sn.memberCount);
+            if (len == 0 || font->CalcTextSizeA(fsz, FLT_MAX, 0, line).x <= maxW) break;
+            do { len--; } while (len > 0 && ((unsigned char)who[len] & 0xC0) == 0x80);
+        }
+        ImVec2 ts2 = font->CalcTextSizeA(fsz, FLT_MAX, 0, line);
+        float rx = posX + w;
+        drawList->AddRectFilled(ImVec2(rx - ts2.x - 16 * s, y),
+            ImVec2(rx, y + ts2.y + 8 * s), IM_COL32(18, 22, 26, 210), 8 * s);
+        drawList->AddText(font, fsz, ImVec2(rx - ts2.x - 8 * s, y + 4 * s),
+            IM_COL32(255, 235, 170, 255), line);
+
+        /* leader: second pill listing who can't play the pick */
+        if (sn.connected && meLeader && sn.unavailFor[0]) {
+            float y2 = y + ts2.y + 8 * s + 4.0f * s;
+            char line2[140];
+            snprintf(line2, sizeof(line2), "Not available for: %.96s",
+                     sn.unavailFor);
+            int l2 = (int)strlen(line2);
+            while (l2 > 0 && font->CalcTextSizeA(fsz, FLT_MAX, 0, line2).x > maxW) {
+                do { l2--; } while (l2 > 0 && ((unsigned char)line2[l2] & 0xC0) == 0x80);
+                snprintf(line2 + l2, sizeof(line2) - l2, "..");   /* UTF-8 safe trim */
+            }
+            ImVec2 ts3 = font->CalcTextSizeA(fsz, FLT_MAX, 0, line2);
+            drawList->AddRectFilled(ImVec2(rx - ts3.x - 16 * s, y2),
+                ImVec2(rx, y2 + ts3.y + 8 * s), IM_COL32(18, 22, 26, 210), 8 * s);
+            drawList->AddText(font, fsz, ImVec2(rx - ts3.x - 8 * s, y2 + 4 * s),
+                IM_COL32(255, 170, 70, 255), line2);
+        }
+    }
+
+    /* click the badge -> open the MP panel (SetOverlayOpen plays the SE) */
+    if (hovered && ImGui::IsMouseClicked(0)) {
+        SetOverlayOpen(true);
+    }
+}
+
 } // namespace mp::lobby

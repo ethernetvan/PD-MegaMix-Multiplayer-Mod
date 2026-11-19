@@ -40,6 +40,9 @@ struct Map {
     size_t pv_id;
     size_t sort_indices;     /* int32_t[4], MM only (0 = unknown) */
     size_t sort_change_dir;  /* int32_t, MM only */
+    size_t sel_disp_pv;      /* int32_t pv shown on the selected row's panel;
+                              * lags pv_id while the list animates (MM only) */
+    size_t index;            /* int32_t cursor index in cur_pv_list (MM only) */
     size_t sort_mode;
     size_t difficulty;
     size_t edition;
@@ -61,6 +64,8 @@ constexpr Map MM = {
     /* pv_id            */ 0x262A4,
     /* sort_indices     */ 0x262AC,
     /* sort_change_dir  */ 0x262BC,
+    /* sel_disp_pv      */ 0x258DC,
+    /* index            */ 0x261F0,
     /* sort_mode        */ 0x262C0,
     /* difficulty       */ 0x262C8,
     /* edition          */ 0x262CC,
@@ -82,6 +87,8 @@ constexpr Map FT = {
     /* pv_id            */ 0x379DC,
     /* sort_indices     */ 0,       /* unknown for FT */
     /* sort_change_dir  */ 0,       /* unknown for FT */
+    /* sel_disp_pv      */ 0,       /* unknown for FT */
+    /* index            */ 0,       /* unknown for FT */
     /* sort_mode        */ 0x379E0,
     /* difficulty       */ 0x379F8,
     /* edition          */ 0x379FC,
@@ -119,8 +126,23 @@ static void BuildShadow(void* real, const selmap::Map& m) {
     memset(s_shadow, 0, sizeof(s_shadow));
     const char* r = (const char*)real;
     *(int32_t*)(s_shadow + sh::STATE)     = *(const int32_t*)(r + m.state);
-    *(uint8_t*)(s_shadow + sh::BUSY)      = 0;   /* TODO-H2: PC busy flag unknown */
-    *(int32_t*)(s_shadow + sh::INDEX)     = 0;   /* TODO-H2: cursor index offset unknown */
+    /* No busy byte on PC: while the list animates (scroll/sort) the
+     * selected row's panel still shows the previous pv, so "busy" =
+     * displayed pv hasn't caught up with pv_id yet. Verified: it lags
+     * for the whole ~100 ms transition on scrolls and re-sorts and
+     * always converges at rest. A mismatch that persists (a row whose
+     * panel never shows pv_id, e.g. random/empty) stops counting as busy
+     * after 1 s so the follower lock and the launch autopilot can't hang. */
+    static uint64_t s_busySince = 0;
+    const bool lag = m.sel_disp_pv &&
+        *(const int32_t*)(r + m.sel_disp_pv) != *(const int32_t*)(r + m.pv_id);
+    const uint64_t nowMs = GetTickCount64();
+    if (!lag) s_busySince = 0;
+    else if (!s_busySince) s_busySince = nowMs;
+    *(uint8_t*)(s_shadow + sh::BUSY)      =
+        (uint8_t)(lag && nowMs - s_busySince < 1000);
+    *(int32_t*)(s_shadow + sh::INDEX)     =
+        m.index ? *(const int32_t*)(r + m.index) : 0;
     *(int32_t*)(s_shadow + sh::PV_ID)     = *(const int32_t*)(r + m.pv_id);
     *(int32_t*)(s_shadow + sh::SORT_MODE) = *(const int32_t*)(r + m.sort_mode);
     *(int32_t*)(s_shadow + sh::DIFF)      = *(const int32_t*)(r + m.difficulty);
@@ -177,6 +199,13 @@ static void SelDestCommon() { s_realSel = nullptr; s_map = nullptr; mp::OnPvSelD
 static void SelCtrlCommon(void* sel, const selmap::Map& m) {
     s_realSel = sel;
     s_map = &m;
+#ifdef MP_DEV_TOOLS
+    static void* s_logSel = nullptr;
+    if (sel != s_logSel) {
+        s_logSel = sel;
+        WriteLog("[MP] sel %p map=%s\n", sel, m.is_ft ? "FT" : "MM");
+    }
+#endif
     BuildShadow(sel, m);
     mp::OnPvSelFrame(s_shadow);
 }
@@ -257,11 +286,13 @@ static int s_customizeCount = 0;
 HOOK(bool, __fastcall, CustomizeSelTaskInit, addr::CustomizeSelTaskInit, uint64_t a1) {
     bool r = originalCustomizeSelTaskInit(a1);
     s_customizeCount++;
+    WriteLog("[MP] customize init (n=%d)\n", s_customizeCount);
     return r;
 }
 HOOK(bool, __fastcall, CustomizeSelTaskDest, addr::CustomizeSelTaskDest, uint64_t a1) {
     bool r = originalCustomizeSelTaskDest(a1);
     if (s_customizeCount > 0) s_customizeCount--;
+    WriteLog("[MP] customize dest (n=%d)\n", s_customizeCount);
     return r;
 }
 namespace CustomizeSelUi {

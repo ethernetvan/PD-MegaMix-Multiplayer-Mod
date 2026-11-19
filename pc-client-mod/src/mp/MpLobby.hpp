@@ -2,6 +2,7 @@
 #include "MpAvatar.hpp"
 
 #include <cstdint>
+struct ImVec2;
 namespace diva { struct PVGameData; }
 using diva::PVGameData;
 
@@ -50,6 +51,9 @@ void DrawWaiting();
 void DrawStandings();
 void DrawResultsAvatars();
 void DrawEmergency();
+/* song-select MP badge (Switch DrawMpBadge port); hudOff = HUD rect origin
+ * in real display coords, for the mouse hit-test */
+void DrawSelBadge(ImVec2 hudOff);
 
 /* Commands from panel buttons / dbg_cmd. */
 void CmdLobbyCreate();

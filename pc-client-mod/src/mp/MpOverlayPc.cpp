@@ -1,6 +1,5 @@
 // PC status chips: passive "MP: ..." chip (bottom-left when debug_status_chip
-// is on) plus the song-select pill (top-left, always while a room/connection
-// is active in pv_sel — tells the user the F8 hotkey).
+// is on). The song-select badge is mp::lobby::DrawSelBadge in MpUi.cpp.
 #include "MpLobby.hpp"
 #include "MpNet.hpp"
 #include "../Config.hpp"
@@ -59,39 +58,8 @@ static void DrawStatusChip() {
     ImGui::PopStyleVar(2);
 }
 
-/* top-left pill while in song select: connection + room + F8 hint */
-static void DrawSelChip() {
-    mp::lobby::Snapshot sn;
-    mp::lobby::GetSnapshot(&sn);
-    if (!sn.inSongSelect) return;
-    if (mp::GetState() != mp::MpState::Connected && !sn.code[0]) return;
-
-    mp::MpStatus st;
-    mp::GetStatus(&st);
-    float s = ImGui::GetIO().DisplaySize.y / 720.0f;
-    ImGui::SetNextWindowPos(ImVec2(12.0f * s, 12.0f * s), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.55f);
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
-        ImGuiWindowFlags_NoInputs;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f * s, 4.0f * s));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f * s);
-    if (ImGui::Begin("###MpSelChip", nullptr, flags)) {
-        ImVec4 color = StateColor(st.state);
-        if (sn.code[0])
-            ChipColored(color, "MP: connected — room %s — F8", sn.code);
-        else
-            ChipColored(color, "MP: connected — F8");
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-}
-
 /* called from mod.cpp each frame */
 void MpStatusChipDraw() {
     if (!Config::mpEnabled) return;
     DrawStatusChip();
-    DrawSelChip();
 }
