@@ -687,7 +687,9 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
         c.type = MpCmdType::DumpAvatar;
         c.a = -1; getInt("module", &c.a);
     } else if (strcmp(cmd, "menu_cursor") == 0) {
-        /* {cmd:menu_cursor, v:N} - force the blind menu model's cursor */
+        /* {cmd:menu_cursor, v:N} - force the menu model's cursor; the
+         * real-cursor resync is suppressed ~2 s so the model can be
+         * desynced on purpose (retry-slip recovery test) */
         c.type = MpCmdType::MenuCursor;
         c.a = 0; getInt("v", &c.a);
     } else if (strcmp(cmd, "sel_lists") == 0) {
@@ -1499,6 +1501,10 @@ void SetServerMode(ServerMode m) {
     Config::Save();
     g_mode.store(m, std::memory_order_release);
     Reconnect();
+    /* same banners the Switch OPTIONS picker raises on a mode switch */
+    lobby::SystemBanner(m == kServerOff   ? "Multiplayer off"
+                      : m == kServerLocal ? "Local server - searching the network..."
+                                          : "Online server - connecting...");
     WriteLog("[MP] server mode -> %s\n", ModeName(m));
 }
 
@@ -1526,6 +1532,7 @@ bool SetCloudUrl(const char* url) {
     }
     if (!ApplyCloudUrl(b)) {
         WriteLog("[MP] bad online server address '%s'\n", b);
+        lobby::SystemBanner("Invalid server address - use host[:port][/path]");
         return false;
     }
     if (Config::mpCloudUrl != b) {
@@ -1535,6 +1542,7 @@ bool SetCloudUrl(const char* url) {
         if (IsCloudMode()) {
             lobby::LeaveForServerSwitch();
             Reconnect();
+            lobby::SystemBanner("Online server changed - connecting...");
         }
     }
     return true;

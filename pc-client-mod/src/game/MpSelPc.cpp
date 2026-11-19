@@ -245,10 +245,72 @@ HOOK(bool, __fastcall, PvSelPS4Dest, addr::PvSelPS4Dest, uint64_t a1) {
 /* ------------------------------------------------------------------ */
 /* Results hooks                                                       */
 /* ------------------------------------------------------------------ */
+#ifdef MP_DEV_TOOLS
+/* dump the task object so the task-runner fn ptrs (and thus the Ctrl
+ * address) can be found: exe-range qwords inside the first 0x40 bytes */
+static void DumpTaskObj(const char* tag, void* task) {
+    uintptr_t base = (uintptr_t)GetModuleHandleW(nullptr);
+    uintptr_t end  = base + 0x2000000;
+    WriteLog("[MP] %s task=%p\n", tag, task);
+    for (int i = 0; i < 0x30; i++) {
+        uintptr_t v = *(uintptr_t*)((char*)task + i * 8);
+        if (v >= base && v < end)
+            WriteLog("[MP] %s +0x%02x -> %p (exe+0x%x)\n", tag, i * 8,
+                     (void*)v, (unsigned)(v - base));
+    }
+    /* if +0 looks like a vtable ptr, dump its entries too */
+    uintptr_t vt = *(uintptr_t*)task;
+    if (vt >= base && vt < end) {
+        for (int i = 0; i < 12; i++) {
+            uintptr_t v = *(uintptr_t*)(vt + i * 8);
+            if (v >= base && v < end)
+                WriteLog("[MP] %s vt[%d] = exe+0x%x\n", tag, i,
+                         (unsigned)(v - base));
+        }
+    }
+}
+#endif
 HOOK(bool, __fastcall, StageResultSwitchInit, addr::StageResultSwitchInit, void* a1) {
     bool r = originalStageResultSwitchInit(a1);
+#ifdef MP_DEV_TOOLS
+    DumpTaskObj("res_init", a1);
+#endif
     mp::OnStageResult(true);
     return r;
+}
+/* StageResult task Ctrl (vt[2] = exe+0x64C200, found via the res task's
+ * vtable): captures the task pointer so mp::menu can read the real end-menu
+ * cursor, same trick as the pause-menu task at +0x278. */
+static std::atomic<uintptr_t> s_resTask{0};
+static std::atomic<uint64_t>  s_resTaskMs{0};
+static uintptr_t ResTask() {
+    uintptr_t t = s_resTask.load(std::memory_order_relaxed);
+    /* same 250 ms freshness gate as the pause task */
+    return t && GetTickCount64() - s_resTaskMs.load(std::memory_order_relaxed) <= 250 ? t : 0;
+}
+/* The results end-menu cursor is NOT stored as a scalar anywhere in the
+ * task's reachable memory: exhaustive live diffing (task 0..0x8000, ~200
+ * first-level children, 136 second-level, byte/parity/2-valued/lagged
+ * scans, all correlated with the on-screen highlight) found no field
+ * tracking Retry<->Return. task+0x3c80 looked promising but was proven
+ * to be an unrelated state field (changes on page transitions, held 1
+ * across alternating navs). This matches the Switch RE conclusion
+ * ("no signal for the results end-menu cursor") - the model stays blind
+ * and ResMenuCursor() reports -1. The task capture itself is kept: it is
+ * the only liveness signal for the results task (menu up vs dest). */
+namespace mp { namespace input {
+int ResMenuCursor() {
+    (void)ResTask();
+    return -1;
+}
+void ResMenuSetCursor(int c) {
+    (void)c;
+}
+} }
+HOOK(bool, __fastcall, StageResultSwitchCtrl, addr::StageResultSwitchCtrl, void* a1) {
+    s_resTask.store((uintptr_t)a1, std::memory_order_relaxed);
+    s_resTaskMs.store(GetTickCount64(), std::memory_order_relaxed);
+    return originalStageResultSwitchCtrl(a1);
 }
 HOOK(bool, __fastcall, StageResultSwitchDest, addr::StageResultSwitchDest, void* a1) {
     bool r = originalStageResultSwitchDest(a1);
@@ -600,6 +662,7 @@ void InstallMpGameHooks() {
     INSTALL_HOOK(PvSelPS4Ctrl);
     INSTALL_HOOK(PvSelPS4Dest);
     INSTALL_HOOK(StageResultSwitchInit);
+    INSTALL_HOOK(StageResultSwitchCtrl);
     INSTALL_HOOK(StageResultSwitchDest);
     INSTALL_HOOK(StageResultPS4Init);
     INSTALL_HOOK(StageResultPS4Dest);

@@ -1237,14 +1237,19 @@ void Pump() {
                 input::Tap(nn::hid::A, 80, 80, true);
                 break;
             case mp::menu::P_RES_MENU:
+                /* the end-menu reads the device-driven path, so nav/confirm
+                 * must go through DevTapBtn: an InputState-level nav write
+                 * counts in the model but never moves the real highlight,
+                 * and the follow-up A then lands on the wrong item (seen
+                 * live: drive_down counted -> drive_a hit Retry) */
                 if (ms.cursor == 0) {
                     DbgMenu(ms.page, ms.cursor, "drive_down");
                     s_driveLastTap = now;
-                    input::Tap(nn::hid::Down, 80, 80, true);
+                    input::DevTapBtn(nn::hid::Down, 80);
                 } else {
                     DbgMenu(ms.page, ms.cursor, "drive_a");
                     s_driveLastTap = now;
-                    input::Tap(nn::hid::A, 80, 80, true);
+                    input::DevTapBtn(nn::hid::A, 80);
                 }
                 break;
             default:
@@ -1910,6 +1915,7 @@ void OnPvGameFrame(diva::PVGameData* pv) {
         case 1:                     /* tap Plus until the pause opens */
             if (pv->paused) {
                 s_retryRecStage = 2;
+                s_retryRecTries = 0;
             } else if (now - s_retryRecLastTap >= 500) {
                 if (++s_retryRecTries > 10) {
                     DbgMenu(mp::menu::P_NONE, -1, "recovery_give_up");
@@ -1920,20 +1926,35 @@ void OnPvGameFrame(diva::PVGameData* pv) {
                 }
             }
             break;
-        case 2:                     /* menu open c0: Up -> Return (c4) */
+        case 2:                     /* steer to Return (c4) on the real
+                                     * cursor: a menu tap can land as
+                                     * edge+repeat (seen live: one Up moved
+                                     * 0->4->3), so nudge and re-check */
             if (ms.page == mp::menu::P_PAUSE && ms.ready) {
-                DbgMenu(ms.page, ms.cursor, "recovery_up");
-                input::Tap(nn::hid::Up, 60, 100, true);
-                s_retryRecStage = 3;
+                if (ms.cursor == 4) {
+                    s_retryRecStage = 3;
+                } else if (now - s_retryRecLastTap >= 350) {
+                    if (++s_retryRecTries > 12) {
+                        DbgMenu(ms.page, ms.cursor, "recovery_nav_give_up");
+                        s_retryRecStage = 0;
+                    } else {
+                        DbgMenu(ms.page, ms.cursor, "recovery_nav");
+                        input::DevTapBtn(ms.cursor == 0 ? nn::hid::Up
+                                                       : nn::hid::Down, 60);
+                        s_retryRecLastTap = now;
+                    }
+                }
             }
             break;
         case 3:                     /* cursor on Return + ready -> A */
             if (ms.page == mp::menu::P_PAUSE && ms.cursor == 4 &&
                 ms.ready) {
                 DbgMenu(ms.page, ms.cursor, "recovery_a");
-                input::Tap(nn::hid::A, 60, 100, true);
+                input::DevTapBtn(nn::hid::A, 60);
                 s_retryRecStage = 4;
                 s_retryRecT0 = now;
+            } else if (ms.page == mp::menu::P_PAUSE && ms.ready) {
+                s_retryRecStage = 2;   /* cursor moved: steer again */
             }
             break;
         case 4:                     /* wait for OnPvSelInit */

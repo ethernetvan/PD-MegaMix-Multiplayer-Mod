@@ -752,6 +752,20 @@ void DevTap(int32_t idx, uint32_t hold_ms) {
     }
 }
 
+void DevTapBtn(uint64_t logical, uint32_t hold_ms) {
+    int32_t idx = -1;
+    switch (logical) {
+    case nn::hid::A:     idx = keys::RawEnter; break;
+    case nn::hid::B:     idx = keys::RawEsc;   break;
+    case nn::hid::Up:    idx = keys::RawUp;    break;
+    case nn::hid::Down:  idx = keys::RawDown;  break;
+    case nn::hid::Left:  idx = keys::RawLeft;  break;
+    case nn::hid::Right: idx = keys::RawRight; break;
+    default: return;
+    }
+    DevTap(idx, hold_ms);
+}
+
 void InstallKbPollHook() {
     uintptr_t base = (uintptr_t)GetModuleHandleW(nullptr);
     s_kbPollHook = safetyhook::create_inline((void*)(base + 0x2B0CF0),
@@ -1227,7 +1241,11 @@ void Apply(diva::InputState* st) {
         comb &= ~DevTapSuppressLogical();
         s_realEdges |= comb & ~s_prevRealComb;
         s_prevRealComb = comb;
-        blocked = s_blocked;
+        /* DevTap-produced logicals are the mod's own injection: they must
+         * pass the block mask like injectForce does, or the results/pause
+         * drivers can't reach menus while the block owns input (the menus
+         * read the device-driven path, where Tap(force) never lands). */
+        blocked = s_blocked & ~DevTapSuppressLogical();
         zeroLs = s_zeroSticks;
         CollectInject(now, &inject, &injectForce);
 #ifdef MP_DEV_TOOLS

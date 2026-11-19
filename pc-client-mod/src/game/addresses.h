@@ -32,6 +32,7 @@ constexpr size_t IsFutureToneMode     = 0x1414AB9E3; // bool: FT (PS4) UI mode
 
 /* --- Results --- */
 constexpr size_t StageResultSwitchInit = 0x14064C0E0; // Switch StageResultSwitch::Init
+constexpr size_t StageResultSwitchCtrl = 0x14064C200; // Switch StageResultSwitch::Ctrl (vt[2], found via res task dump)
 constexpr size_t StageResultSwitchDest = 0x14064C300; // Switch StageResultSwitch::Dest
 constexpr size_t StageResultPS4Init    = 0x140231A70; // Switch StageResultPS4::Init
 constexpr size_t StageResultPS4Dest    = 0x140232DD0; // Switch StageResultPS4::Dest

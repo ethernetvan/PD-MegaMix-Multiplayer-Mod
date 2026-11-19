@@ -36,6 +36,8 @@ static const uint64_t PAUSE_ALLOW = A | B | Up | Down | Plus | Minus;
 static std::mutex  s_mtx;
 static Page        s_page = P_NONE;
 static int         s_cursor = 0;
+static uint64_t    s_cursorForceUntil = 0;  /* ms: hold a forced model cursor
+                                             * against the real-cursor resync */
 static bool        s_guard = false;
 static uint64_t    s_frame = 0;
 static uint64_t    s_readyFrame = 0;
@@ -118,6 +120,13 @@ void End() {
 void ForceCursor(int c) {
     std::lock_guard<std::mutex> lk(s_mtx);
     s_cursor = c;
+    /* real-cursor menus re-sync every Filter below; hold the forced value
+     * for a short window so menu_cursor can still desync the model on
+     * purpose (the retry-slip recovery test: model on Return while the
+     * game's cursor stays on Retry -> its A passes -> real retry) */
+    s_cursorForceUntil =
+        nn::os::GetSystemTick().GetInt64Value() * 1000 /
+            nn::os::GetSystemTickFrequency() + 2000;
 }
 
 uint32_t ConsumeEvents() {
@@ -169,9 +178,19 @@ void Filter(int slot, uint64_t* buttons, int32_t* stickL, int32_t* stickR,
      * counted cursor whenever the menu task is live. The veto itself stays
      * swallow-at-confirm (Switch semantics): the game's own cursor and
      * highlight stay in sync, the A edge on a vetoed item is stripped. */
-    if (s_page == P_PAUSE) {
-        int rc = mp::input::PauseMenuCursor();
-        if (rc >= 0) s_cursor = rc;
+    if (now >= s_cursorForceUntil) {
+        if (s_page == P_PAUSE) {
+            int rc = mp::input::PauseMenuCursor();
+            if (rc >= 0) s_cursor = rc;
+        }
+        /* real results end-menu cursor (captured StageResult task): same
+         * override so nav that never reaches the task can't desync the
+         * veto - and a Down the blind model would have counted lands
+         * exactly once. */
+        if (s_page == P_RES_MENU) {
+            int rc = mp::input::ResMenuCursor();
+            if (rc >= 0) s_cursor = rc;
+        }
     }
 
     for (uint64_t e : {A, B, Up, Down}) {
