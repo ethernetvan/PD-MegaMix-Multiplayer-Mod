@@ -396,6 +396,44 @@ Server, web, Switch and PC (`pc-client-mod/`), all on `main` (pc-port was merged
   Y reopen -> close -> A reaches the game (`dbg_menu` res_score -> res_vp); MM+ with 8 players on one page,
   Enter / F7 / Esc. NOT verified: a real Switch, a real pad or keyboard on PC (admin taps only).
 
+## Round 18: No Fail room option, Same difficulty checked PC <-> Switch (2026-11-24)
+- **Room option `no_fail`** (owner, default off): every console plays the round with the game's No Fail Mode on
+  or off, whatever its own setting in the song's confirm panel. Protocol (docstring of `server/lobby.py`):
+  `set_opt {key: "no_fail", value}`, `lobby.no_fail`, `launch.no_fail` = the value frozen for that round (a
+  change during a round applies from the next launch), event `no_fail`. In a No Fail round the server sends no
+  `drop_out` events (nobody leaves the song); `drop` in `final` / the standings keeps its meaning: the song
+  ended with no life left, which the game's own results title also calls DROP x OUT.
+- **How the game does it (both builds):** TaskPvGame keeps its launch data at task+0x68 and `no_fail` is one
+  byte of it (Switch +0x182, MM+ +0x1BA = MMPlusMods `TaskPvGame::Data`). The pv_game init (Switch 0x1a3bf0,
+  called by TaskPvGameInit 0x64c910) copies it to PVGameData (Switch +0x2D0E5, MM+ +0x2D31D, `no_fail` in both
+  headers now), which is what the game tests at zero life; the HUD's difficulty label turns into `NF-...`.
+  Both clients write that byte in their TaskPvGameInit hook before the original runs
+  (`mp::lobby::RoundNoFail()`: the launch's value, else the lobby's; -1 = not in a room or a server without
+  the option, and then nothing is touched) and log `No Fail Mode: room on|off (this game had on|off)`. The
+  player's own setting is never written: the confirm panel keeps showing it (B closes that panel WITHOUT
+  keeping changes; they only stick when the song is started from it).
+- **UI:** Switch ROOM CONFIG - Difficulty (FREE / SAME) and No Fail Mode (OFF / ON) share one row of four
+  cards, and the room footer gets "| No Fail". PC panel - a "No Fail Mode" row under Difficulty (the owner
+  steps it, everyone else reads it). A banner on every console when it changes. Both hide it when the server
+  sends no `no_fail`. `admin.py room_opt CODE no_fail on|off` (server side), `admin.py --cid C no_fail on|off`
+  (through the owner's console), bot command `nofail on|off`. Web: the snapshot carries `no_fail` and the
+  `set_opt` action takes it; there is no button for it in the web host controls yet.
+- **Same difficulty** needed no change.
+- **Verified** (MM+ and Ryujinx in one room on a local server, both left idle so the life gauge empties about
+  33 s in): room OFF with the Switch game's own No Fail ON (`room off (this game had on)`) -> both drop out at
+  zero life; room ON with both games' own setting OFF -> both play the whole song at zero life (3:41, 542
+  misses, `NF-` label), no `drop_out` events; the option set from the PC panel (click), the Switch ROOM CONFIG
+  (touch and pad), and both admin paths; the PC as a guest shows the row read-only. Same difficulty: PC picker
+  on EXTREME -> the Switch (on HARD seconds before) launched EXTREME; Switch picker on NORMAL -> the PC launched
+  NORMAL (TaskPvGame data difficulty 1, clear border 50); with no song up the difficulty alone follows within a
+  second, both ways. NOT verified: a real Switch, the web.
+- **Notes:** an idle No Fail player sends no `state` once the life is 0, so the 30 s stale rule stops waiting
+  for them as soon as the first final arrives (bots finish after 60 s: the round ended under the PC that was
+  still in its song). `--behavior follower` bots start rounds whenever the rotation makes them the picker.
+  Test helpers outside the repo, `mm-re/tmp/uiview/`: `up.py` (MM+ review room with N bots), `ryu.py` (one
+  private Ryujinx on root `ryu_multi/ryu4`, not in ryu_multi's state file), `wcap.py` (PrintWindow capture, works
+  for both games while other windows cover them), `mon.py` (reads the PC's TaskPvGame data and PVGameData).
+
 ## Known quirks
 - Different routed subnets (PC 10.169.x, Switch 10.167.x): found automatically once the console has connected to the PC on that network before (remembered servers) or `server_ip` is within the PC's /22; otherwise set `server_ip` once.
 - Commit `8e4dc28`'s message also lists lobby fixes that actually landed in `35c196e`.

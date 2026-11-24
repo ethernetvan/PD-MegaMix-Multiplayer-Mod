@@ -5,7 +5,8 @@ Longer-term multiplayer ideas. Current work lives in `docs/NEXT_SESSION_TODO.md`
 
 ## Song-settings sync
 The server syncs the round's song settings so every console plays under the same rules:
-- No Fail mode on for everyone (or off for everyone).
+- No Fail mode on for everyone (or off for everyone). DONE 2026-11-24: room option `no_fail`
+  (`docs/MULTIPLAYER_STATUS.md` Round 18).
 - Modifiers (e.g. Hi-Speed / Hidden / Sudden and similar) applied to every console when the picker
   changes them.
 - A room setting (owner, Room Config) to enable/disable this sync; when disabled, each console keeps
