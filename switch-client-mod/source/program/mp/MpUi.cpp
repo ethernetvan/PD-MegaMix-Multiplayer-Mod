@@ -52,6 +52,11 @@ static char   s_nameBuf[40] = "";
 static char   s_urlBuf[100] = "";
 static bool   s_kbArmed  = false;   /* keyboard was opened for this screen */
 static bool   s_prevOpen = false;
+/* JOIN_ROOM stays up after JOIN: the room screen replaces it once the
+ * server lets us in, a refusal shows next to the title */
+static char   s_codeSent[8] = "";   /* s_codeBuf as it was submitted */
+static bool   s_joinShown = false;  /* show that join's outcome */
+static bool   s_joinKbBack = false; /* submitting closed the keyboard: reopen */
 
 /* ============================ pad navigation ============================
  * Focusables are registered while each screen draws (same order every
@@ -1249,8 +1254,25 @@ static void OnNameSubmit() {
     s_screen = SC_HOME; s_kbArmed = false;
 }
 static void OnCodeSubmit() {
-    if (s_codeBuf[0]) CmdLobbyJoin(s_codeBuf);
-    s_screen = SC_HOME; s_kbArmed = false;
+    CmdLobbyJoin(s_codeBuf, true);
+    memcpy(s_codeSent, s_codeBuf, sizeof(s_codeSent));
+    s_joinShown = true;
+    s_joinKbBack = true;
+}
+/* JOIN_ROOM's line next to the title: what became of the code as it was
+ * submitted (until it is edited), else a warning while offline */
+static void JoinNote(const Snapshot& s, char* out, int n, ImU32* col, bool* bad) {
+    out[0] = 0; *col = kRed; *bad = false;
+    bool mine = s_joinShown && strcmp(s_codeBuf, s_codeSent) == 0;
+    if (mine && s.joinState == JOIN_PENDING) {
+        snprintf(out, n, "Joining %s...", s.joinCode);
+        *col = kMuted;
+    } else if (mine && s.joinState == JOIN_FAILED) {
+        snprintf(out, n, "%s", s.joinErr);
+        *bad = true;
+    } else if (!s.connected) {
+        snprintf(out, n, "Not connected to the server");
+    }
 }
 
 static void OpenEditName() {
@@ -1275,6 +1297,7 @@ static void OpenEditServer() {
 }
 static void OpenJoinRoom() {
     s_codeBuf[0] = 0;
+    s_joinShown = false;
     s_screen = SC_JOIN_ROOM;
     VirtualKeyboard::Open(s_codeBuf, sizeof(s_codeBuf), "JOIN", OnCodeSubmit);
     s_kbArmed = true;
@@ -1417,7 +1440,12 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
             u.dl->AddRectFilled(ca, cb, IM_COL32(45, 45, 45, 150), 16 * u.k);
         u.TextCentered(ImVec2(ca.x, cb.y - ih * 0.30f), ImVec2(cb.x, cb.y - ih * 0.08f),
                        cards[i].label, 1.9f, cards[i].enabled ? kText : kDim);
-        if (u.FActivated(fi)) {
+        if (u.FActivated(fi) && !cards[i].enabled) {
+            /* a touch lands on a greyed-out card too: say why it is off */
+            sound::PlayCancelSE();
+            SystemBanner(mpOff ? "Multiplayer is off"
+                               : "Not connected to a server yet");
+        } else if (u.FActivated(fi)) {
             sound::PlayEnterSE();
             if (i == 0) OpenEditName();
             else if (i == 1) CmdLobbyCreate();
@@ -1465,14 +1493,26 @@ static void DrawHome(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
 /* -------------------------------------------------- EDIT NAME / JOIN */
 static void DrawTextScreen(const Ui& u, ImVec2 a, ImVec2 b, const char* title,
                            const char* buf, const char* okLabel, bool upper,
-                           void (*onOk)(), const char* help, bool allowEmpty = false) {
+                           void (*onOk)(), const char* help, bool allowEmpty = false,
+                           const char* note = nullptr, ImU32 noteCol = kMuted,
+                           bool bad = false) {
     float top = Header(u, a, b, title, false);
+    /* what the screen's action is doing / why it was refused, right of
+     * the title */
+    if (note && *note) {
+        float x0 = a.x + 30 * u.k + u.Size(title, 2.3f).x + 36 * u.k;
+        char nb[96];
+        u.Fit(note, b.x - 30 * u.k - x0, 1.55f, nb, sizeof(nb));
+        ImVec2 ns = u.Size(nb, 1.55f);
+        u.Text(ImVec2(b.x - 30 * u.k - ns.x, a.y + (top - a.y - ns.y) * 0.5f),
+               nb, 1.55f, noteCol);
+    }
 
     /* field */
     float fh = 70 * u.k;
     ImVec2 fa(a.x + 30 * u.k, top + 28 * u.k), fb(b.x - 30 * u.k, fa.y + fh);
     u.dl->AddRectFilled(fa, fb, kField, 10 * u.k);
-    u.dl->AddRect(fa, fb, kAccent, 10 * u.k, 0, 2.0f * u.k);
+    u.dl->AddRect(fa, fb, bad ? kRed : kAccent, 10 * u.k, 0, 2.0f * u.k);
     char shown[104];
     if (upper) {
         int i = 0;
@@ -2195,6 +2235,7 @@ void DrawPanel() {
     if (!open && s_prevOpen) {
         VirtualKeyboard::SetPadMode(false);
         s_armCid[0] = 0;
+        s_joinKbBack = false;
     }
     s_prevOpen = open;
     if (!open) return;
@@ -2208,10 +2249,25 @@ void DrawPanel() {
     if (!inLobby && (s_screen == SC_ROOM || s_screen == SC_ROOM_CONFIG)) GoHomeOrRoom();
     if (s_screen == SC_ROOM_CONFIG && (strcmp(s.ownerCid, s.myCid) != 0 || !s.connected))
         s_screen = SC_ROOM;
+    /* JOIN closed the keyboard, but its screen stays until we're in */
+    if (s_joinKbBack) {
+        s_joinKbBack = false;
+        if (s_screen == SC_JOIN_ROOM && !VirtualKeyboard::IsOpen()) {
+            VirtualKeyboard::Open(s_codeBuf, sizeof(s_codeBuf), "JOIN", OnCodeSubmit);
+            s_kbArmed = true;
+        }
+    }
     /* keyboard dismissed (CLOSE / tap outside) while editing -> cancel */
     if ((s_screen == SC_EDIT_NAME || s_screen == SC_JOIN_ROOM ||
          s_screen == SC_EDIT_SERVER) && s_kbArmed && !VirtualKeyboard::IsOpen())
         GoHomeOrRoom();
+    {   /* the server refused the code: the dead-end sound */
+        static int s_prevJoin = JOIN_IDLE;
+        if (s.joinState == JOIN_FAILED && s_prevJoin == JOIN_PENDING &&
+            s_screen == SC_JOIN_ROOM)
+            sound::PlayCancelSE();
+        s_prevJoin = s.joinState;
+    }
 
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 ds = io.DisplaySize;
@@ -2331,8 +2387,14 @@ void DrawPanel() {
         case SC_HOME:        DrawHome(u, s, a, b); break;
         case SC_EDIT_NAME:   DrawTextScreen(u, a, b, "EDIT NAME", s_nameBuf, "SAVE", false,
                                             OnNameSubmit, "Type your player name"); break;
-        case SC_JOIN_ROOM:   DrawTextScreen(u, a, b, "JOIN ROOM", s_codeBuf, "JOIN", true,
-                                            OnCodeSubmit, "Enter the 4-letter room code"); break;
+        case SC_JOIN_ROOM: {
+            char note[80]; ImU32 noteCol; bool bad;
+            JoinNote(s, note, sizeof(note), &noteCol, &bad);
+            DrawTextScreen(u, a, b, "JOIN ROOM", s_codeBuf, "JOIN", true,
+                           OnCodeSubmit, "Enter the 4-letter room code", false,
+                           note, noteCol, bad);
+            break;
+        }
         case SC_ROOM:        DrawRoom(u, s, a, b); break;
         case SC_ROOM_CONFIG: DrawRoomConfig(u, s, a, b); break;
         case SC_OPTIONS:     DrawOptions(u, s, a, b); break;
@@ -2341,6 +2403,11 @@ void DrawPanel() {
     }
 
     EndWin();
+    /* the keyboard is a window of its own: a tap on this panel raises the
+     * panel, and its screen dim, over the keys - put them back on top */
+    if (textScreen)
+        if (ImGuiWindow* kb = ImGui::FindWindowByName("##VirtualKeyboardOverlay"))
+            ImGui::BringWindowToDisplayFront(kb);
 }
 
 bool PadModeActive() { return OverlayOpen() && s_padMode; }
