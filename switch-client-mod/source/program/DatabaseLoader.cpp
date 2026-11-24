@@ -1,8 +1,11 @@
 #include "DatabaseLoader.hpp"
+#include "ModLoader.hpp"
 #include "lib.hpp"
 #include "fs.hpp"
-#include "patches.hpp"
+#include "macros.hpp"
 #include "Allocator.hpp"
+#include "Config.hpp"
+#include "logger.hpp"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -40,71 +43,6 @@ bool FastFileExists(const std::string& path) {
     return exists;
 }
 
-/**
- * Re-implementation of libc++ std::string for hooking game internals.
- */
-struct libcxx_string {
-    union {
-        struct { uint64_t cap; uint64_t size; char* data; } l;
-        struct { unsigned char size_flag; char data[23]; } s;
-    } u;
-
-    bool is_long() const { return u.s.size_flag & 1; }
-    const char* c_str() const { return is_long() ? u.l.data : u.s.data; }
-    size_t length() const { return is_long() ? u.l.size : (u.s.size_flag >> 1); }
-
-    void assign(const char* str, size_t len) {
-        if (is_long()) GameOperatorDelete(u.l.data);
-        if (len < 23) {
-            u.s.size_flag = static_cast<unsigned char>(len << 1);
-            if (len > 0) std::memcpy(u.s.data, str, len);
-            u.s.data[len] = 0;
-        } else {
-            size_t capacity = (len + 16) & ~15; 
-            u.l.data = (char*)GameOperatorNew(capacity);
-            u.l.size = len;
-            u.l.cap = capacity | 1; 
-            std::memcpy(u.l.data, str, len);
-            u.l.data[len] = 0;
-        }
-    }
-};
-
-/**
- * Re-implementation of libc++ std::list for hooking game internals.
- */
-struct libcxx_list_node {
-    libcxx_list_node* prev; 
-    libcxx_list_node* next; 
-    libcxx_string value;    
-};
-
-struct libcxx_list {
-    libcxx_list_node* end_prev; 
-    libcxx_list_node* end_next; 
-    size_t size;                
-    
-    void push_back(const char* str) {
-        size_t len = std::strlen(str);
-        libcxx_list_node* node = (libcxx_list_node*)GameOperatorNew(sizeof(libcxx_list_node));
-        
-        std::memset(node, 0, sizeof(libcxx_list_node));
-        node->value.u.s.size_flag = 0;
-        node->value.assign(str, len);
-
-        libcxx_list_node* end_node = reinterpret_cast<libcxx_list_node*>(this); 
-        libcxx_list_node* last = this->end_prev; 
-        
-        node->prev = last;
-        node->next = end_node;
-        
-        last->next = node;
-        this->end_prev = node; 
-        
-        this->size++;
-    }
-};
-
 constexpr char MAGIC = 0x01;
 
 /**
@@ -137,20 +75,35 @@ bool resolveModDatabaseFilePath(const libcxx_string& filePath, std::string& dest
  */
 HOOK_DEFINE_TRAMPOLINE(ResolveFilePathObserverHook) {
     static uint64_t Callback(libcxx_string* filePath, libcxx_string* destFilePath) {
-        std::string destPathTmp;
 
+        std::string destPathTmp;
         if (filePath && resolveModDatabaseFilePath(*filePath, destPathTmp)) {
-            // Check performance cache before hitting physical SD
             if (FastFileExists(destPathTmp)) {
                 if (destFilePath) {
                     destFilePath->assign(destPathTmp.c_str(), destPathTmp.length());
                 }
-                return 1; 
+                return 1;
             }
-            return 0; 
+            return 0;
         }
 
-        return Orig(filePath, destFilePath);
+        // -- fix jp forced broken pause menu --
+        // 1. Execute original path resolution
+        uint64_t ret = Orig(filePath, destFilePath);
+        // 2. Intercept and redirect DLC18 spr_db if forceJapanese is enabled
+        if (ret && destFilePath) {
+            const char* resolved = destFilePath->c_str();
+
+            // Check if DLC18 spr_db.bin was resolved
+            if (Config::forceJapanese && std::strstr(resolved, "/dlc18/") != nullptr && std::strstr(resolved, "/spr_db.bin") != nullptr) {
+                // Redirect to the clean original Japanese base database
+                const char* jpBasePath = "./rom_switch/./rom/2d/spr_db.bin";
+                destFilePath->assign(jpBasePath, std::strlen(jpBasePath));
+                return 1; // Return success with redirected path
+            }
+        }
+
+        return ret;
     }
 };
 
@@ -167,10 +120,10 @@ void DatabaseLoader::init() {
 }
 
 void DatabaseLoader::initMdataMgr(const std::vector<std::string>& modRomDirectoryPaths) {
-    if (!g_mdataMgrPtr) return; 
-    
+    if (!g_mdataMgrPtr) return;
+
     auto list = reinterpret_cast<libcxx_list*>((uintptr_t)g_mdataMgrPtr + 0x178);
-    
+
     // Inject mod directory markers using the special MAGIC character
     for (auto it = modRomDirectoryPaths.rbegin(); it != modRomDirectoryPaths.rend(); ++it) {
         std::string path;

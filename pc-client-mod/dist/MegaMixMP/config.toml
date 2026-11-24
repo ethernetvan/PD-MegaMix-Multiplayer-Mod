@@ -1,0 +1,7 @@
+name = "MegaMixMP"
+description = "Multiplayer client (PC port of the Switch MP mod)"
+version = "0.1.0"
+date = "2026-11-17"
+author = "MegaMix-Switch-Mods"
+enabled = true
+dll = ["MegaMixMP.dll"]

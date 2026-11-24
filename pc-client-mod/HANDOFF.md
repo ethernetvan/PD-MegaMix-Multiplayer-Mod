@@ -1,0 +1,136 @@
+# PC port handoff (MegaMixMP, DivaModLoader mod for MM+ Steam)
+
+Status as of 2026-11-18 ~13:45. Read `AGENTS.md` (section "PC (Steam MM+) port") first; it has build/deploy/launch rules and the user's hard constraints.
+
+## User constraints (non-negotiable)
+- All PC mod files stay in `pc-client-mod/`. The game's `mods\MegaMixMP` is a junction to `pc-client-mod/dist/MegaMixMP`.
+- Commits go on a separate `pc-port` branch, staging only PC files. Per AGENTS.md, commits must not mention Devin. All PC work so far is committed on `pc-port`.
+- The game runs on the second monitor only (DISPLAY2, x=1920..3840, y=0..1200), in its own framed window with a 1920x1080 client. Never on the primary monitor, and never steal focus.
+- Every MP feature must work while the game is unfocused. Never use SendInput/keybd_event (keys land in the user's apps). Never call bare `cmd` from PowerShell/Python (the extensionless devkitPro `cmd` triggers a "pick an app" popup).
+- Prefer driving the game programmatically (direct calls or hooks) over simulated keys, so user key remaps don't matter.
+- The PC lobby panel is restyled for desktop (F8, real text fields, no virtual keyboard). The in-game DIVA HUD (gauge race, rank badge, countdown, leaderboard, popups, results hexagons) must match the Switch version exactly.
+- Don't touch the user's MP server on ports 7777/7790 (PID 37468). The test server is PID 46092 on 17777/17778/17790/18080 (log `mm-re/tmp/pc_server.log`). `admin.py --port 17790 --cid pc00000000000001 ...` (put `--port` before the subcommand).
+
+## Session 2026-11-19 (committed on pc-port: c33bb65, 598e5c5, f79a799, 0d68665)
+- Race lead fill (`src/mp/MpSpr.cpp`): put_sprite body exe+0x5B8F80 is hooked (all callers go through it; SprArgs 0x160 bytes, layout = MMPlusMods sprite.hpp). The clear gauge is an AET group at index 0 / layer 0: pr15 45622 ENE_BASE_FT x2 (bar x 194..1846 in FHD sprite space, y 1038..1062), pr15 1835 ENE_BASE_CLR, pr15 29318/29317 ENE_BORDER_LINE_G/E, pr16 2935/2934 BORDER txt/line. The lead segments are untextured SPR_KIND_RECT (3) quads queued into ix0/ly0/pr15 right before 29318, so G/E/BORDER draw on top; geometry is captured live from the bar sprites. DrawGaugeRace (MpUi.cpp) only publishes the data and draws pointers/hexagons. Dev `sprtrace {n}` dumps N submissions. (Rects queued from the pv update / TaskPvGameCtrl never showed; from inside put_sprite they do.)
+- Clear border = PVGameData +0x2D308 (`clear_border`, read by UpdateGaugeFrame 0x14027A490), running border +0x2D30C. Verified: pv637 HARD final border 60, CLEAR.
+- AutoPlay (`src/game/MpAutoPlay.cpp`): vanilla re-implementation of the Switch API/modes/HitPlan. Hooks GetPvKeyStateDown 0x140274930 / Tapped 0x140274960 (int64(handler,key)); the arcade ctrl 0x14026AFD0 relies on rcx/r8/r9/r11 surviving those calls, so the detours go through MASM shims (`MpAutoPlayAsm.asm`) that save every volatile register. Planning runs from a mid hook at the ctrl entry (rcx = PVGameArcade*), which also sets `g_current_game` (rank badge fade now works). PC key layout (nc input.cpp): index Circle 0, Cross 1, Triangle 2, Square 3, L 4, R 7; bits Triangle 1, Square 4, Cross 16, Circle 64, L1 256, R1 4096. Verified: pv637 HARD all 804 Cool; custom 90 -> ~10 % misses; tie twice -> identical score. Control: F8 Settings tab + admin `autoplay`. `diva.h` SpriteVertex is 24 bytes (was 32 -> PvGameTarget/PVGameArcade layout was wrong).
+- Follower with the start-confirm panel open (selector state 8) when the leader launches: closes it with B (1 s spacing, only while state reads 8), then the normal jump + A + A. Verified same and different song, no drop.
+- Cloud connect answered HTTP 429: retry backoff 5 s doubling to 120 s.
+- Avatars (`src/mp/MpAvatar.cpp`, `MpModuleDb.cpp`): Switch pipeline ported; module table read directly at exe+0x16EBEE8 (0xC0 entries: +0 id, +4 sort_index, +8 chara, +0xC cos, +0x6C card set id, +0x74 MD_IMG spr id, +0x80 name); signatures identical to the Switch for all 620 shared modules (PC has extra ids 8-15). Local module = save +0x168D68. Card: LoadSprSet + an alpha-0 put_sprite -> queued +0xA0 object, +0x28 dx_texture (+0x10 ID3D11Texture2D, BC5 512x512, 2 mips) -> staging CopyResource on the present thread (OnFrame -> RenderPump), Switch decode. Remote portraits verified Switch(Ryujinx) <- PC.
+- Popups centred on their real width; waiting box text/centring; pause vote says "press Pause".
+- Tooling: PC sources are CRLF; msys `sed -i` rewrites whole files to LF (use Python). Release builds now pass -DMP_DEV_TOOLS=OFF explicitly. Leaving the game running with the cloud config hammers the user's server - close the game before restoring mp_config.toml.
+
+- Later the same day (3638493, 3b2fa14, 5c2e433): lobby panel restyled in the game's menu look (user chose "new desktop DIVA layout": keeps tabs/mouse/real text fields) with podium, trophy rows, wins, human member status, AUTO tag and the Switch footer; panel SEs (PlayEnter/Cancel/SelectSE 0x1401A7F00/F20/F60) are queued and played from the input-poll hook. Song-select badge = Switch DrawMpBadge with an F8 key cap. Selector busy: MM+ has no busy byte; the selected row's displayed pv (+0x258DC) lags pv_id (+0x262A4) while the list animates -> busy = mismatch, capped at 1 s; cursor index +0x261F0. Customize init/dest hooks verified (module picker -> reason `modules`, leader launch while in the picker -> joins after closing it). Results end-menu: no cursor field exists (exhaustive diff), model stays blind; the results driver and retry-slip recovery use device taps (`DevTapBtn`, raw keyboard indices, exempt from the room block) because scene menus ignore InputState-level writes. Caveat: those raw indices are Enter/Esc/arrows, so a user who unbinds them from confirm/back/nav breaks the drivers. Server-mode banners added.
+- Still needs the user (no SendInput allowed): physical F8/Esc, typing in the panel's text fields, emergency exit (F9 hold).
+- If a capture looks cut off, check the game window is fully on the monitor first (2026-11-19: a partly off-screen window looked like a HUD-rect bug).
+
+## What works (verified unfocused)
+- DML v0.0.16 installed; mod loads; ImGui DX11 overlay; WndProc input; fonts.
+- LAN/cloud networking, hello, lobby create/join/leave/kick/rename, PC panel (Lobby + Settings tabs).
+- Selector hooks (MegaMix UI `PVSelectorSwitch` + FT UI `PVselPS4`) feed a Switch-layout shadow struct. Leader `sel`, follower mirroring via `PVListSetSelectedIndex`, launch via abstract-index A tap.
+- Telemetry (`state`/`final`), results/standings, leader rotation, results auto-return, all driven through InputState injection with the corrected per-index contributor logic (`MpInput.cpp` WriteSets).
+- Pause/resume mid-song through the game's own pause manager (see the next section). Real pause-menu cursor at the menu task `+0x278` (Ctrl `0x140659ED0`, state `+0x6C`). Item order: 0 Resume, 1 Retry, 2 Lag Config, 3 Options, 4 Return to Song List.
+- RE/dev tooling is gated behind `MP_DEV_TOOLS` (`build.ps1 -Dev`).
+
+## Round sync, pause and start gate: FIXED and verified (2026-11-18 13:40)
+The white screens / freezes / stuck pauses had four causes, none of them in the lobby logic:
+1. Console deadlock. `WriteLog` wrote to the DML console under a mutex. One click on that console (QuickEdit "Select" mode) blocks every writer, so the game's main thread hung (white, "not responding"). Proven with cdb stacks and by cancelling the selection. Fix: logging is asynchronous (`src/platform/MpLog.cpp`, ring buffer + logger thread), QuickEdit is switched off on the console, and the launcher minimizes the console instead of parking it over the game.
+2. `PvUpdateDetour` (exe+0x241DF0) was declared `void`. The function returns an int and its caller (exe+0x2684C9) ends the song when it is nonzero, so songs ended or bounced back to song select at random, and the hold returned garbage.
+3. The pause-menu Ctrl detour (exe+0x659ED0) was declared `void`. Ctrl returns true when the menu has finished closing; with the return lost the menu task never died, so resume and Return to Song List never completed (the "state 5 stall" / white screen after a round).
+4. The game pauses the song every frame its window is not foreground (PV task check at exe+0x2684A8 -> `RequestSystemPause`). Unfocused test runs were fighting that. Byte exe+0x14AB9E8 = 1 disables it; the mod sets it while in a room and restores the game's value outside.
+
+Design now (see the long comment "native pause control" in `src/mp/MpInput.cpp`):
+- Start gate: `PVGameLoaderFinishUp` reports the load (-> `loaded`), then the pv update is skipped (returning 0) until the server's `start`. No pause menu at the gate. While waiting the screen is the blank pre-song frame with the countdown overlay on top.
+- Group pause: `PauseWant(1)` calls the game's own `RequestSystemPause` (exe+0x65C780); `PauseWant(0)` runs the pause menu's own "pause key" branch from inside its Ctrl (resume flag, closing state, SE, out animations). Both are idempotent targets, never toggles. The reconciler just sets the target and reports once if it isn't reached in 5 s.
+- Removed: `PauseReqDetour` (it was hooking `SetEnabled`, not a request), `DeadPauseGuard`, pending-list unlinking, forced menu state writes, DevTap for pause (the keyboard-poll hook is dev-only now), the A/B flag.
+- `keys.h`: logical Plus = abstract pause action, InputState key 0xA0 (what the pause manager and menu test), so a real pause press is detected whatever it is bound to.
+
+Verified (logs `mm-re/tmp/t_mp_m3.log`, `t_edge.log`, sheets `mm-re/tmp/ab/m3_sheet.png`), game UNFOCUSED, no OS input:
+- 2 consecutive rounds vs a bot (bot leads round 1, PC leads round 2): launch, held at the gate (picture still), released within the same second the bot got `start`, song running, results, auto-return to song select, leader rotation. An earlier 3-round run (focused for rounds 1-2) also passed.
+- In both rounds: owner pause -> PC paused with menu; owner resume -> running; PC `pause_req` -> paused; PC `resume_req` -> running.
+- Leave while held at the gate -> hold released, song runs solo. Leave while group-paused -> resumed by the mod.
+- Solo: pause, resume, pause, Return to Song List -> selector back, no white screen.
+- Note: outside a room an unfocused game pauses itself (vanilla behaviour, restored on purpose).
+
+Test scripts are in `pc-client-mod/tools/mptest/` (`lead.py` helpers, `t_solo.py`, `t_mp.py TAG ROUNDS`, `t_edge.py`). They use the admin port and hard-coded paths of this machine. `unfocus_game()` takes focus off the game without input (SC_MINIMIZE via PostMessage, then restore without activating).
+
+Lessons for anyone adding hooks: every detour must have the real return type and return the original's value; check the caller's use of eax/al with `tools/xdis.py` first. Never do blocking I/O on a game thread.
+
+Still open from this area:
+- The game window keeps its own remembered size (client 1910x1175 here); the launcher's placement does not stick. Set the resolution in the game's settings, then re-check HUD layout.
+- Emergency exit with a real F9 hold is untested (needs the user).
+- The PC "played" these rounds with no input (life 0 drop-outs); a round where the PC survives to the song end was not run.
+
+## Next
+1. Re-verify unfocused: Retry swallow-veto on the real cursor (+ Lag Config/Options); retry-slip recovery; emergency exit (F9 3 s or XInput Back; the user must test the real key).
+2. (done) Reconciler no longer loops.
+3. Results end-menu real cursor: same technique as the pause menu (StageResultSwitch `0x14064C0E0`/`0x14064C300`, StageResultPS4 `0x140231A70`/`0x140232DD0`; hook their task Update and find the cursor field).
+4. HUD layout parity:
+   - Race gauge: the user reports the other players' bar is invisible and the pointers sit on the bar. The previous fix hardcoded 16:10 constants, which is wrong; make it aspect-aware. Measure at 16:9 1920x1080 first; it should match Switch (bar ~692-710, x 130-1240 of 1280). Ideally read the gauge position from the game.
+   - The results hexagon cluster is clipped at the right edge.
+   - Check the FT UI gauge position too.
+5. Song-select MP pill parity (Switch `overlays/Hints.cpp` MP/AUTO pill + "<name> is picking a song") with "F8" key text.
+6. Two-round sessions in the MegaMix UI, PC as leader and follower, unfocused (Future Tone UI is out of scope per the user, 2026-11-18).
+7. Later: `MpModuleDb` + `MpAvatar` (portraits), AutoPlay reporting.
+8. Before committing: create branch `pc-port`, stage only `pc-client-mod/` (+ `docs/PC_PORT_GUIDE.md`, `AGENTS.md` PC section if the user wants), ensure a 0-warning release build.
+
+## Key files
+- `src/mod.cpp`: DML exports, ImGui/D3D11, WndProc, hook install order, A/B switch.
+- `src/game/MpSelPc.cpp`: game hooks (selectors, TaskPvGame, results, customize, InputState poll) + selector shadow.
+- `src/game/addresses.h`, `src/game/keys.h`: addresses and the input findings (VK→device-index map: Esc→28, Enter→55, arrows 123/125/126/128, F1-F12 86-97).
+- `src/mp/MpInput.cpp`: InputState injection/blocking, native pause control (pause-menu hook + real cursor, `PauseWant`, background-pause flag), start-gate hooks (loader finish + pv-update hold), dev tooling behind `MP_DEV_TOOLS`.
+- `src/mp/MpLobby.cpp`: phase machine (Switch port), start gate (`LoaderHeld`/`LoaderFinished`/`s_expectLoad`), sync-pause/reconciler.
+- `src/mp/MpMenu.cpp`: blind menu model (now reads the real pause cursor).
+- `src/mp/MpUi.cpp`: PARITY HUD (gauge `DrawGaugeRace` was edited, see item 4). `src/mp/MpPanelPc.cpp`: PC lobby panel.
+- References: `mm-re/pc/ref/nc` (New Classics PC, addresses/structs), `mm-re/pc/ref/DivaModLoader`, `mm-re/pc/ref/MultiDiva`; `pc-client-mod/tools/xdis.py` and `peread.py` for disassembly.
+
+## Session 2026-11-18 evening: status and findings
+Done and committed on `pc-port` (commits 2348ae3, 484a38c, c1c545b):
+- F8 panel (WndProc subclass was never installed; F8/Esc now polled while focused), key leak from other apps (unfocused: only the mod's injected input is re-applied; keyboard device bitset cleared in the kb poll hook), HUD drawn in the game's letterboxed 16:9 HUD rect (`MpDrawAll` in mod.cpp: DisplaySize = HUD rect during the parity draws, then all their vertices/clip rects are translated; HUD windows captured by `BeginWin`), gauge race back to the Switch code, panel member rows, assigned pick mode default, server rename + 15 s idle drop of pinging consoles.
+- Verified unfocused: 2-round bot sessions (gate, pause/resume, results, auto-return), rank badge under the score, gauge fill + markers on the game's bar, panel rows stacked.
+- User decisions: Future Tone UI is out of scope. Avatars are in scope.
+- The user's own mp_config.toml values were backed up to `mm-re/tmp/mp_config.user_backup.toml`; restore it when testing is done (tests need server_mode local on 127.0.0.1:17777, test server log `mm-re/tmp/pc_server2.log`).
+
+Avatars: RE findings (MM+ 1.03), not implemented yet:
+- Module table: handler `*` at 0x1416EBEE8 (getter 0x140441B60); `get_module_by_id(handler, id, out)` 0x1404421A0. Two vectors of 0xC0-byte entries: [+0x00,+0x08) vanilla (628 entries), [+0x18,+0x20) extra (negative ids). Entry: +0x00 id, +0x04 sort_index, +0x08 chara, +0x0C cos, +0x68 spr_sel_md set id, +0x6C SPR_SEL_MDnnnCMN set id (id 0 -> 505), +0x70 md img spr id, +0x74 CMN md img spr id (id 0 -> 34812), prj::string name after the bools (see MMPlusMods XSongPack pv_game.cpp `module_data`). Signature mh = FNV-1a(chara, cos, sort_index) like the Switch code.
+- Save data: GetSaveData 0x1401D6510 -> 0x14114C664. The Switch Shared Set A slot-1 offset (u32 index 0x546C5 = +0x151B14) reads 0 here: UNVERIFIED, find the real offset (diff the save after changing the module in Customization, or ask the user which module is equipped).
+- Sprites: LoadSprSet 0x1405B4770 (id, prj::string_view*), CheckSprSetLoading 0x1405B4810 (true while loading), UnloadSprSet 0x1405B48B0, put_sprite 0x1405B49C0 (SprArgs*, struct in ref/nc diva.h; DefaultSprArgs 0x1405B78D0). Sprite sets: std::map<u32 index, SprSet> with head pointer at 0x14CBFF3A0 (lookup 0x1405B8EC0, set id -> index via 0x1405BC600 entry +0x28); SprSet vtable 0x140CB7360. Game textures are `dx_texture {int uses; dx_texture* free_next; ID3D11Texture2D*; ID3D11ShaderResourceView*; format; internal_format; flags; width; height; mip_levels}` (MMPlusMods wrap.cpp).
+- Plan: load the CMN set on the game thread, get the md img sprite's dx_texture (try put_sprite and read back SprArgs::texture, or walk the SprSet), CopyResource to a staging texture on the render thread, decode BC5 "YCbCr" (mip0 Y/A, mip1 Cb/Cr) exactly like switch-client-mod MpAvatar.cpp, head-crop to 96x96, upload as an ImGui texture (SRV), plus the upload/relay path to the server.
+- Probe result (dbg_cmd `dump_avatar {module:0}` at song select, `MpAvatarStub.cpp` GamePump): LoadSprSet(505) + CheckSprSetLoading works; `put_sprite` with id 34812 (alpha 0) returns the queued SprArgs whose +0xA0 is the engine texture object. That object's +0x28 is the `dx_texture`: ID3D11Texture2D at +0x10, SRV at +0x18, format 14 (BC5), 512x512, 2 mips -> same YCbCr layout as Switch. The queued SprArgs also carries sprite_size (+0x12C, 408x494 for the card) and texture_pos/size right after (read them to crop). Next: CopyResource into a STAGING BC5 texture on the render thread, map both mips, port the Switch decode (`Bc4Block`/`Bc5Region`/`DecodeYCbCr`/`OpaqueTop`/`HeadBand`/`FinishUpload` in switch MpAvatar.cpp lines 347-630) and the cache/remote/upload code, create an SRV per portrait for ImGui.
+- Local module (Shared Set A slot 1): u32 at GetSaveData() + 0x168D68 (save base 0x14114C664 -> 0x1412B53CC). Verified 2026-11-18: the user equipped Racing Rin 2010 Ver. (module id 143) and that value is the only 143 in the first 2 MB of the save. Neighbours: [.., 9, 143, -1 x5, 31, 0, -1 ..]. Module names: prj::string at entry +0x80 (size +0x90, cap +0x98, inline when cap < 16).
+
+## Open tasks (user, 2026-11-18 ~17:25) - 1-4 done 2026-11-19, see the session section above
+1. Race bar: the fill must render UNDER the game's BORDER / G / E markers on the clear gauge, with a texture similar to the game's bar, like the Switch version; alignment is still a few px off. Check how the Switch DrawGaugeRace/rank code gets under game markers (game sprite pass vs ImGui).
+2. Capture the bar with several bots progressing at different speeds (bot.py `--song-secs` differs per bot -> different pct rates).
+3. Avatars (portrait pipeline, see notes above), LocalModule from save +0x168D68.
+4. Follower stuck in the song-start popup when the leader launches -> dropped; handle it.
+5. (Dropped by the user 2026-11-19.) Non-critical: all modules became unlocked after the mod was installed (were not before). Nothing in our code or DML writes unlocks; investigate (save module flags / test automation in Customization).
+- Race fill under the game's markers (task 1): the clear gauge and its BORDER/G/E markers are AET layers owned by PVGameUI (`aet_list[95]`, see ref/nc diva.h; UpdateGaugeFrame 0x14027A490). Plan: draw the fill through the game's sprite renderer (put_sprite 0x1405B49C0, SprArgs resolution_mode HD = 720p coords, `priority` field) from a game-thread hook, at a priority/submission point below the marker layers; find the markers' AET priority by reading aet::GetComposition / the layer args of the gauge entries. Fallback: ImGui fill clipped to the bar interior only.
+- Sprite rect drawing reference: MMPlusMods `MMPlusModsShared/sprite.cpp` `put_sprite_multi(rect, mode, prio, color, layer)` (kind SPR_KIND_MULTI=4, trans = rect.pos, SetSpriteSize, resolution_mode HD) and the enums in sprite.hpp (SPR_KIND_RECT=3, SPR_PRIO_00..; SprArgs layout with `prio` at +0x1C, `color` at +0x08, `trans` at +0x34, `sprite_size` at +0x12C, `flags` |= SPRITE_SIZE). Try submitting the race fill from the pv-update detour with prio values around the gauge's and compare against the markers.
+- sprtest result (2026-11-18 ~18:45): a SPR_KIND_MULTI rect submitted from the pv-update detour (`MpInput.cpp` SprTestDraw, `tools/mptest/t_spr.py PRIO...`) did not appear at any priority 0..14. Next checks: submit from TaskPvGameCtrl or the AET/2D update instead (the sprite list may be flushed after the pv update), try SPR_KIND_RECT (3) and the probe's default res modes (13/14), and confirm the color byte order (BGRA) and that index/layer defaults from DefaultSprArgs are kept.
+- sprtest from TaskPvGameCtrl (prios 0,4,8,12): still nothing drawn. The SprArgs field setup is the likely problem (kind MULTI may need a texture/id; check MMPlusMods put_sprite_rect and which kinds the game accepts with id=-1), not the submission point.
+
+## Deep-dive audit: Switch features missing on PC (2026-11-18 evening; user-approved)
+
+Audit of `switch-client-mod/source/program/mp/` plus the MP touchpoints in `Hints.cpp`, `AutoPlay.cpp`, `ImGuiOverlay.cpp`, `SaveDataSystem.cpp`, `MpApi.cpp`, `MpSceneHooks.cpp` vs `pc-client-mod/src/`. The ported code is near-line-for-line; everything below is absent, stubbed or unverified on PC. Approved by the user before being added.
+
+### Work items
+1. **Clear % / CLEAR verdict.** `ClearBorder()` returns 0 on PC (the Switch PVGameData border fields don't exist at those offsets), so `state.border`/`final.border` are always 0 and `final.clear` is always false. The server relays these into `board`/`standings`/web, so PC members never show CLEAR and the web live gauge loses its border tick for them. Find MM+'s per-song+difficulty clear-% source (pv_db field or per-difficulty threshold).
+2. **Selector busy flag hardcoded 0** (`MpSelPc.cpp` BuildShadow, `TODO-H2`; `INDEX` is also forced 0 but is debug-telemetry only). Effects: the follower input lock (`browsing = state==6 && !busy && !cust`) engages while the list is still animating/re-sorting, dropping real presses mid-animation; the launch autopilot stage 0 requires `!busy` and can tap A mid-rebuild; the "busy" readiness reason never reports. Need MM+'s selector animating/list-rebuild flag (or synthesize it from list-pointer/state changes).
+3. **Rank badge never fades near note targets.** `topRightBusy` needs `g_current_game`, which is `nullptr` on PC (`diva.h`: "nullptr on PC for H1"). The Switch fades the placement badge to 26% when an active target/flying button enters the top-right (x>1050, y<160 in 720p). Needs the PC `PVGameArcade` pointer — the same RE the AutoPlay port needs.
+4. **AutoPlay (full feature — user confirmed in scope, not just reporting).** Switch `AutoPlay.cpp` (~600 lines) actually plays: `PVGameArcade` target traversal, holds/long notes, rush spam, slides/chains, deterministic hit %, modes (safe/somesad/allsad/custom), ZR x3 cycle in song select, the gold AUTO pill, and the AUTO tag on board/standings/web (`autoplay` message + server `autoplay on|off --pct` admin control). The PC stub is reporting-only (`g_enabled` forced false). Needs `PVGameArcade` + the target list on PC (shared with item 3) and a PC binding for the mode cycle.
+5. **Customize-scene detection unverified.** `CustomizeSelTaskInit/Dest` hooks drive `IsInCustomizeScene()`. If those addresses don't match MM+'s module picker: the follower lock never lifts inside the module picker (members can't change modules in a room), the `modules` readiness reason never reports, and "in module picker at launch -> finish, then join" mishandles. Verify the hooks fire, then test the module-picker readiness and launch-during-customize edge cases.
+6. **Session ranking / podium / trophies (user: not dropped, in scope).** Switch ROOM screen: top-3 session podium + per-member trophy counts (wins, 1st/2nd/3rd), members sorted by session ranking; song select shows a "Session ranking" top 3. The PC parses `sr`/`wins`/`places` into the snapshot but the panel never renders them.
+7. **Lobby panel redesign to fit the Project DIVA style (user request).** The current desktop ImGui panel (tabs, stock widgets) works but should look like the game's UI. The redesign must also bring over the Switch room screen's status details: vote progress ("Pause vote: N/M agreed (Xs left)"), "GROUP PAUSED", reconnect countdown ("Connection lost - leaving the room in Xs"), human member-status strings ("choosing modules" / "wrong song" / "difficulty" / "not in song select" / "disconnected" instead of raw reason keys), your own status line, and owner controls hidden while offline.
+8. **Song-select badge parity** (expands "Next" item 5; the pieces): "<name> is picking a song (N)", the leader's "Not available for: ..." pill, the reconnect countdown line, OFF/DISCONNECTED states, click-to-open, hidden while the customize scene is open, and the AUTO pill (with item 4).
+9. **Top notifications are not centered (user bug report).** The `draw_banner` notifications at the top of the screen sit off-center; re-check their centering against the letterboxed HUD rect introduced 2026-11-18.
+
+### Minor / cosmetic
+- Stale Switch text on PC: `DrawWaiting` says "don't unpause - the game resumes automatically" (the PC gate is a load hold, not a pause); the pause-vote banner says "press + to agree" (name the PC pause key instead).
+- Game SEs: the Switch plays enter/cancel/select sound effects on panel actions and badge taps; the PC panel is silent. Also `SystemBanner` on server-mode switches.
+- `avatar::RenderPump()` is not called in `mod.cpp` — needed when the avatar port lands (the `EnqueueBlob` path for `avatar_img` is already ported).
+- Debug-only: `dbg_state` fields `ps`/`ip`/`iv`/`pe` read 0 (Switch-only addresses); harmless.
+
+### Confirmed already ported (no action)
+Lobby protocol + phase machine and all message handlers (lobby/sel/sel_status/launch/countdown/start/pause/resume/pause_vote/board/standings/round_end/event); sel_ack/ready/unavail pipeline; follow mirroring incl. `FindPvByName` fallback + closest-difficulty swap; LAUNCHING autopilot incl. `launch_fail`/spectate/dropped paths and the customize-finish exception; `back_in_sel`; results auto-return driver; retry veto + retry-slip recovery; `final.quit`; pause vote + real pause press -> `pause_req`/`resume_req`; 30 s offline grace + reconnect reclaim + `final` resend; lobby_left/kicked/error handling; the ignore_room window; emergency exit (Minus bit synthesized; real F9 hold untested); all dbg_cmds incl. `menu_cursor`/`sel_lists`/`jump`/`autopause`; discovery sweeps + remembered servers + cloud WebSocket; all HUD draws (leaderboard, race gauge incl. tie groups, rank glow, countdown, popups, waiting, standings, results hexagons incl. tied clusters, banners, emergency-exit ring).

@@ -1,0 +1,4 @@
+# The MegaMix multiplayer server (mp_server.py, web_bridge.py, lobby.py,
+# avatars.py) uses the Python 3.13 standard library only: no third-party
+# packages. This file exists so `pip install -r server/requirements.txt`
+# works on hosts that expect one (Render).
