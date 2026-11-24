@@ -44,7 +44,7 @@ static void EndWin() {
  * ============================================================== */
 
 enum Screen { SC_HOME, SC_EDIT_NAME, SC_JOIN_ROOM, SC_ROOM, SC_ROOM_CONFIG,
-              SC_OPTIONS, SC_EDIT_SERVER };
+              SC_OPTIONS, SC_EDIT_SERVER, SC_WEB_KEY };
 
 static Screen s_screen   = SC_HOME;
 static char   s_codeBuf[8]  = "";
@@ -2007,12 +2007,69 @@ static void DrawRoomConfig(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
             }
         }
     }
+    /* the room's web key, left of Done (registered last: the focus
+     * numbers above stay what they are) */
+    {
+        ImVec2 wa(ka.x - 14 * u.k - 170 * u.k, ka.y), wb(ka.x - 14 * u.k, kb.y);
+        if (u.Button(wa, wb, "Web Key", Ui::B_NORMAL, 1.4f)) {
+            sound::PlayEnterSE();
+            CmdWebKey();
+            s_screen = SC_WEB_KEY;
+        }
+    }
     const GuideEnt g[] = {{"A", "OK"}, {"B", "Back"}};
     float gw = GuideW(u, g, 2);
     DrawGuide(u, ImVec2(b.x - 30 * u.k - gw, a.y), b, g, 2);
     Footer(u, a, b, assigned ? "Tap a member to make them the song picker"
                              : "These settings apply to everyone in the room",
            gw + 10 * u.k);
+}
+
+/* ------------------------------------------------------------- WEB KEY */
+/* owner only: the key that opens this room's host controls on the web
+ * dashboard (kick, song picker, room options) */
+static void DrawWebKey(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
+    float top = Header(u, a, b, "WEB DASHBOARD", false);
+    float bh = 48 * u.k, bw = 150 * u.k;
+    ImVec2 ka(b.x - 30 * u.k - bw, a.y + (66 * u.k - bh) * 0.5f), kb(ka.x + bw, ka.y + bh);
+    if (u.Button(ka, kb, "Done", Ui::B_PRIMARY, 1.4f)) {
+        sound::PlayCancelSE();
+        s_screen = SC_ROOM_CONFIG;
+    }
+    const float x0 = a.x + 30 * u.k, x1 = b.x - 30 * u.k, mid = (x0 + x1) * 0.5f;
+    float y = top + 40 * u.k;
+    u.TextCentered(ImVec2(x0, y), ImVec2(x1, y + 34 * u.k),
+                   "Manage this room from a web browser", 1.7f, kText);
+    y += 50 * u.k;
+    char line[128], fit[128];
+    if (s.webUrl[0]) snprintf(line, sizeof(line), "Open  %s  and press Login", s.webUrl);
+    else snprintf(line, sizeof(line), "Open the server's web page and press Login");
+    u.Fit(line, x1 - x0, 1.4f, fit, sizeof(fit));
+    u.TextCentered(ImVec2(x0, y), ImVec2(x1, y + 30 * u.k), fit, 1.4f, kMuted);
+    y += 56 * u.k;
+
+    ImVec2 fa(mid - 290 * u.k, y), fb(mid + 290 * u.k, y + 120 * u.k);
+    u.dl->AddRectFilled(fa, fb, kField, 14 * u.k);
+    u.dl->AddRect(fa, fb, s.webKey[0] ? kAccent : kLine, 14 * u.k, 0, 2.0f * u.k);
+    if (s.webKey[0])
+        u.TextCentered(fa, fb, s.webKey, 3.6f, kText);
+    else
+        u.TextCentered(fa, fb, s.connected ? "Asking the server..." : "Not connected",
+                       1.7f, kDim);
+    y = fb.y + 18 * u.k;
+    u.TextCentered(ImVec2(x0, y), ImVec2(x1, y + 28 * u.k),
+                   "Room key - type it into the Login box", 1.35f, kMuted);
+    y += 40 * u.k;
+    u.TextCentered(ImVec2(x0, y), ImVec2(x1, y + 26 * u.k),
+                   "Whoever has it can kick players and change the room's settings.", 1.2f, kDim);
+    y += 28 * u.k;
+    u.TextCentered(ImVec2(x0, y), ImVec2(x1, y + 26 * u.k),
+                   "It stops working when the room gets another owner.", 1.2f, kDim);
+
+    const GuideEnt g[] = {{"A", "OK"}, {"B", "Back"}};
+    float gw = GuideW(u, g, 2);
+    DrawGuide(u, ImVec2(b.x - 30 * u.k - gw, a.y), b, g, 2);
+    Footer(u, a, b, "Only the room owner can see this screen", gw + 10 * u.k);
 }
 
 static void DrawOptions(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
@@ -2246,8 +2303,10 @@ void DrawPanel() {
     /* screen fix-ups driven by lobby state */
     bool inLobby = InLobby();
     if (inLobby && (s_screen == SC_HOME || s_screen == SC_JOIN_ROOM)) GoHomeOrRoom();
-    if (!inLobby && (s_screen == SC_ROOM || s_screen == SC_ROOM_CONFIG)) GoHomeOrRoom();
-    if (s_screen == SC_ROOM_CONFIG && (strcmp(s.ownerCid, s.myCid) != 0 || !s.connected))
+    if (!inLobby && (s_screen == SC_ROOM || s_screen == SC_ROOM_CONFIG ||
+                     s_screen == SC_WEB_KEY)) GoHomeOrRoom();
+    if ((s_screen == SC_ROOM_CONFIG || s_screen == SC_WEB_KEY) &&
+        (strcmp(s.ownerCid, s.myCid) != 0 || !s.connected))
         s_screen = SC_ROOM;
     /* JOIN closed the keyboard, but its screen stays until we're in */
     if (s_joinKbBack) {
@@ -2330,7 +2389,8 @@ void DrawPanel() {
                 if (edges & nn::hid::B) {
                     s_armCid[0] = 0;
                     sound::PlayCancelSE();
-                    if (s_screen == SC_ROOM_CONFIG) s_screen = SC_ROOM;
+                    if (s_screen == SC_WEB_KEY) s_screen = SC_ROOM_CONFIG;
+                    else if (s_screen == SC_ROOM_CONFIG) s_screen = SC_ROOM;
                     else if (s_screen == SC_OPTIONS)
                         s_screen = InLobby() ? SC_ROOM : SC_HOME;
                     else SetOverlayOpen(false);
@@ -2397,6 +2457,7 @@ void DrawPanel() {
         }
         case SC_ROOM:        DrawRoom(u, s, a, b); break;
         case SC_ROOM_CONFIG: DrawRoomConfig(u, s, a, b); break;
+        case SC_WEB_KEY:     DrawWebKey(u, s, a, b); break;
         case SC_OPTIONS:     DrawOptions(u, s, a, b); break;
         case SC_EDIT_SERVER: DrawTextScreen(u, a, b, "ONLINE SERVER", s_urlBuf, "SAVE", false,
                                             OnUrlSubmit, "Empty = mikumod.evanthomas.dev", true); break;

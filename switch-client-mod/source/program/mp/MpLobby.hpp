@@ -59,6 +59,9 @@ void CmdLobbyCreate();
  * so a refusal only becomes a banner when the overlay isn't open */
 void CmdLobbyJoin(const char* code, bool quiet = false);
 void CmdLobbyLeave();
+/* room owner: ask the server for the room's web key (Snapshot.webKey), the
+ * password that gives a browser this room's host controls on the dashboard */
+void CmdWebKey();
 /* the console switches servers: tell the old one, leave the room locally */
 void LeaveForServerSwitch();
 void CmdSetName(const char* name);
@@ -150,6 +153,10 @@ struct Snapshot {
     int      joinState;
     char     joinCode[8];
     char     joinErr[72];
+    /* the room's web key and the dashboard's address, once the owner asked
+     * (CmdWebKey); empty for everyone else and after an owner change */
+    char     webKey[16];
+    char     webUrl[72];
 };
 
 /* group pause / pick mode commands */

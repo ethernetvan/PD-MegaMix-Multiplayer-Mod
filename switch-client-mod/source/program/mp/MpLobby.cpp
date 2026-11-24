@@ -227,6 +227,9 @@ static char  s_joinErr[72] = "";
 static int64_t s_joinAt = 0;
 static bool  s_joinQuiet = false;     /* asked from the join screen */
 static const int64_t kJoinTimeoutMs = 6000;
+/* the room's web key (web_key reply to CmdWebKey), owner only */
+static char  s_webKey[16] = "";
+static char  s_webUrl[72] = "";
 static int64_t s_ovlClosedAt = -1;   /* ms; suppresses ZR re-open in Hints */
 
 struct InSlot { uint16_t len; char data[4094]; };
@@ -493,6 +496,7 @@ void PushLine(const char* line, int len) {
 static void ResetLobbyState() {
     s_phase = L_NONE;
     s_code[0] = 0; s_leaderCid[0] = 0;
+    s_webKey[0] = 0;
     s_memberCount = 0; s_boardCount = 0; s_standingCount = 0;
     s_selPv = -1; s_leaderPv = -1; s_localPv = -1;
     s_folLeaderPv = -1; s_folTarget = -1; s_folMissing = false;
@@ -547,6 +551,7 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
     gs("owner", s_ownerCid, sizeof(s_ownerCid));
     gs("pick_mode", s_pickMode, sizeof(s_pickMode));
     gs("assigned", s_assignedCid, sizeof(s_assignedCid));
+    if (strcmp(s_ownerCid, s_myCid) != 0) s_webKey[0] = 0;   /* the owner's only */
     {   int gi2 = mpjson::Find(line, tok, ntok, "group_paused");
         if (gi2 >= 0) s_groupPaused = line[tok[gi2].start] == 't'; }
     {   int sd = mpjson::Find(line, tok, ntok, "same_diff");
@@ -819,6 +824,18 @@ static void ProcessLine(const char* line) {
         ApplyBlocks();
         return;
     }
+    if (strcmp(t, "web_key") == 0) {
+        char code[8] = "";
+        int i = mpjson::Find(line, tok, ntok, "code");
+        if (i >= 0) mpjson::Copy(line, tok[i], code, sizeof(code));
+        if (!s_code[0] || strcmp(code, s_code) != 0) return;   /* not this room's */
+        s_webKey[0] = s_webUrl[0] = 0;
+        if ((i = mpjson::Find(line, tok, ntok, "key")) >= 0 && tok[i].type == JSMN_STRING)
+            mpjson::Copy(line, tok[i], s_webKey, sizeof(s_webKey));
+        if ((i = mpjson::Find(line, tok, ntok, "url")) >= 0 && tok[i].type == JSMN_STRING)
+            mpjson::Copy(line, tok[i], s_webUrl, sizeof(s_webUrl));
+        return;
+    }
     if (strcmp(t, "lobby_left") == 0) {
         char r[16] = ""; int i = mpjson::Find(line, tok, ntok, "reason");
         if (i >= 0) mpjson::Copy(line, tok[i], r, sizeof(r));
@@ -846,6 +863,19 @@ static void ProcessLine(const char* line) {
                 JoinFail("You're already in a room");
                 return;
             }
+            if (strcmp(r, "rate_limited") == 0) {
+                JoinFail("Too many tries - wait a minute");
+                return;
+            }
+        }
+        /* the server's request budgets (room creation, join attempts) */
+        if (strcmp(r, "rate_limited") == 0) {
+            PushBanner("Too many requests - wait a minute");
+            return;
+        }
+        if (strcmp(r, "server_full") == 0) {
+            PushBanner("The server has no room left for another room");
+            return;
         }
         PushBanner("Lobby error: %s", r);
         return;
@@ -2235,6 +2265,8 @@ void GetSnapshot(Snapshot* out) {
     out->joinState = s_joinState;
     strncpy(out->joinCode, s_joinCode, sizeof(out->joinCode) - 1);
     strncpy(out->joinErr, s_joinErr, sizeof(out->joinErr) - 1);
+    strncpy(out->webKey, s_webKey, sizeof(out->webKey) - 1);
+    strncpy(out->webUrl, s_webUrl, sizeof(out->webUrl) - 1);
     out->offlineMs = (!s_connected && s_offlineSince > 0)
         ? (int32_t)((int64_t)NowMs() - s_offlineSince) : -1;
     out->inSongSelect = s_selActive;
@@ -2419,6 +2451,11 @@ void CmdLobbyJoin(const char* code, bool quiet) {
     s_joinState = JOIN_PENDING;
     s_joinErr[0] = 0;
     s_joinAt = (int64_t)NowMs();
+}
+void CmdWebKey() {
+    std::lock_guard<std::recursive_mutex> lk(s_mtx);
+    if (!s_connected || !s_code[0] || strcmp(s_ownerCid, s_myCid) != 0) return;
+    SendLine("{\"t\":\"web_key\"}");
 }
 void CmdLobbyLeave() {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
