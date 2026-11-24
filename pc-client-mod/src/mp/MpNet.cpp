@@ -56,6 +56,12 @@ static std::atomic<uint32_t> g_connectCount{0};
  * change */
 static std::atomic<uint8_t>  g_mode{kServerLocal};
 static std::atomic<uint32_t> g_modeGen{0};
+/* what hello says: the public client id and the secret that ties it to this
+ * console (g_statusMtx; the net thread never reads the Config strings after
+ * its first hello) */
+static char     s_helloCid[24] = "";
+static char     s_helloKey[72] = "";
+static std::atomic<bool> g_cidClash{false};   /* server: id held by another console */
 static char     s_cloudHost[128] = "mikumod.evanthomas.dev";   /* g_statusMtx */
 static char     s_cloudPath[64]  = "/switch";
 static uint16_t s_cloudPort      = 80;
@@ -500,7 +506,17 @@ static void HandleLine(const char* line, int len) {
         return;
     }
     if (strcmp(type, "dbg_cmd") == 0) {
-        PushDbgCmd(line, tok, ntok);
+        /* taps, cursor, server redirects, SD dumps: whoever runs the server
+         * this console found gets all of that, so it is a developer option
+         * ([multiplayer] debug_commands = true) and off otherwise */
+        if (Config::mpDebugCommands) {
+            PushDbgCmd(line, tok, ntok);
+        } else {
+            static bool s_said = false;
+            if (!s_said)
+                WriteLog("[MP] dbg_cmd ignored (debug_commands is off)\n");
+            s_said = true;
+        }
         return;
     }
     lobby::PushLine(line, len);            /* lobby protocol -> game thread */
@@ -763,26 +779,36 @@ static void SendPvList() {
     int i = 0, total = 0;
     while (SongQuickJump::GetSongDbEntry(total, &id, name, sizeof(name))) total++;
     while (i < total) {
-        char line[640];
-        int off = snprintf(line, sizeof(line), "{\"t\":\"dbg_pvs\",\"i\":%d,\"n\":%d,\"ids\":[", i, total);
+        char line[1280];
+        int off = 0;
+        mpjson::Appendf(line, sizeof(line), &off,
+                        "{\"t\":\"dbg_pvs\",\"i\":%d,\"n\":%d,\"ids\":[", i, total);
         for (int k = 0; k < 20 && i < total; k++, i++) {
             SongQuickJump::GetSongDbEntry(i, &id, name, sizeof(name));
-            off += snprintf(line + off, sizeof(line) - off, "%s%d", k ? "," : "", id);
+            mpjson::Appendf(line, sizeof(line), &off, "%s%d", k ? "," : "", id);
         }
-        off += snprintf(line + off, sizeof(line) - off, "],\"names\":[");
+        mpjson::Appendf(line, sizeof(line), &off, "],\"names\":[");
         for (int k = 0, j = i - 20 < 0 ? 0 : i - 20; j < i; k++, j++) {
             SongQuickJump::GetSongDbEntry(j, &id, name, sizeof(name));
             char esc[40];
             mpjson::EscapeInto(esc, sizeof(esc), name);
-            off += snprintf(line + off, sizeof(line) - off, "%s\"%s\"", k ? "," : "", esc);
+            mpjson::Appendf(line, sizeof(line), &off, "%s\"%s\"", k ? "," : "", esc);
         }
-        snprintf(line + off, sizeof(line) - off, "]}");
+        mpjson::Appendf(line, sizeof(line), &off, "]}");
         Enqueue(line);
     }
 }
 
 void OnFrame() {
     menu::Frame();
+    if (g_cidClash.exchange(false)) {
+        /* this console's client id is tied to another console's key on
+         * that server (a copied config): take a new id, keep the key */
+        Config::RegenClientId();
+        std::lock_guard<std::mutex> lk(g_statusMtx);
+        snprintf(s_helloCid, sizeof(s_helloCid), "%s", Config::mpClientId.c_str());
+        WriteLog("[MP] client id in use on this server - new id generated\n");
+    }
     MpCmd c;
     while (PopCmd(&c)) {
         switch (c.type) {
@@ -1209,13 +1235,23 @@ static bool WsHandshake(const char* host, uint16_t port, const char* path,
 }
 
 static bool SayHello() {
-    char escName[64], escId[24];
+    char escName[64], escId[24], keyPart[96] = "";
     mpjson::EscapeInto(escName, sizeof(escName), Config::mpPlayerName.c_str());
-    mpjson::EscapeInto(escId, sizeof(escId), Config::mpClientId.c_str());
-    char line[256];
+    {   std::lock_guard<std::mutex> lk(g_statusMtx);
+        if (!s_helloCid[0]) {
+            snprintf(s_helloCid, sizeof(s_helloCid), "%s", Config::mpClientId.c_str());
+            snprintf(s_helloKey, sizeof(s_helloKey), "%s", Config::mpClientKey.c_str());
+        }
+        mpjson::EscapeInto(escId, sizeof(escId), s_helloCid);
+        char escKey[72];
+        mpjson::EscapeInto(escKey, sizeof(escKey), s_helloKey);
+        if (escKey[0])
+            snprintf(keyPart, sizeof(keyPart), "\"key\":\"%s\",", escKey);
+    }
+    char line[384];
     snprintf(line, sizeof(line),
-             "{\"t\":\"hello\",\"proto\":1,\"mod\":\"%s\",\"game\":\"mm+1.03\",\"plat\":\"pc\",\"cid\":\"%s\",\"name\":\"%s\"}\n",
-             "pc-0.1.0-dev+" __DATE__ " " __TIME__, escId, escName);
+             "{\"t\":\"hello\",\"proto\":1,\"mod\":\"%s\",\"game\":\"mm+1.03\",\"plat\":\"pc\",\"cid\":\"%s\",%s\"name\":\"%s\"}\n",
+             "pc-0.1.0-dev+" __DATE__ " " __TIME__, escId, keyPart, escName);
     if (!SendAll(line, strlen(line))) { SetError("hello send failed"); return false; }
 
     /* poll-free: recv every 10ms up to 5s until a full line arrives */
@@ -1262,7 +1298,7 @@ static bool SayHello() {
                 start = i + 1;
             }
         }
-        for (size_t i = start; i < rl && s_lineLen < sizeof(s_lineBuf); i++)
+        for (size_t i = start; i < rl && s_lineLen < sizeof(s_lineBuf) - 1; i++)
             s_lineBuf[s_lineLen++] = rbuf[i];
         return true;
     }
@@ -1270,6 +1306,10 @@ static bool SayHello() {
         int mIdx = mpjson::Find(rbuf, tok, ntok, "msg");
         char m[96] = "server error";
         if (mIdx >= 0) mpjson::Copy(rbuf, tok[mIdx], m, sizeof(m));
+        char code[24] = "";
+        int cIdx = mpjson::Find(rbuf, tok, ntok, "code");
+        if (cIdx >= 0) mpjson::Copy(rbuf, tok[cIdx], code, sizeof(code));
+        if (strcmp(code, "cid_in_use") == 0) g_cidClash.store(true);
         SetError("%s", m);
         SleepMs(10000);            /* spec: retry in 10s on error msg */
         return false;
@@ -1303,9 +1343,10 @@ static void SessionLoop() {
                 for (int64_t i = 0; i < rn; i++) {
                     char c = rbuf[i];
                     if (c == '\n') {
+                        s_lineBuf[s_lineLen] = 0;
                         HandleLine(s_lineBuf, (int)s_lineLen);
                         s_lineLen = 0;
-                    } else if (s_lineLen >= sizeof(s_lineBuf)) {
+                    } else if (s_lineLen >= sizeof(s_lineBuf) - 1) {
                         WriteLog("[MP] line overflow, dropping conn\n");
                         return;
                     } else {

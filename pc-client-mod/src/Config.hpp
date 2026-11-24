@@ -18,6 +18,10 @@ extern std::string mpNotifyStyle;     /* "notify_style": avatars|text|off */
 extern bool        mpRemoteAvatars;   /* "remote_avatars" */
 extern bool        mpShowStatus;      /* "debug_status_chip" */
 extern std::string mpClientId;        /* "client_id" (16 hex, generated once) */
+extern std::string mpClientKey;       /* "client_key": secret that proves client_id is ours */
+extern bool        mpDebugCommands;   /* "debug_commands": accept the server's dbg_cmd */
+
+void RegenClientId();                 /* new client_id + save (id clash on a server) */
 
 /* mod directory (where the DLL lives); set once by mod.cpp before Load. */
 void SetModDir(const wchar_t* dir);

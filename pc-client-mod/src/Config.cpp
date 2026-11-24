@@ -22,6 +22,8 @@ std::string mpNotifyStyle   = "avatars";
 bool        mpRemoteAvatars = false;
 bool        mpShowStatus    = false;
 std::string mpClientId      = "";
+std::string mpClientKey     = "";
+bool        mpDebugCommands = false;
 
 static std::wstring s_modDir;
 
@@ -52,17 +54,16 @@ static std::string DefaultPlayerName() {
     return "Player";
 }
 
-static std::string NewClientId() {
-    std::mt19937_64 rng([] {
-        LARGE_INTEGER c; QueryPerformanceCounter(&c);
-        return (uint64_t)c.QuadPart ^ ((uint64_t)GetCurrentProcessId() << 24) ^
-               ((uint64_t)GetTickCount64() << 1);
-    }());
+/* 64 bits from the OS generator (MSVC's random_device is rand_s): the old
+ * counter-seeded mt19937 could be guessed from the time the game started */
+static std::string RandomHex64() {
+    std::random_device rd;
+    uint64_t v = ((uint64_t)rd() << 32) ^ (uint64_t)rd();
     char out[17];
-    snprintf(out, sizeof(out), "%016llx",
-             (unsigned long long)(rng() & 0xFFFFFFFFFFFFFFFFull));
+    snprintf(out, sizeof(out), "%016llx", (unsigned long long)v);
     return out;
 }
+static std::string NewClientId() { return RandomHex64(); }
 
 static std::wstring CfgPathW() { return s_modDir + L"mp_config.toml"; }
 
@@ -86,18 +87,31 @@ void Load() {
             mpRemoteAvatars = mp["remote_avatars"].value_or(false);
             mpShowStatus    = mp["debug_status_chip"].value_or(false);
             mpClientId      = mp["client_id"].value_or("");
+            mpClientKey     = mp["client_key"].value_or("");
+            mpDebugCommands = mp["debug_commands"].value_or(false);
         } catch (const std::exception& e) {
             WriteLog("[MP] mp_config.toml parse failed: %s\n", e.what());
         }
     }
     if (mpPlayerName.empty()) mpPlayerName = DefaultPlayerName();
     if (mpPlayerName.size() > 16) mpPlayerName.resize(16);
-    if (mpClientId.size() != 16) mpClientId = NewClientId();
+    bool dirty = !exists;
+    if (mpClientId.size() != 16) { mpClientId = NewClientId(); dirty = true; }
+    bool keyOk = mpClientKey.size() >= 32 && mpClientKey.size() <= 64;
+    for (char ch : mpClientKey)
+        keyOk = keyOk && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') ||
+                          (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '-');
+    if (!keyOk) { mpClientKey = RandomHex64() + RandomHex64(); dirty = true; }
     if (mpNotifyStyle != "text" && mpNotifyStyle != "off")
         mpNotifyStyle = "avatars";
     if (mpServerMode != "cloud" && mpServerMode != "off")
         mpServerMode = "local";
-    if (!exists) Save();
+    if (dirty) Save();
+}
+
+void RegenClientId() {
+    mpClientId = NewClientId();
+    Save();
 }
 
 void Save() {
@@ -114,6 +128,8 @@ void Save() {
         { "remote_avatars",   mpRemoteAvatars },
         { "debug_status_chip", mpShowStatus },
         { "client_id",        mpClientId },
+        { "client_key",       mpClientKey },
+        { "debug_commands",   mpDebugCommands },
     };
     t.insert("multiplayer", mp);
     std::string path = PathA("mp_config.toml");

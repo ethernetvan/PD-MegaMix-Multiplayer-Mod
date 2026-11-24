@@ -735,11 +735,8 @@ static void HandleBoard(const char* line, jsmntok_t* tok, int ntok) {
         if ((j = mpjson::Find(line, tok + i, end - i, "score")) >= 0 &&
             mpjson::ToInt(line, tok[i + j], &v))
             b.score = v;
-        if ((j = mpjson::Find(line, tok + i, end - i, "pct")) >= 0) {
-            char pb[24] = "";
-            mpjson::Copy(line, tok[i + j], pb, sizeof(pb));
-            b.pct = (float)strtod(pb, nullptr);
-        }
+        if ((j = mpjson::Find(line, tok + i, end - i, "pct")) >= 0)
+            b.pct = mpjson::ToNum(line, tok[i + j], 0.0f, 200.0f);
         if ((j = mpjson::Find(line, tok + i, end - i, "life")) >= 0 &&
             mpjson::ToInt(line, tok[i + j], &v))
             b.life = v;
@@ -774,11 +771,8 @@ static void HandleStandings(const char* line, jsmntok_t* tok, int ntok) {
         int v;
         if ((j = mpjson::Find(line, tok + i, end - i, "score")) >= 0 &&
             mpjson::ToInt(line, tok[i + j], &v)) r.score = v;
-        if ((j = mpjson::Find(line, tok + i, end - i, "pct")) >= 0) {
-            char pb[24] = "";
-            mpjson::Copy(line, tok[i + j], pb, sizeof(pb));
-            r.pct = (float)strtod(pb, nullptr);
-        }
+        if ((j = mpjson::Find(line, tok + i, end - i, "pct")) >= 0)
+            r.pct = mpjson::ToNum(line, tok[i + j], 0.0f, 200.0f);
         if ((j = mpjson::Find(line, tok + i, end - i, "max_combo")) >= 0 &&
             mpjson::ToInt(line, tok[i + j], &v)) r.max_combo = v;
         if ((j = mpjson::Find(line, tok + i, end - i, "life")) >= 0 &&
@@ -803,11 +797,8 @@ static void HandleStandings(const char* line, jsmntok_t* tok, int ntok) {
             }
             r.hasJc = true;
         }
-        if ((j = mpjson::Find(line, tok + i, end - i, "border")) >= 0) {
-            char pb[24] = "";
-            mpjson::Copy(line, tok[i + j], pb, sizeof(pb));
-            r.border = (float)strtod(pb, nullptr);
-        }
+        if ((j = mpjson::Find(line, tok + i, end - i, "border")) >= 0)
+            r.border = mpjson::ToNum(line, tok[i + j], 0.0f, 200.0f);
         r.clear = -1;
         if ((j = mpjson::Find(line, tok + i, end - i, "clear")) >= 0) {
             char c0 = line[tok[i + j].start];
@@ -849,6 +840,12 @@ static void ProcessLine(const char* line) {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
 
     if (strcmp(t, "welcome") == 0) {
+        {   int ci = mpjson::Find(line, tok, ntok, "cid");
+            char c[sizeof(s_myCid)] = "";
+            if (ci >= 0 && tok[ci].type == JSMN_STRING)
+                mpjson::Copy(line, tok[ci], c, sizeof(c));
+            if (c[0]) memcpy(s_myCid, c, sizeof(s_myCid));
+        }
         s_connected = true;
         s_offlineSince = 0;
         if (s_leaveOnReconnect) {
@@ -967,13 +964,13 @@ static void ProcessLine(const char* line) {
                 /* players without the song are flagged per member
                  * (nosong), not listed here */
                 if (k != 0 && strcmp(rs, "wrong_song") != 0)
-                    off += snprintf(s_notReady + off, sizeof(s_notReady) - off,
+                    mpjson::Appendf(s_notReady, sizeof(s_notReady), &off,
                                     "%s%s%s; ", nm, rs[0] ? ":" : "", rs);
                 /* missing songs have their own tag (members' nosong);
                  * this list is who has it but can't select it */
                 if (k == 2 && nm[0] && uoff < (int)sizeof(unavail) - 20)
-                    uoff += snprintf(unavail + uoff, sizeof(unavail) - uoff,
-                                     "%s, ", nm);
+                    mpjson::Appendf(unavail, sizeof(unavail), &uoff,
+                                    "%s, ", nm);
                 i = end;
             }
         }
@@ -1049,11 +1046,7 @@ static void ProcessLine(const char* line) {
     if (strcmp(t, "countdown") == 0) {
         int i = mpjson::Find(line, tok, ntok, "secs");
         double secs = 0;
-        if (i >= 0) {
-            char num[24] = "";
-            mpjson::Copy(line, tok[i], num, sizeof(num));
-            secs = strtod(num, nullptr);
-        }
+        if (i >= 0) secs = mpjson::ToNum(line, tok[i], 0.0f, 60.0f);
         if (secs > 0) {
             s_countdownEndMs = NowMs() + (int64_t)(secs * 1000);
             s_countdownStartMs = NowMs();
