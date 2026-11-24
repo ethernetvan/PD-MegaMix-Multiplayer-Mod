@@ -1,4 +1,5 @@
 #include "MpAvatar.hpp"
+#include "MpJson.hpp"
 #include "MpNet.hpp"
 #include "MpModuleDb.hpp"
 #include "../Config.hpp"
@@ -796,11 +797,11 @@ void DbgPeek() {
     bool first = true;
     for (const Ent& e : s_ents) {
         if (e.st == ST_FREE || off >= (int)sizeof(line) - 48) continue;
-        off += snprintf(line + off, sizeof(line) - off, "%s[%d,%d,%d,%d,%d]",
+        mpjson::Appendf(line, sizeof(line), &off, "%s[%d,%d,%d,%d,%d]",
                         first ? "" : ",", e.module, (int)e.st, e.fmt, e.w, e.h);
         first = false;
     }
-    snprintf(line + off, sizeof(line) - off, "]}");
+    mpjson::Appendf(line, sizeof(line), &off, "]}");
     Enqueue(line);
 }
 

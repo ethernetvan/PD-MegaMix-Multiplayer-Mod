@@ -5,12 +5,29 @@
 
 #define JSMN_STATIC
 #include "MpJsmn.h"
+#include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 namespace mpjson {
+
+/* snprintf appended at dst + *off that can never run past cap. A plain
+ * `off += snprintf(dst + off, cap - off, ...)` goes wrong as soon as one
+ * call truncates: snprintf returns the length it WANTED, off passes cap,
+ * and the next `cap - off` wraps to a huge size - a write past the end. */
+inline void Appendf(char* dst, size_t cap, int* off, const char* fmt, ...) {
+    if (cap == 0 || *off < 0 || (size_t)*off >= cap - 1) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(dst + *off, cap - (size_t)*off, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    *off += n;
+    if ((size_t)*off > cap - 1) *off = (int)(cap - 1);
+}
 
 /* Parse buf into tok[]. Returns token count or <0 on error. */
 inline int Parse(const char* buf, size_t len, jsmntok_t* tok, int max_tok) {
@@ -82,6 +99,16 @@ inline bool ToInt(const char* buf, const jsmntok_t& t, int* out) {
     if (Copy(buf, t, tmp, sizeof(tmp)) <= 0) return false;
     *out = (int)strtol(tmp, nullptr, 10);
     return true;
+}
+
+/* A number the server sent, as a float inside lo..hi (NaN, inf and junk
+ * become lo): these go straight into draw positions and timers. */
+inline float ToNum(const char* buf, const jsmntok_t& t, float lo, float hi) {
+    char tmp[32];
+    if (t.type != JSMN_PRIMITIVE || Copy(buf, t, tmp, sizeof(tmp)) <= 0) return lo;
+    double v = strtod(tmp, nullptr);
+    if (!std::isfinite(v) || v < lo) return lo;
+    return v > hi ? hi : (float)v;
 }
 
 inline bool ToBool(const char* buf, const jsmntok_t& t, bool* out) {

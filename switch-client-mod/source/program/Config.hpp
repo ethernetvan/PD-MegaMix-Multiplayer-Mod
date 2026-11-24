@@ -38,6 +38,9 @@ struct Config {
     static std::string mpPlayerName;
     static bool mpShowStatus;
     static std::string mpClientId;
+    static std::string mpClientKey;     /* secret that proves hello's client_id is ours */
+    static bool mpDebugCommands;        /* accept the server's dbg_cmd remote control */
+    static void RegenClientId();        /* new client_id + save (id clash on a server) */
     static std::string mpNotifyStyle;   /* "avatars" | "text" | "off" */
     static bool mpRemoteAvatars;        /* show other players' uploaded portraits */
     static std::string mpServerMode;    /* "off" | "local" (LAN search / server_ip) | "cloud" */

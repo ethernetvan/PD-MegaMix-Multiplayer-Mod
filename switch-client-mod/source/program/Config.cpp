@@ -45,6 +45,29 @@ int Config::mpDiscoveryPort = 7778;
 std::string Config::mpPlayerName = "Player";
 bool Config::mpShowStatus = false;
 std::string Config::mpClientId = "";
+std::string Config::mpClientKey = "";
+bool Config::mpDebugCommands = false;
+
+/* 64 random bits: the kernel's per-process entropy (svcGetInfo
+ * RandomEntropy, 4 words) mixed with the tick-seeded generator, so a
+ * second call with the same word still differs. The tick alone is
+ * guessable: it is just the time since boot. */
+static uint64_t Entropy64(int word) {
+    u64 e = 0;
+    if (R_FAILED(svcGetInfo(&e, 11 /* InfoType_RandomEntropy */, 0, (u64)(word & 3))))
+        e = 0;
+    return e ^ exl::util::GetRandomU64() ^
+           ((uint64_t)nn::os::GetSystemTick().GetInt64Value() << 21);
+}
+static std::string Hex64(uint64_t v) {
+    char b[17];
+    snprintf(b, sizeof(b), "%016llx", (unsigned long long)v);
+    return b;
+}
+void Config::RegenClientId() {
+    mpClientId = Hex64(Entropy64(3));
+    Save();
+}
 std::string Config::mpNotifyStyle = "avatars";
 bool Config::mpRemoteAvatars = false;
 std::string Config::mpServerMode = "local";
@@ -331,7 +354,13 @@ static void SaveConfig(const std::string& path) {
     tomlContent += "# doesn't have (custom/mod modules). Off: their character's default portrait\n";
     tomlContent += "remote_avatars = " + std::string(Config::mpRemoteAvatars ? "true" : "false") + "\n";
     tomlContent += "# Auto-generated stable client id; do not edit\n";
-    tomlContent += "client_id = \"" + Config::mpClientId + "\"\n\n";
+    tomlContent += "client_id = \"" + Config::mpClientId + "\"\n";
+    tomlContent += "# Auto-generated secret that proves the client id is this console's:\n";
+    tomlContent += "# never share it (anyone who has it can take your seat in a room)\n";
+    tomlContent += "client_key = \"" + EscapeTomlString(Config::mpClientKey) + "\"\n";
+    tomlContent += "# Developers only: let the server drive this console (button taps, cursor,\n";
+    tomlContent += "# server address, SD dumps) with its debug commands. Leave it off.\n";
+    tomlContent += "debug_commands = " + std::string(Config::mpDebugCommands ? "true" : "false") + "\n\n";
 
     tomlContent += "[leftover]\n";
     tomlContent += "# Master toggle for FT UI (its dead so dont enable it)\n";
@@ -465,6 +494,8 @@ bool Config::init() {
             mpPlayerName = config["multiplayer"]["player_name"].value_or("Player");
             mpShowStatus = config["multiplayer"]["debug_status_chip"].value_or(false);
             mpClientId = config["multiplayer"]["client_id"].value_or("");
+            mpClientKey = config["multiplayer"]["client_key"].value_or("");
+            mpDebugCommands = config["multiplayer"]["debug_commands"].value_or(false);
             mpNotifyStyle = config["multiplayer"]["notify_style"].value_or("avatars");
             if (mpNotifyStyle != "text" && mpNotifyStyle != "off") mpNotifyStyle = "avatars";
             mpRemoteAvatars = config["multiplayer"]["remote_avatars"].value_or(false);
@@ -502,13 +533,16 @@ bool Config::init() {
     /* client_id must not depend on the atmosphere dir existing. */
     bool idGenerated = false;
     if (mpClientId.empty()) {
-        uint64_t seed = exl::util::GetRandomU64() ^
-                        nn::os::GetSystemTick().GetInt64Value() ^
-                        (nn::os::GetSystemTick().GetInt64Value() << 32);
-        char id[17];
-        snprintf(id, sizeof(id), "%016llx", (unsigned long long)seed);
-        mpClientId = id;
+        mpClientId = Hex64(Entropy64(2));
         idGenerated = true;
+    }
+    bool keyOk = mpClientKey.size() >= 32 && mpClientKey.size() <= 64;
+    for (char ch : mpClientKey)
+        keyOk = keyOk && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') ||
+                          (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '-');
+    if (!keyOk) {
+        mpClientKey = Hex64(Entropy64(0)) + Hex64(Entropy64(1));
+        idGenerated = true;                /* saved with the config below */
     }
 
     if (atmoPath.empty()) {
