@@ -1133,8 +1133,12 @@ static bool s_inLobbyDirty() {
 static void ApplyBlocks() {
     /* follower lock only on the song list itself: the module picker /
      * customize run inside song select and must stay usable */
-    if (s_phase == L_SELECT && !s_amLeader && s_selActive && s_selBrowsing)
-        SetBlocks(s_sameDiff ? MASK_FOLLOWER_SD : MASK_FOLLOWER, true);
+    if (s_phase == L_SELECT && !s_amLeader && s_selActive && s_selBrowsing) {
+        /* Left/Right only lock while there is a difficulty to follow (a
+         * picker on an older build reports none) */
+        int32_t fd = -1, fe = 0;
+        SetBlocks(ForcedDiff(&fd, &fe) ? MASK_FOLLOWER_SD : MASK_FOLLOWER, true);
+    }
     else if (s_phase == L_LOADING ||
              (s_phase == L_LAUNCHING && s_launchBlocking))
         SetBlocks(MASK_ALL_NO_MINUS, false);
