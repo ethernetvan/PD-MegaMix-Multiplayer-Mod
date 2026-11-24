@@ -331,6 +331,52 @@ Commits `815f20b`, `79e244c`, `ce0a059` (on top of `f9f16c6`).
   Note: backing out of song select still leaves the room after 8 s (existing behaviour); the stats come back
   when that player rejoins.
 
+## Round 14: platform icons, per-player difficulty, Same difficulty option, missing-song tag, Random pick (2026-11-23)
+Server, web, Switch and PC (`pc-client-mod/`), all on `main` (pc-port was merged into it first).
+- **Protocol additions** (docstring of `server/lobby.py`): hello `plat: switch|pc` (older clients are told apart
+  by `mod` "pc-..." / `game` "mm+..."; bots are `bot`); `diff {d, e}` = the console's song-select difficulty,
+  sent on change; `loaded` / `final` carry `diff`/`ed` = the chart actually played (frozen for the round, so
+  flipping the difficulty on song select with the results up doesn't change the standings); `set_opt {key:
+  "same_diff", value}` (owner only). `lobby` carries `same_diff` and per member `plat`, `diff`, `ed`, `nosong`
+  (that console acked `has:false` for the picker's song; sent to EVERY member, cleared on the next `sel`);
+  `board` / `standings` rows carry `diff`/`ed`; event `same_diff`.
+- **Party screen:** a Joy-Con pair (Switch, Mega Mix) or a monitor (PC, Mega Mix+) after every name, podium
+  and list (`IconPlat`). Web: the same icon as a badge on the member tile and in "Online consoles".
+- **Same difficulty (ROOM CONFIG -> Difficulty: FREE | SAME; PC panel: Difficulty combo; web host controls;
+  `admin.py room_opt CODE same_diff on|off` server-side, `admin.py --cid C same_diff on|off` through a
+  console).** Followers are moved to the picker's (d, e) by the normal follow jump (`ForcedDiff`,
+  `s_folWantD`); when the console lacks that chart it takes the closest one (one banner per song/difficulty).
+  Left/Right join the follower lock only while the picker reports a difficulty. The launch autopilot gets
+  onto the difficulty before pressing A (4 tries, then starts on its own rather than miss the round). With
+  no song to follow, only the difficulty is synced (`s_diffSync*`).
+- **Results:** a tag in the game's difficulty colour on the bottom edge of each hexagon (tie clusters too,
+  `EXEX` in the small ones), ONLY when the players weren't all on the same chart; consoles that report none
+  don't count. Web: chips on the live board, the pending table and the result cards under the same rule,
+  always on the member tiles.
+- **Missing song:** `DrawNoSongTag` (MpUi.cpp, called from Hints.cpp / the PC badge): a slanted warm-gradient
+  plate under the "picking a song" pill for everyone: "<name> doesn't have this song" + portraits, or "You
+  don't have this song / <song> - you'll sit this round out". Party screen: NO SONG tag, red dot, footer in
+  plain words. The old pill now only lists who has the song but can't select it. Web: striped strip on the
+  song-select panel + NO SONG badge.
+- **Random:** the picker's cursor stays on pv -2 on the Random entry, so nothing was mirrored until the round
+  started. The rolled song (`random_pv.data2`, sel+0x260D8; PC shadow copies it) is now sent as `sel` as soon
+  as A opens the confirm panel (state 8). Verified both ways: Ryu1 picker -> PC followed to pv 14 in the same
+  second; PC picker -> Ryu1 followed to pv 261.
+- **Server fix:** `last_activity` survived from the previous round, so in round 2+ a player who hadn't scored
+  yet was "stale" the moment another final arrived and the round completed without them.
+- **Verified** (Ryujinx + MM+ + scripted consoles, room GLUH/YTHN): icons, FREE/SAME from the Switch config
+  screen and through the admin port, forced difficulty incl. EXTRA EXTREME -> EXTREME fallback banner,
+  Left/Right lock, tags on a 1-3-3-4 tie and none when everyone was on EXTREME, both wordings of the missing
+  tag on both clients, Random both directions, the stale fix. NOT verified: a real Switch, the PC Difficulty
+  combo by mouse (state driven through `same_diff`), web host toggle by click (server action unit-tested).
+- **Test tools** (outside the repo, `mm-re/tmp/qol/`): `puppet.py` (a console scripted through a command
+  file: any message, `{round}` substituted), `webdemo.py`, `shot.py` / `pcshot.py` (window captures),
+  `place.py` (both games on the second display), `t_pc_return.py` (scripted PC round).
+- **Display note:** on the virtual displays (Virtual Display Driver, DISPLAY22/23) Ryujinx presented at
+  2-12 fps with the GPU idle and its inputs timed out (round dropped at the 30 s load limit); on a real
+  second display it runs at 60. Both games render on the RTX 3060 (Ryujinx `preferred_gpu`, MM+ got
+  `GpuPreference=2` in HKCU\Software\Microsoft\DirectX\UserGpuPreferences).
+
 ## Known quirks
 - Different routed subnets (PC 10.169.x, Switch 10.167.x): found automatically once the console has connected to the PC on that network before (remembered servers) or `server_ip` is within the PC's /22; otherwise set `server_ip` once.
 - Commit `8e4dc28`'s message also lists lobby fixes that actually landed in `35c196e`.
