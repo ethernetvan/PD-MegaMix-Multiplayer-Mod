@@ -1117,3 +1117,167 @@ class T6(T5):
         self.lm.on_message("a", {"t": "lobby_create"}, 109.0)
         lb2 = self.lm.lobbies[self.lm.by_cid["a"].code]
         self.assertEqual(self._st(lb2, "a"), (0, 0.0, [0, 0, 0]))
+
+
+class T7(T6):
+    """platform, per-member difficulty, same-difficulty room option,
+       missing-song flags."""
+
+    def _lobby(self, cid):
+        return self.msgs(cid, "lobby")[-1][1]
+
+    def _lobbies(self):
+        """last lobby message per recipient, draining the outbox"""
+        return {c: m for c, m in self.msgs(t="lobby")}
+
+    def test_platform_of(self):
+        from lobby import platform_of
+        self.assertEqual(platform_of("0.1.0-dev+Nov 1", "1.0.6"), "switch")
+        self.assertEqual(platform_of("pc-0.1.0-dev+Nov 1", "mm+1.03"), "pc")
+        self.assertEqual(platform_of("0.1.0", "mm+1.03"), "pc")
+        self.assertEqual(platform_of("bot-1", "1.0.6"), "bot")
+        self.assertEqual(platform_of("bot-1", "1.0.6", "pc"), "pc")
+        self.assertEqual(platform_of("pc-x", "mm+1.03", "nonsense"), "pc")
+        self.assertEqual(platform_of(None, None), "switch")
+
+    def test_plat_in_lobby_msg(self):
+        self.lm.on_hello("a", "a", "0.1.0-dev", 100.0, game="1.0.6")
+        self.lm.on_hello("b", "b", "pc-0.1.0-dev", 100.0, game="mm+1.03")
+        self.lm.on_hello("c", "c", "bot-1", 100.0)
+        self.lm.on_hello("d", "d", "bot-1", 100.0, plat="pc")
+        self._mk(4)
+        plats = {m["cid"]: m["plat"] for m in self._lobby("a")["members"]}
+        self.assertEqual(plats, {"a": "switch", "b": "pc", "c": "bot",
+                                 "d": "pc"})
+
+    def test_diff_reported_and_rebroadcast(self):
+        for c in "ab": self.mk(c)
+        self._mk(2)
+        self.msgs()
+        self.lm.on_message("b", {"t": "diff", "d": 3, "e": 1}, 100.5)
+        mem = {m["cid"]: m for m in self._lobby("a")["members"]}
+        self.assertEqual((mem["b"]["diff"], mem["b"]["ed"]), (3, 1))
+        self.assertEqual((mem["a"]["diff"], mem["a"]["ed"]), (-1, 0))
+        # unchanged or invalid values don't resend the lobby
+        self.lm.on_message("b", {"t": "diff", "d": 3, "e": 1}, 100.6)
+        self.lm.on_message("b", {"t": "diff", "d": 9}, 100.6)
+        self.lm.on_message("b", {"t": "diff", "d": True}, 100.6)
+        self.assertEqual(self.msgs(t="lobby"), [])
+        # the EXTRA edition only exists on EXTREME
+        self.lm.on_message("b", {"t": "diff", "d": 1, "e": 1}, 100.7)
+        mem = {m["cid"]: m for m in self._lobby("a")["members"]}
+        self.assertEqual((mem["b"]["diff"], mem["b"]["ed"]), (1, 0))
+
+    def test_round_difficulty_frozen_for_board_and_standings(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        self.lm.on_message("a", {"t": "diff", "d": 2}, 100.5)
+        self.lm.on_message("b", {"t": "diff", "d": 1}, 100.5)
+        rid = lb.seq + 1
+        self.lm.on_message("a", {"t": "start_req", "pv": 1, "name": "s"},
+                           101.0)
+        # a reports the chart it loaded, b (older client) reports nothing
+        self.lm.on_message("a", {"t": "loaded", "round": rid, "diff": 3,
+                                 "ed": 1}, 102.0)
+        self.lm.on_message("b", {"t": "loaded", "round": rid}, 102.0)
+        self.lm.tick(103.0)
+        self._state("a", rid, 120)
+        self.lm.tick(103.6)
+        b = [m for _, m in self.msgs(t="board")][-1]
+        self.assertEqual({r["cid"]: (r["diff"], r["ed"]) for r in b["e"]},
+                         {"a": (3, 1), "b": (1, 0)})
+        self._fin("b", rid, 80.0, 10)
+        # b is back on song select and flips its difficulty: the round's
+        # standings keep the chart it played
+        self.lm.on_message("b", {"t": "diff", "d": 0}, 104.2)
+        self._fin("a", rid, 90.0, 20, diff=3, ed=1)
+        rows, _ = self.lm._standings(lb, 104.5)
+        self.assertEqual({r["cid"]: (r["diff"], r["ed"]) for r in rows},
+                         {"a": (3, 1), "b": (1, 0)})
+        # after the round the member list shows the live value again
+        self.msgs()
+        self.lm.on_message("a", {"t": "back_in_sel", "round": rid}, 105.0)
+        mem = {m["cid"]: m for m in self._lobby("a")["members"]}
+        self.assertEqual(mem["b"]["diff"], 0)
+
+    def test_old_clients_have_no_difficulty(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._fin("a", rid, 90.0, 20)
+        self._fin("b", rid, 80.0, 10)
+        rows, _ = self.lm._standings(lb, 104.5)
+        self.assertTrue(all(r["diff"] == -1 and r["ed"] == 0 for r in rows))
+
+    def test_same_diff_owner_only(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        self.assertIs(self._lobby("b")["same_diff"], False)
+        self.lm.on_message("b", {"t": "set_opt", "key": "same_diff",
+                                 "value": True}, 101.0)
+        self.assertEqual(self.msgs("b", "lobby_error")[0][1]["code"],
+                         "not_owner")
+        self.assertFalse(lb.same_diff)
+        for bad in ({"key": "nope", "value": True},
+                    {"key": "same_diff", "value": 1}):
+            self.lm.on_message("a", dict(t="set_opt", **bad), 101.0)
+            self.assertEqual(self.msgs("a", "lobby_error")[0][1]["code"],
+                             "bad_opt")
+        self.lm.on_message("a", {"t": "set_opt", "key": "same_diff",
+                                 "value": True}, 101.5)
+        out = self.msgs()
+        self.assertTrue(lb.same_diff)
+        self.assertTrue(all(m["same_diff"] for c, m in out
+                            if m["t"] == "lobby"))
+        ev = [m for c, m in out if m["t"] == "event" and c == "b"]
+        self.assertEqual([(e["kind"], e["value"]) for e in ev],
+                         [("same_diff", 1)])
+        # setting it again is silent
+        self.lm.on_message("a", {"t": "set_opt", "key": "same_diff",
+                                 "value": True}, 101.6)
+        self.assertEqual(self.msgs(), [])
+        # the admin port can flip it too
+        self.assertEqual(self.lm.on_admin(
+            {"cmd": "set_opt", "code": lb.code, "key": "same_diff",
+             "value": False}, 102.0), {"ok": True})
+        self.assertFalse(lb.same_diff)
+        self.assertIn("error", self.lm.on_admin(
+            {"cmd": "set_opt", "code": "ZZZZ", "key": "same_diff",
+             "value": False}, 102.0))
+
+    def test_nosong_flags_everyone_and_clears_on_new_pick(self):
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        self.lm.on_message("a", {"t": "sel", "pv": 700, "name": "X"}, 101.0)
+        self.msgs()
+        nack = {"t": "sel_ack", "pv": 700, "has": False, "ok": False,
+                "fb_pv": -1}
+        self.lm.on_message("b", nack, 101.2)
+        got = self._lobbies()
+        self.assertEqual(set(got), {"a", "b", "c"})   # not just the picker
+        for viewer in "abc":
+            self.assertEqual(
+                {m["cid"]: m["nosong"] for m in got[viewer]["members"]},
+                {"a": False, "b": True, "c": False})
+        # a repeat of the same ack doesn't resend the lobby
+        self.lm.on_message("b", nack, 101.3)
+        self.assertEqual(self.msgs(t="lobby"), [])
+        # c has it: nothing changes for the flags
+        self.lm.on_message("c", {"t": "sel_ack", "pv": 700, "has": True,
+                                 "ok": True, "fb_pv": -1}, 101.4)
+        self.assertEqual(self.msgs(t="lobby"), [])
+        # the picker moves on: the flag is gone for everyone
+        self.lm.on_message("a", {"t": "sel", "pv": 5, "name": "Y"}, 102.0)
+        mem = {m["cid"]: m["nosong"] for m in self._lobby("c")["members"]}
+        self.assertEqual(mem, {"a": False, "b": False, "c": False})
+        # a stale ack for the old song is ignored
+        self.lm.on_message("b", nack, 102.1)
+        self.assertEqual(self.lm.nosong(lb), ())
+
+    def test_picker_is_never_flagged_nosong(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        self.lm.on_message("a", {"t": "sel", "pv": 700, "name": "X"}, 101.0)
+        self.lm.on_message("a", {"t": "sel_ack", "pv": 700, "has": False,
+                                 "ok": False, "fb_pv": -1}, 101.2)
+        self.assertEqual(self.lm.nosong(lb), ())

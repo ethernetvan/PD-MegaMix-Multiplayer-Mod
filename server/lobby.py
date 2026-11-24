@@ -27,10 +27,22 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       avatar_px {img, err});
       autoplay {on, pct, mode} (AutoPlay on/off, hit-rate 0..100, bot mode);
       avatar_img {module,w,h,rgba} (base64 portrait upload; handled by
-      mp_server, not the engine).
+      mp_server, not the engine);
+      hello may carry plat: "switch"|"pc" (which version of the mod; when
+      absent it is derived from mod/game, see platform_of);
+      diff {d, e} (the console's song-select difficulty: d 0..3 = EASY
+      NORMAL HARD EXTREME, e 1 = the EXTRA edition; any time, sent on
+      change); loaded and final may carry diff/ed too (the chart the console
+      actually plays this round, frozen for the board and standings);
+      set_opt {key, value} (owner only; key same_diff: bool = every member
+      must play the song picker's difficulty when their console has that
+      chart).
 S->C: welcome/error/pong (existing);
-      lobby {code, phase, leader, you, round, sel_pv,
-             members:[{cid,name,connected,role,loaded,module,chara,mh,img,sr}]}
+      lobby {code, phase, leader, you, round, sel_pv, same_diff,
+             members:[{cid,name,connected,role,loaded,module,chara,mh,img,sr,
+                       plat,diff,ed,nosong}]}
+      (plat: switch|pc|bot; diff/ed: that member's difficulty, -1/0 unknown;
+      nosong: the member's console doesn't have the picker's current song)
       (img: id of the member's uploaded portrait, "" none/hidden/relay off)
       (sr: session ranking [pos, wins, firsts, seconds, thirds], pos = 1-based
       place in the room's session leaderboard, see _apply_session_ranking;
@@ -43,12 +55,14 @@ S->C: welcome/error/pong (existing);
       launch {round, pv, name, players:[cid], spectators:[cid]};
       countdown {round, secs};
       start {round, dropped:[cid]};
-      board {round, e:[{cid,name,score,pct,life,rank,connected,border}]};
+      board {round, e:[{cid,name,score,pct,life,rank,connected,border,
+                        diff,ed}]};
       event {kind, cid, name, value};
       (kinds: combo, low_life, drop_out (all life lost, once per round),
-      joined, left, disconnected, reconnected, leader, owner);
+      joined, left, disconnected, reconnected, leader, owner,
+      same_diff (the owner switched the room option, value 1/0));
       standings {round, complete:bool, e:[{cid,name,score,pct,max_combo,life,rank,final:bool,
-                 border, clear:bool|null, drop:bool}]};
+                 border, clear:bool|null, drop:bool, diff, ed}]};
       (rank: tied rows share the LOWEST position of their group, 1-3-3-4);
       round_end {round, next_leader}.
 
@@ -102,6 +116,34 @@ def _session_placements(rows):
     return out
 
 
+def platform_of(mod, game=None, plat=None):
+    """Which version of the mod a client runs: "switch" (Mega Mix, a
+    console or Ryujinx), "pc" (Mega Mix+) or "bot". An explicit hello
+    `plat` wins; older clients are told apart by their mod / game strings
+    (the PC mod says mod "pc-..." and game "mm+...")."""
+    if plat in ("switch", "pc"):
+        return plat
+    mod = mod if isinstance(mod, str) else ""
+    game = game if isinstance(game, str) else ""
+    if mod.startswith("bot") or mod == "sim":
+        return "bot"
+    if mod.startswith("pc-") or game.startswith("mm+"):
+        return "pc"
+    return "switch"
+
+
+def _diff_of(msg):
+    """(d, e) from a message's d/e or diff/ed fields, None when absent or
+    out of range (d 0..3, e 0..1; e only exists on EXTREME)."""
+    d = msg.get("d", msg.get("diff"))
+    e = msg.get("e", msg.get("ed", 0))
+    if isinstance(d, bool) or not isinstance(d, int) or not 0 <= d <= 3:
+        return None
+    if isinstance(e, bool) or not isinstance(e, int) or not 0 <= e <= 1:
+        e = 0
+    return (d, e if d == 3 else 0)
+
+
 def _f(v, default=0.0):
     """number from a client message (bools and junk -> default)"""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
@@ -117,7 +159,7 @@ class Member:
                  "autoplay_pct", "autoplay_mode", "scene",
                  "pause_req_at", "pause_req_kind",
                  "life_seen", "drop_sent",
-                 "wins", "placement_score", "places")
+                 "wins", "placement_score", "places", "rdiff")
 
     def __init__(self, cid, name):
         self.cid = cid
@@ -147,6 +189,7 @@ class Member:
         self.wins = 0
         self.placement_score = 0.0
         self.places = [0, 0, 0]     # times ranked 1st / 2nd / 3rd
+        self.rdiff = None           # (d, e) played this round, None unknown
 
 
 class Round:
@@ -186,12 +229,14 @@ class Lobby:
         self.pick_mode = "rotate"   # owner | assigned | rotate
         self.assigned_cid = None
         self.pending_pick_mode = None   # (mode, cid) applied at round_end
+        self.same_diff = False      # owner option: play the picker's difficulty
         self.group_paused = False
         self.vote = None   # {"kind","agreed":set,"ends_at":float}
         self.sel_pv = None
         self.sel_name = None
         self.acks = {}              # cid -> ack dict for current sel_pv
         self._sel_status_sent = None  # last (missing,cant) signature sent to leader
+        self._nosong_sent = ()        # cids flagged nosong in the last lobby msg
         self.seq = 0
         self.round = None
         self.pending_leader = None
@@ -225,6 +270,8 @@ class LobbyManager:
         self._client_names = {}     # cid -> display name (all clients)
         self._client_modules = {}   # cid -> avatar module id (all clients)
         self._client_avatar = {}    # cid -> (chara, mh) of that module
+        self._client_plat = {}      # cid -> "switch" | "pc" | "bot"
+        self._client_diff = {}      # cid -> (d, e) song-select difficulty
         # cid -> portrait id consoles may request ("" none); set by mp_server
         self.avatar_img_of = lambda cid: ""
         self._bots = set()          # cids whose mod starts with "bot"
@@ -260,12 +307,33 @@ class LobbyManager:
         """cid -> 1-based session leaderboard position"""
         return {m.cid: i + 1 for i, m in enumerate(self.session_order(lobby))}
 
+    def nosong(self, lobby):
+        """cids (join order) whose console reported that it doesn't have
+        the picker's current song"""
+        if lobby.sel_pv is None:
+            return ()
+        lead = lobby.leader()
+        return tuple(m.cid for m in lobby.members
+                     if m.cid != lead and m.cid in lobby.acks and
+                     not lobby.acks[m.cid]["has"])
+
+    def diff_of(self, lobby, m):
+        """(d, e) to show for a member: the chart of the running round
+        once known, else the console's song-select difficulty; (-1, 0)
+        unknown"""
+        if lobby.round is not None and m.rdiff is not None:
+            return m.rdiff
+        return self._client_diff.get(m.cid, (-1, 0))
+
     def _lobby_msg(self, lobby, you_cid):
         pos = self.session_pos(lobby)
+        nosong = self.nosong(lobby)
+        lobby._nosong_sent = nosong
         return {"t": "lobby", "code": lobby.code, "phase": lobby.phase,
                 "leader": lobby.leader(), "you": you_cid,
                 "owner": lobby.owner_cid, "pick_mode": lobby.pick_mode,
                 "assigned": lobby.assigned_cid,
+                "same_diff": lobby.same_diff,
                 "group_paused": lobby.group_paused,
                 "round": lobby.round.id if lobby.round else 0,
                 "sel_pv": lobby.sel_pv,
@@ -280,7 +348,11 @@ class LobbyManager:
                              "chara": self._client_avatar.get(m.cid, (-1, 0))[0],
                              "mh": self._client_avatar.get(m.cid, (-1, 0))[1],
                              "img": self.avatar_img_of(m.cid),
-                             "sr": [pos[m.cid], m.wins] + m.places}
+                             "sr": [pos[m.cid], m.wins] + m.places,
+                             "plat": self._client_plat.get(m.cid, "switch"),
+                             "diff": self.diff_of(lobby, m)[0],
+                             "ed": self.diff_of(lobby, m)[1],
+                             "nosong": m.cid in nosong}
                             for m in lobby.members]}
 
     def _broadcast_lobby(self, lobby):
@@ -301,8 +373,9 @@ class LobbyManager:
                 return code
 
     # ------------------------------------------------- connection events
-    def on_hello(self, cid, name, mod, now):
+    def on_hello(self, cid, name, mod, now, plat=None, game=None):
         self._client_names[cid] = name
+        self._client_plat[cid] = platform_of(mod, game, plat)
         if mod and mod.startswith("bot"):
             self._bots.add(cid)
         else:
@@ -379,6 +452,10 @@ class LobbyManager:
             self._ready(cid, msg, now)
         elif t == "set_pick_mode":
             self._set_pick_mode(cid, msg, now)
+        elif t == "set_opt":
+            self._set_opt(cid, msg, now)
+        elif t == "diff":
+            self._set_diff(cid, msg, now)
         elif t == "kick":
             self._kick(cid, msg.get("cid"), now)
         elif t == "autoplay":
@@ -556,6 +633,8 @@ class LobbyManager:
         self.log(f"lobby {lobby.code}: sel pv={lobby.sel_pv} '{lobby.sel_name}'")
         self._broadcast(lobby, {"t": "sel", "pv": lobby.sel_pv,
                                 "name": lobby.sel_name}, skip=cid)
+        if lobby._nosong_sent:          # the flags belonged to the old pick
+            self._broadcast_lobby(lobby)
 
     def _sel_ack(self, cid, msg, now):
         lobby = self._lobby_of(cid)
@@ -582,6 +661,8 @@ class LobbyManager:
         if sig != lobby._sel_status_sent:
             lobby._sel_status_sent = sig
             self._send_sel_status(lobby, missing, cant)
+        if self.nosong(lobby) != lobby._nosong_sent:
+            self._broadcast_lobby(lobby)    # everyone sees who lacks the song
 
     def _send_sel_status(self, lobby, missing=None, cant=None):
         if missing is None or cant is None:
@@ -645,6 +726,36 @@ class LobbyManager:
             self._apply_pick_mode(lobby, mode, assignee)
         else:
             lobby.pending_pick_mode = (mode, assignee)
+            self._broadcast_lobby(lobby)
+
+    def _set_opt(self, cid, msg, now):
+        lobby = self._lobby_of(cid)
+        if lobby is None:
+            self._error(cid, "not_in_lobby", "not in a lobby")
+            return
+        if lobby.owner_cid != cid:
+            self._error(cid, "not_owner", "only the owner can set room options")
+            return
+        key, value = msg.get("key"), msg.get("value")
+        if key != "same_diff" or not isinstance(value, bool):
+            self._error(cid, "bad_opt", "unknown option or value")
+            return
+        if lobby.same_diff == value:
+            return
+        lobby.same_diff = value
+        self.log(f"lobby {lobby.code}: same_diff={value}")
+        self._broadcast_lobby(lobby)
+        m = self._member(lobby, cid)
+        self._event(lobby, "same_diff", cid, m.name if m else cid,
+                    1 if value else 0)
+
+    def _set_diff(self, cid, msg, now):
+        de = _diff_of(msg)
+        if de is None or self._client_diff.get(cid) == de:
+            return
+        self._client_diff[cid] = de
+        lobby = self._lobby_of(cid)
+        if lobby:
             self._broadcast_lobby(lobby)
 
     def _pause_req(self, cid, msg, now, pause):
@@ -791,6 +902,7 @@ class LobbyManager:
             m.low_life_armed = True
             m.life_seen = False
             m.drop_sent = False
+            m.rdiff = None
             m.state = {"score": 0, "combo": 0, "pct": 0.0, "life": 127}
         lobby.round = r
         lobby.phase = "LOADING"
@@ -827,6 +939,10 @@ class LobbyManager:
         if m is None or m.role != "player":
             return
         m.loaded = True
+        # the chart this member plays: what the console says it loaded,
+        # else its song-select difficulty at this moment (it can change
+        # that again once it is back on song select with the results up)
+        m.rdiff = _diff_of(msg) or self._client_diff.get(cid)
         if cid == r.leader:
             r.leader_loaded_at = now
         self._broadcast_lobby(lobby)
@@ -921,7 +1037,9 @@ class LobbyManager:
                       "pct": m.state.get("pct", 0.0),
                       "life": m.state.get("life", 0),
                       "connected": m.connected,
-                      "border": m.state.get("border", 0.0)})
+                      "border": m.state.get("border", 0.0),
+                      "diff": self.diff_of(lobby, m)[0],
+                      "ed": self.diff_of(lobby, m)[1]})
         e.sort(key=lambda x: (-x["pct"], -x["score"]))
         _competition_ranks(e)
         self._broadcast(lobby, {"t": "board", "round": r.id, "e": e})
@@ -950,6 +1068,7 @@ class LobbyManager:
         m.last_activity = now
         m.state["score"] = m.final["score"]
         m.state["pct"] = m.final["pct"]
+        m.rdiff = _diff_of(msg) or m.rdiff or self._client_diff.get(cid)
         if m.final["drop"]:
             self._drop_out(lobby, m)
         if r.first_final_at is None and lobby.phase == "PLAYING":
@@ -980,7 +1099,9 @@ class LobbyManager:
                          "border": (f["border"] if f else
                                     m.state.get("border", 0.0)),
                          "clear": f["clear"] if f else None,
-                         "drop": bool(f and f["drop"])})
+                         "drop": bool(f and f["drop"]),
+                         "diff": self.diff_of(lobby, m)[0],
+                         "ed": self.diff_of(lobby, m)[1]})
         rows.sort(key=lambda x: (-x["pct"], -x["score"]))
         _competition_ranks(rows)
         complete = all(row["final"] for row in rows) if rows else True
@@ -1108,6 +1229,7 @@ class LobbyManager:
             m.loaded = False
             m.final = None
             m.back_in_sel = False
+            m.rdiff = None
         if next_leader:
             lobby.leader_cid = next_leader
         self.log(f"lobby {lobby.code}: r{ended.id} end -> leader={next_leader}")
@@ -1219,9 +1341,14 @@ class LobbyManager:
                     "leader": l.leader(),
                     "round": l.round.id if l.round else 0,
                     "sel_pv": l.sel_pv,
+                    "same_diff": l.same_diff,
                     "members": [{"cid": m.cid, "name": m.name,
                                  "connected": m.connected, "role": m.role,
                                  "loaded": m.loaded,
+                                 "plat": self._client_plat.get(m.cid, "switch"),
+                                 "diff": self.diff_of(l, m)[0],
+                                 "ed": self.diff_of(l, m)[1],
+                                 "nosong": m.cid in self.nosong(l),
                                  "module": self._client_modules.get(m.cid, -1),
                                  "autoplay": m.autoplay,
                                  "autoplay_pct": m.autoplay_pct,
@@ -1237,6 +1364,16 @@ class LobbyManager:
                                 for m in l.members],
                 }
             return out
+        if c == "set_opt":
+            lobby = self.lobbies.get(cmd.get("code"))
+            if lobby is None:
+                return {"error": "not_found"}
+            if cmd.get("key") != "same_diff" or \
+                    not isinstance(cmd.get("value"), bool):
+                return {"error": "bad_opt"}
+            self._set_opt(lobby.owner_cid, {"key": "same_diff",
+                                            "value": cmd["value"]}, now)
+            return {"ok": True}
         if c == "kick":
             cid = cmd.get("cid")
             lobby = self._lobby_of(cid)

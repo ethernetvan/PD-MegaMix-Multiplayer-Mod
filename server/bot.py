@@ -49,7 +49,8 @@ class Bot:
         self.lobby = None
         self.phase = "?"
         self.leader = None
-        self.auto = a.behavior == "leader" or a.behavior == "follower"
+        self.auto = a.behavior in ("leader", "follower", "missing")
+        self.diff = (a.diff, 1 if a.extra and a.diff == 3 else 0)
         self.playing = False
         self.round = 0
         self.pvs = load_pvs()
@@ -68,6 +69,23 @@ class Bot:
     def send(self, m):
         self.w.write((json.dumps(m) + "\n").encode())
 
+    def hello(self):
+        h = {"t": "hello", "cid": self.cid, "name": self.name,
+             "proto": 1, "mod": "bot-1", "game": "1.0.6"}
+        if self.a.plat:
+            h["plat"] = self.a.plat      # pose as a console of that version
+        self.send(h)
+        self.send({"t": "avatar", "module": self.a.module})
+        self.send_diff()
+
+    def send_diff(self):
+        if self.diff[0] >= 0:
+            self.send({"t": "diff", "d": self.diff[0], "e": self.diff[1]})
+
+    def diff_fields(self):
+        return ({"diff": self.diff[0], "ed": self.diff[1]}
+                if self.diff[0] >= 0 else {})
+
     def set_scene(self, where):
         if where != self.scene:
             self.scene = where
@@ -83,9 +101,7 @@ class Bot:
             asyncio.ensure_future(self._reconnect())
             return
         asyncio.ensure_future(self.reader(r))
-        self.send({"t": "hello", "cid": self.cid, "name": self.name,
-                   "proto": 1, "mod": "bot-1", "game": "1.0.6"})
-        self.send({"t": "avatar", "module": self.a.module})
+        self.hello()
         print("-- reconnected")
 
     async def run(self):
@@ -99,9 +115,7 @@ class Bot:
             await asyncio.Event().wait()
             return
         asyncio.ensure_future(self.reader(r))
-        self.send({"t": "hello", "cid": self.cid, "name": self.name,
-                   "proto": 1, "mod": "bot-1", "game": "1.0.6"})
-        self.send({"t": "avatar", "module": self.a.module})
+        self.hello()
         await asyncio.sleep(0.3)
         if self.a.create:
             self.send({"t": "lobby_create"})
@@ -156,7 +170,13 @@ class Bot:
             print(f"-- lobby_error {m.get('code')} {m.get('msg', '')}")
         elif t == "sel":
             print(f"-- sel pv={m['pv']} '{m.get('name', '')}'")
-            if self.auto and self.leader != self.cid:
+            if self.a.behavior == "missing" and self.leader != self.cid:
+                # a console without this song: no chart to jump to
+                self.send({"t": "sel_ack", "pv": m["pv"], "has": False,
+                           "ok": False, "fb_pv": -1, "fb_name": ""})
+                self.send({"t": "ready", "pv": m["pv"], "ready": False,
+                           "reason": "wrong_song"})
+            elif self.auto and self.leader != self.cid:
                 self.send({"t": "sel_ack", "pv": m["pv"], "has": True,
                            "ok": True, "fb_pv": -1, "fb_name": ""})
                 self.send({"t": "ready", "pv": m["pv"], "ready": self.ready,
@@ -169,7 +189,10 @@ class Bot:
             me_player = self.cid in m.get("players", [])
             print(f"-- launch r{self.round} pv={m['pv']} "
                   f"players={m['players']} me={'player' if me_player else 'spec'}")
-            if self.auto and me_player:
+            if (self.a.behavior == "missing" and me_player and
+                    self.leader != self.cid):
+                self.send({"t": "launch_fail", "round": self.round})
+            elif self.auto and me_player:
                 asyncio.ensure_future(self._load_and_play())
         elif t == "start":
             print(f"-- start r{m['round']} dropped={m.get('dropped')}")
@@ -231,7 +254,7 @@ class Bot:
 
     async def _load_and_play(self):
         await asyncio.sleep(self.a.load_delay)
-        self.send({"t": "loaded", "round": self.round})
+        self.send({"t": "loaded", "round": self.round, **self.diff_fields()})
         print(f"-- sent loaded r{self.round}")
 
     async def _leader_pick(self):
@@ -274,7 +297,8 @@ class Bot:
             self.send({"t": "final", "round": self.round, "score": score,
                        "pct": pct, "max_combo": combo,
                        "jc": [5, 10, 8, 4, 2], "life": 80,
-                       "border": BOT_BORDER, "clear": pct >= BOT_BORDER})
+                       "border": BOT_BORDER, "clear": pct >= BOT_BORDER,
+                       **self.diff_fields()})
             self.final_round = self.round
             print(f"-- sent final r{self.round}")
 
@@ -295,7 +319,8 @@ class Bot:
         if c == "help":
             print("help status name NEW create join CODE leave auto on|off "
                   "ready on|off load fail final pause resume "
-                  "mode owner|assigned|rotate [cid] next prev pick X start")
+                  "mode owner|assigned|rotate [cid] next prev pick X start "
+                  "diff 0..3 [extra] samediff on|off")
         elif c == "status":
             print(f"code={self.code} phase={self.phase} "
                   f"leader={self.leader} auto={self.auto} cid={self.cid}")
@@ -329,6 +354,13 @@ class Bot:
             self.send({"t": "pause_req", "round": self.round})
         elif c == "resume":
             self.send({"t": "resume_req", "round": self.round})
+        elif c == "diff" and arg and arg[0].lstrip("-").isdigit():
+            d = int(arg[0])
+            self.diff = (d, 1 if len(arg) > 1 and d == 3 else 0)
+            self.send_diff()
+        elif c == "samediff" and arg:
+            self.send({"t": "set_opt", "key": "same_diff",
+                       "value": arg[0] == "on"})
         elif c == "mode" and arg:
             m = {"t": "set_pick_mode", "mode": arg[0]}
             if len(arg) > 1:
@@ -396,6 +428,14 @@ def main():
                     help="seconds to wait before agreeing an open vote")
     ap.add_argument("--module", type=int, default=0,
                     help="avatar module id (Shared Set A slot 1); 0 = Miku")
+    ap.add_argument("--plat", choices=["switch", "pc"], default=None,
+                    help="announce this mod version (party-screen icon); "
+                         "default: a bot")
+    ap.add_argument("--diff", type=int, default=2, choices=[-1, 0, 1, 2, 3],
+                    help="difficulty the bot plays: 0 EASY .. 3 EXTREME, "
+                         "-1 = don't report one (old client)")
+    ap.add_argument("--extra", action="store_true",
+                    help="with --diff 3: EXTRA EXTREME")
     a = ap.parse_args()
 
     bot = Bot(a)

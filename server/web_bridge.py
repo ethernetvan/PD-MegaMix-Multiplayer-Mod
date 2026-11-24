@@ -349,7 +349,9 @@ class WebBridge:
         for c in self.server.clients.values():
             l = lm.by_cid.get(c.cid)
             s["consoles"].append({"mid": self.mid(c.cid), "name": c.name,
-                                  "mod": c.mod, "lobby": l.code if l else None,
+                                  "mod": c.mod,
+                                  "plat": lm._client_plat.get(c.cid, "switch"),
+                                  "lobby": l.code if l else None,
                                   "avatar": self._avatar_url(c.cid)})
         for code in sorted(lm.lobbies):
             s["lobbies"].append(self._lobby_snap(lm.lobbies[code], now))
@@ -362,7 +364,8 @@ class WebBridge:
              "owner": self.mid(l.owner_cid) if l.owner_cid else None,
              "leader": self.mid(l.leader()) if l.leader() else None,
              "assigned": self.mid(l.assigned_cid) if l.assigned_cid else None,
-             "pending_pick_mode": None, "group_paused": l.group_paused,
+             "pending_pick_mode": None, "same_diff": l.same_diff,
+             "group_paused": l.group_paused,
              "vote": None,
              "sel": ({"pv": l.sel_pv, "name": l.sel_name}
                      if l.sel_pv is not None else None),
@@ -394,6 +397,8 @@ class WebBridge:
                      "connected": x["connected"],
                      "border": x["border"], "clear": x["clear"],
                      "drop": x["drop"],
+                     "diff": x["diff"], "ed": x["ed"],
+                     "plat": lm._client_plat.get(x["cid"], "switch"),
                      "autoplay": (self._member(l, x["cid"]).autoplay
                                 if self._member(l, x["cid"]) else False),
                      "autoplay_pct": (self._member(l, x["cid"]).autoplay_pct
@@ -403,9 +408,13 @@ class WebBridge:
                      "avatar": self._avatar_url(x["cid"])}
                     for x in rows]}
         pos = lm.session_pos(l)
+        nosong = lm.nosong(l)
         for m in l.members:
             d["members"].append({
                 "mid": self.mid(m.cid), "name": m.name,
+                "plat": lm._client_plat.get(m.cid, "switch"),
+                "diff": lm.diff_of(l, m)[0], "ed": lm.diff_of(l, m)[1],
+                "nosong": m.cid in nosong,
                 "connected": m.connected, "role": m.role, "loaded": m.loaded,
                 "ready": m.ready, "reason": m.ready_reason,
                 "autoplay": m.autoplay, "autoplay_pct": m.autoplay_pct,
@@ -780,6 +789,13 @@ class WebBridge:
             lm.on_message(lobby.owner_cid,
                           {"t": "set_pick_mode", "mode": mode, "cid": cid},
                           now)
+        elif op == "set_opt":
+            key, value = msg.get("key"), msg.get("value")
+            if key != "same_diff" or not isinstance(value, bool):
+                return err("bad_opt")
+            entry["key"], entry["value"] = key, value
+            lm.on_message(lobby.owner_cid,
+                          {"t": "set_opt", "key": key, "value": value}, now)
         elif op == "set_leader":
             if lobby.pick_mode != "rotate":
                 return err("bad_mode")

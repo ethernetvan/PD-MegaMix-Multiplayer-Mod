@@ -48,6 +48,10 @@ def main():
     sub.add_parser("lobby_create")
     sub.add_parser("lobby_join").add_argument("code")
     sub.add_parser("lobby_leave")
+    p = sub.add_parser("room_opt", help="server-side: set a room option as its owner")
+    p.add_argument("code"); p.add_argument("key", choices=["same_diff"]); p.add_argument("state", choices=["on", "off"])
+    p = sub.add_parser("same_diff", help="console: toggle the room option (owner's console only)")
+    p.add_argument("state", choices=["on", "off"])
     ap.add_argument("--cid", default=None)
     ap.add_argument("--port", type=int, default=7790)
     args = ap.parse_args()
@@ -120,6 +124,11 @@ def main():
         pl = {"cmd": "sel_lists", "pvs": args.pvs}
     elif args.cmd in ("lobby_create", "lobby_leave"):
         pl = {"cmd": args.cmd}
+    elif args.cmd == "room_opt":
+        pl = {"cmd": "set_opt", "code": args.code.upper(), "key": args.key,
+              "value": args.state == "on"}
+    elif args.cmd == "same_diff":
+        pl = {"cmd": "same_diff", "on": args.state == "on"}
     elif args.cmd == "lobby_join":
         pl = {"cmd": "lobby_join", "code": args.code.upper()}
     elif args.cmd == "glow":

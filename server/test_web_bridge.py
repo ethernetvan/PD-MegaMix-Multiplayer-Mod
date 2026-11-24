@@ -256,6 +256,47 @@ class Snap(unittest.TestCase):
         mem = [m for m in self.web.snapshot()["lobbies"][0]["members"]
                if m["name"] == "Alice"][0]
         self.assertIsNone(mem["avatar"])
+    def test_snapshot_platform_difficulty_nosong(self):
+        code = mk_lobby(self.lm)
+        l = self.lm.lobbies[code]
+        self.lm.on_hello("cid_bob_0002", "Bob", "pc-0.1.0", 100.5,
+                         game="mm+1.03")
+        self.lm.on_message("cid_bob_0002", {"t": "diff", "d": 3, "e": 1},
+                           100.6)
+        self.lm.on_message("cid_alice_01",
+                           {"t": "sel", "pv": 100, "name": "Song X"}, 101.0)
+        self.lm.on_message("cid_carol_03",
+                           {"t": "sel_ack", "pv": 100, "has": False,
+                            "ok": False, "fb_pv": -1}, 101.1)
+        s = self.web.snapshot()["lobbies"][0]
+        self.assertIs(s["same_diff"], False)
+        by = {m["name"]: m for m in s["members"]}
+        self.assertEqual(by["Bob"]["plat"], "pc")
+        self.assertEqual(by["Alice"]["plat"], "switch")
+        self.assertEqual((by["Bob"]["diff"], by["Bob"]["ed"]), (3, 1))
+        self.assertEqual(by["Alice"]["diff"], -1)
+        self.assertEqual({n: m["nosong"] for n, m in by.items()},
+                         {"Alice": False, "Bob": False, "Carol": True})
+        # standings rows carry the chart each player was on
+        self.lm.on_message("cid_alice_01",
+                           {"t": "start_req", "pv": 100, "name": "Song X"},
+                           101.5)
+        rid = l.round.id
+        for c, d in (("cid_alice_01", 2), ("cid_bob_0002", 3)):
+            self.lm.on_message(c, {"t": "loaded", "round": rid, "diff": d,
+                                   "ed": 0}, 102.0)
+        self.lm.tick(133.0)                     # Carol never loads: dropped
+        for c in ("cid_alice_01", "cid_bob_0002"):
+            self.lm.on_message(c, {"t": "final", "round": rid, "score": 1,
+                                   "pct": 1.0, "max_combo": 1, "jc": [],
+                                   "life": 1}, 134.0)
+        rows = {r["name"]: r
+                for r in self.web.snapshot()["lobbies"][0]["standings"]["e"]}
+        self.assertEqual((rows["Alice"]["diff"], rows["Alice"]["plat"]),
+                         (2, "switch"))
+        self.assertEqual((rows["Bob"]["diff"], rows["Bob"]["plat"]),
+                         (3, "pc"))
+
 
 class Actions(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -381,6 +422,26 @@ class Actions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.lobby.pick_mode, "assigned")
         self.assertEqual(self.lobby.assigned_cid, "cid_bob_0002")
         self.assertEqual(self.lobby.leader(), "cid_bob_0002")
+
+    async def test_set_opt_same_diff(self):
+        c = self.conn()
+        r = await self.action(c, op="set_opt", lobby=self.code,
+                              key="same_diff", value=True)
+        self.assertEqual(r["error"], "forbidden")
+        await self.auth(c, name="Alice")
+        for bad in (dict(key="nope", value=True),
+                    dict(key="same_diff", value="yes")):
+            r = await self.action(c, op="set_opt", lobby=self.code, **bad)
+            self.assertEqual(r["error"], "bad_opt")
+        r = await self.action(c, op="set_opt", lobby=self.code,
+                              key="same_diff", value=True)
+        self.assertTrue(r["ok"])
+        self.assertTrue(self.lobby.same_diff)
+        self.assertIs(self.web.snapshot()["lobbies"][0]["same_diff"], True)
+        feed = [e for e in self.web.feeds[self.code]
+                if e.get("op") == "set_opt"]
+        self.assertEqual((feed[-1]["key"], feed[-1]["value"]),
+                         ("same_diff", True))
 
     async def test_set_leader(self):
         c = self.conn()

@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 
-from lobby import LobbyManager
+from lobby import LobbyManager, platform_of
 from avatars import (AvatarStore, UploadGate, RelayGate, IMG_ID,
                      parse_upload)
 from web_bridge import WebBridge
@@ -77,6 +77,7 @@ class Client:
         self.cid = None
         self.name = "?"
         self.mod = "?"
+        self.plat = "switch"
         self.connected_at = time.time()
         self.last_pong_rtt = None
 
@@ -208,6 +209,8 @@ class Server:
         client.cid = hello.get("cid", "?")
         client.name = hello.get("name", "?")
         client.mod = hello.get("mod", "?")
+        client.plat = platform_of(client.mod, hello.get("game"),
+                                  hello.get("plat"))
 
         # warn only if the newcomer's mod differs from EVERY other
         # currently connected non-bot console; no warning when alone.
@@ -242,7 +245,8 @@ class Server:
         if warn:
             log(f"  warn sent: {warn}")
         self.table()
-        self.lobby.on_hello(client.cid, client.name, client.mod, time.time())
+        self.lobby.on_hello(client.cid, client.name, client.mod, time.time(),
+                            plat=client.plat)
         await self.drain_outbox()
 
         pinging = False     # consoles ping every 2 s; bots never do
@@ -292,7 +296,8 @@ class Server:
                            "lobby_leave", "kick", "sel", "sel_ack", "start_req",
                            "launch_fail", "loaded", "state", "final",
                            "back_in_sel", "ready", "set_pick_mode", "autoplay",
-                           "pause_req", "resume_req", "avatar", "scene"):
+                           "pause_req", "resume_req", "avatar", "scene",
+                           "set_opt", "diff"):
                     if t == "set_name":
                         nm = str(msg.get("name", "")).strip()[:32]
                         if nm and nm != client.name:
@@ -359,7 +364,8 @@ class Server:
                     writer.write((json.dumps(res) + "\n").encode())
                     await writer.drain()
                     continue
-                if msg.get("cmd") in ("lobbies", "kick", "set_leader"):
+                if msg.get("cmd") in ("lobbies", "kick", "set_leader",
+                                      "set_opt"):
                     res = self.lobby.on_admin(msg, time.time())
                     await self.drain_outbox()
                     writer.write((json.dumps(res) + "\n").encode())
