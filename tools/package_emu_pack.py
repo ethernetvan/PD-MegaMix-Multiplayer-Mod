@@ -415,7 +415,10 @@ def patch_config_toml(path, cid, name):
     dead connect attempt -> blank it (LAN discovery + mp_servers.txt carry
     the real history)."""
     wanted = {"enabled": "true", "player_name": f'"{name}"',
-              "client_id": f'"{cid}"'}
+              "client_id": f'"{cid}"',
+              # this PC's secret stays here (the pack's game makes its own);
+              # the server's debug remote control stays off
+              "client_key": '""', "debug_commands": "false"}
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         lines = ["[multiplayer]"]

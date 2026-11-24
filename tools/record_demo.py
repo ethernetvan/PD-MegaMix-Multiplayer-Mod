@@ -688,6 +688,8 @@ class Demo:
             "server_port": str(self.port),
             "discovery_port": str(self.disc_port),
             "player_name": '"Player"',
+            # the tour is driven with admin taps (dbg_cmd), off by default
+            "debug_commands": "true",
         }
         in_mp = False
         mp_start = -1
@@ -704,7 +706,7 @@ class Demo:
             if not in_mp:
                 continue
             m = re.match(r"\s*(enabled|server_ip|server_port|"
-                         r"discovery_port|player_name)\s*=", ln)
+                         r"discovery_port|player_name|debug_commands)\s*=", ln)
             if m:
                 key = m.group(1)
                 rest = ln[m.end():]
