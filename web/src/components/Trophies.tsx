@@ -15,7 +15,7 @@ export function Trophy({ place, size = 18 }: { place: 1 | 2 | 3; size?: number }
       <path className="cup" d="M5 2h14v5.5a7 7 0 0 1-14 0z" />
       <rect className="cup" x="10.6" y="13.5" width="2.8" height="4.5" />
       <rect className="cup" x="6.5" y="18" width="11" height="3.5" rx="1" />
-      <text x="12" y="10.4" textAnchor="middle">
+      <text x="12" y="11.6" textAnchor="middle">
         {place}
       </text>
     </svg>
