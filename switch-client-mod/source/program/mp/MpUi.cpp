@@ -593,6 +593,299 @@ static float EaseOutBack(float p) {
     return 1.0f + (c1 + 1.0f) * q * q * q + c1 * q * q;
 }
 
+/* ================================================================
+ * Expanded results panel: the hexagon column opens into one card per
+ * player (rank, portrait, name, platform, chart, verdict, score, the
+ * COOL/GOOD/SAFE/BAD/MISS split, max combo, %), like the web results.
+ * resPerPage cards per page (4 in one column, 8 in two).
+ * ============================================================== */
+#ifdef _WIN32
+static const char* const kResKeyA = "Enter";
+static const char* const kResKeyY = "F7";
+#else
+static const char* const kResKeyA = "A";
+static const char* const kResKeyY = "Y";
+#endif
+static float ResClamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+static float ResEase(float p) { p = ResClamp01(p); float q = 1.0f - p; return 1.0f - q * q * q; }
+static ImU32 ResA(int r, int g, int b, float a) {
+    return IM_COL32(r, g, b, (int)(255.0f * ResClamp01(a) + 0.5f));
+}
+static void ResFmtScore(int v, char* out, int n) {
+    char t[16];
+    snprintf(t, sizeof(t), "%d", v < 0 ? 0 : v);
+    int len = (int)strlen(t), o = 0;
+    for (int i = 0; i < len && o < n - 2; i++) {
+        if (i && (len - i) % 3 == 0) out[o++] = ',';
+        out[o++] = t[i];
+    }
+    out[o] = 0;
+}
+/* rounded key cap with a label; returns its width (draw = false measures) */
+static float ResKeyCap(ImDrawList* dl, ImFont* f, ImVec2 p, float h, const char* label,
+                       float a, bool draw = true) {
+    const float fsz = h * 0.72f;
+    ImVec2 ts = f->CalcTextSizeA(fsz, FLT_MAX, 0.0f, label);
+    float w = ts.x + h * 0.7f;
+    if (w < h) w = h;
+    if (draw) {
+        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ResA(236, 240, 244, a), h * 0.5f);
+        dl->AddRect(p, ImVec2(p.x + w, p.y + h), ResA(28, 32, 36, a), h * 0.5f, 0, h * 0.08f);
+        dl->AddText(f, fsz, ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (h - ts.y) * 0.5f),
+                    ResA(28, 32, 36, a), label);
+    }
+    return w;
+}
+/* "[key] text" pill, right edge at rx; used for the Details hint */
+static void ResHint(ImDrawList* dl, ImFont* f, float rx, float y, float k, const char* key,
+                    const char* text, float a) {
+    const float h = 22.0f * k, fsz = 15.0f * k;
+    ImVec2 ts = f->CalcTextSizeA(fsz, FLT_MAX, 0.0f, text);
+    const float kw = ResKeyCap(dl, f, ImVec2(0, 0), h - 6.0f * k, key, 1.0f, false);
+    const float w = 8.0f * k + kw + 6.0f * k + ts.x + 10.0f * k;
+    ImVec2 p0(rx - w, y), p1(rx, y + h);
+    dl->AddRectFilled(p0, p1, ResA(14, 20, 26, 0.84f * a), h * 0.5f);
+    dl->AddRect(p0, p1, ResA(255, 255, 255, 0.22f * a), h * 0.5f, 0, 1.0f);
+    ResKeyCap(dl, f, ImVec2(p0.x + 8.0f * k, y + 3.0f * k), h - 6.0f * k, key, a);
+    dl->AddText(f, fsz, ImVec2(p0.x + 8.0f * k + kw + 6.0f * k, y + (h - ts.y) * 0.5f),
+                ResA(255, 255, 255, a), text);
+}
+
+/* pp: 0 closed .. 1 open (drives the fly-out from the hexagon column);
+ * inMs: ms since it opened (bar growth + score count-up) */
+static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float inMs, ImVec2 ds) {
+    ImDrawList* dl = u.dl;
+    const float k = u.k, W = ds.x / k;
+    ImFont* bf = ImGui::GetFont();
+    ImFont* big = FontLoader::Big() ? FontLoader::Big() : bf;
+    const int per = sn.resPerPage > 0 ? sn.resPerPage : 4;
+    const int cols = per > 4 ? 2 : 1, rowsN = 4;
+    const int n = sn.standingCount;
+    const int pages = (n + per - 1) / per;
+    int page = sn.resPage;
+    if (page >= pages) page = pages - 1;
+    if (page < 0) page = 0;
+    const float e0 = ResEase(pp);
+
+    /* backdrop + panel */
+    dl->AddRectFilled(ImVec2(0, 0), ds, ResA(4, 18, 24, 0.62f * e0));
+    const float PX0 = (cols == 2 ? 46.0f : 176.0f), PX1 = W - PX0;
+    const float PY0 = 70.0f, PY1 = 694.0f;
+    const float grow = (1.0f - e0) * 26.0f;
+    ImVec2 pa((PX0 + grow) * k, (PY0 + grow * 0.6f) * k), pb((PX1 - grow) * k, (PY1 - grow * 0.6f) * k);
+    dl->AddRectFilled(ImVec2(pa.x + 4 * k, pa.y + 6 * k), ImVec2(pb.x + 4 * k, pb.y + 6 * k),
+                      ResA(0, 0, 0, 0.35f * e0), 16 * k);
+    dl->AddRectFilledMultiColor(pa, pb, ResA(22, 92, 96, 0.95f * e0), ResA(22, 92, 96, 0.95f * e0),
+                                ResA(13, 54, 60, 0.97f * e0), ResA(13, 54, 60, 0.97f * e0));
+    dl->AddRect(pa, pb, ResA(101, 255, 255, 0.8f * e0), 0.0f, 0, 2.0f * k);
+
+    /* header: RESULTS + song, page n/m */
+    {
+        const float hy = (PY0 + 10.0f) * k;
+        const float hs = 30.0f * k;
+        dl->AddText(big, hs, ImVec2((PX0 + 22.0f) * k + 2 * k, hy + 2 * k), ResA(0, 60, 66, 0.9f * e0), "RESULTS");
+        dl->AddText(big, hs, ImVec2((PX0 + 22.0f) * k, hy), ResA(255, 255, 255, e0), "RESULTS");
+        const float tx = (PX0 + 22.0f) * k + big->CalcTextSizeA(hs, FLT_MAX, 0.0f, "RESULTS").x + 18 * k;
+        char pg[24] = "";
+        if (pages > 1) snprintf(pg, sizeof(pg), "%d / %d", page + 1, pages);
+        ImVec2 ps = bf->CalcTextSizeA(18.0f * k, FLT_MAX, 0.0f, pg);
+        if (pg[0])
+            dl->AddText(bf, 18.0f * k, ImVec2((PX1 - 22.0f) * k - ps.x, hy + 8 * k), ResA(200, 236, 240, e0), pg);
+        if (sn.selName[0]) {
+            char nm[96];
+            snprintf(nm, sizeof(nm), "%s", sn.selName);
+            const float maxW = (PX1 - 22.0f) * k - ps.x - 16 * k - tx;
+            int len = (int)strlen(nm);
+            while (len > 0 && bf->CalcTextSizeA(18.0f * k, FLT_MAX, 0.0f, nm).x > maxW) {
+                do { len--; } while (len > 0 && ((unsigned char)nm[len] & 0xC0) == 0x80);
+                snprintf(nm + len, sizeof(nm) - len, "..");
+            }
+            dl->AddText(bf, 18.0f * k, ImVec2(tx, hy + 8 * k), ResA(169, 205, 211, e0), nm);
+        }
+        dl->AddLine(ImVec2((PX0 + 16.0f) * k, (PY0 + 52.0f) * k), ImVec2((PX1 - 16.0f) * k, (PY0 + 52.0f) * k),
+                    ResA(101, 255, 255, 0.35f * e0), 1.5f * k);
+    }
+
+    /* cards */
+    const float gap = 8.0f, colGap = 12.0f;
+    const float cardsY0 = PY0 + 62.0f, cardsY1 = PY1 - 44.0f;
+    const float cardH = (cardsY1 - cardsY0 - gap * (rowsN - 1)) / rowsN;
+    const float cardW = (PX1 - PX0 - 36.0f - colGap * (cols - 1)) / cols;
+    const float g = ResEase((inMs - 220.0f) / 650.0f);      /* bars + count-up */
+    static const char* const JN[5] = { "COOL", "GOOD", "SAFE", "BAD", "MISS" };
+    static const int JC[5][3] = { {255, 201, 51}, {67, 193, 234}, {67, 196, 85}, {63, 127, 232}, {178, 60, 240} };
+    static const int JL[5][3] = { {255, 224, 138}, {155, 231, 255}, {141, 240, 154}, {143, 183, 255}, {226, 155, 255} };
+    for (int j = 0; j < per; j++) {
+        const int idx = page * per + j;
+        if (idx >= n) break;
+        const auto& st = sn.standing[idx];
+        const int col = j / rowsN, row = j % rowsN;
+        /* fly out of the hexagon column: every card starts as its hexagon */
+        const float pj = ResEase(pp * 1.3f - j * 0.045f);
+        const float ca = ResClamp01((pj - 0.35f) / 0.65f);       /* contents */
+        const float fx0 = PX0 + 18.0f + col * (cardW + colGap), fy0 = cardsY0 + row * (cardH + gap);
+        const float sx = W - 27.5f, sy = 307.0f + (idx < 3 ? idx : 3) * 116.0f;
+        const float cxm = sx + (fx0 + cardW * 0.5f - sx) * pj, cym = sy + (fy0 + cardH * 0.5f - sy) * pj;
+        const float cw = 96.0f + (cardW - 96.0f) * pj, chh = 88.0f + (cardH - 88.0f) * pj;
+        ImVec2 a((cxm - cw * 0.5f) * k, (cym - chh * 0.5f) * k), b((cxm + cw * 0.5f) * k, (cym + chh * 0.5f) * k);
+        const bool win = st.rank == 1 && st.final;
+        /* plate */
+        dl->AddRectFilled(a, b, st.me ? ResA(44, 108, 116, 0.96f * pj) : ResA(30, 78, 84, 0.94f * pj), 9 * k);
+        if (win) {
+            dl->AddRect(ImVec2(a.x - 2 * k, a.y - 2 * k), ImVec2(b.x + 2 * k, b.y + 2 * k),
+                        ResA(255, 201, 51, 0.30f * pj), 11 * k, 0, 4.0f * k);
+            dl->AddRect(a, b, ResA(255, 201, 51, pj), 9 * k, 0, 2.0f * k);
+        } else {
+            dl->AddRect(a, b, st.me ? ResA(119, 234, 241, 0.9f * pj) : ResA(101, 255, 255, 0.3f * pj),
+                        9 * k, 0, (st.me ? 1.8f : 1.2f) * k);
+        }
+        /* portrait: travels from the column into the card */
+        const float hr = 50.0f + (36.0f - 50.0f) * pj;
+        const float hx = sx + (fx0 + 98.0f - sx) * pj, hy = sy + (fy0 + cardH * 0.5f - sy) * pj;
+        DrawResultHex(u, ImVec2(hx * k, hy * k), hr * k, StandingRef(sn, idx), st.me, st.connected,
+                      st.final, win && pj >= 1.0f, 0.0f, false);
+        if (ca <= 0.0f) continue;
+        /* rank */
+        {
+            char lab[16];
+            snprintf(lab, sizeof(lab), "#%d", st.rank > 0 ? st.rank : idx + 1);
+            const float ls = 30.0f * k;
+            GlowText(dl, big, ls, ImVec2(a.x + 9 * k, (a.y + b.y) * 0.5f - ls * 0.55f), lab, ca, 1.0f, k);
+        }
+        const float x0 = a.x + 146.0f * k, xr = b.x - 14.0f * k;
+        /* line 1: name, platform, chart, tags | verdict, score */
+        const float y1 = a.y + 9.0f * k;
+        char sc[20];
+        ResFmtScore((int)(st.score * (st.final ? g : 1.0f) + 0.5f), sc, sizeof(sc));
+        const float scs = 25.0f * k;
+        ImVec2 scz = big->CalcTextSizeA(scs, FLT_MAX, 0.0f, sc);
+        dl->AddText(big, scs, ImVec2(xr - scz.x + 1.5f * k, y1 + 1.5f * k), ResA(0, 40, 46, 0.8f * ca), sc);
+        dl->AddText(big, scs, ImVec2(xr - scz.x, y1), ResA(255, 255, 255, ca), sc);
+        const char* vt = ""; ImU32 vc = ResA(190, 204, 208, ca);
+        if (!st.final) { vt = "PLAYING..."; vc = ResA(255, 201, 51, ca); }
+        else if (st.drop) { vt = "DROP\xC3\x97OUT"; vc = ResA(255, 110, 196, ca); }
+        else if (st.clear == 1 || (st.clear < 0 && st.border > 0.0f && st.pct >= st.border)) {
+            vt = "STAGE CLEAR"; vc = ResA(119, 234, 241, ca); }
+        else if (st.clear == 0 || (st.clear < 0 && st.border > 0.0f)) vt = "NOT CLEAR...";
+        const float vs = 14.0f * k;
+        ImVec2 vz = bf->CalcTextSizeA(vs, FLT_MAX, 0.0f, vt);
+        const float vx = xr - scz.x - 12.0f * k - vz.x;
+        dl->AddText(bf, vs, ImVec2(vx, y1 + 8.0f * k), vc, vt);
+        {
+            const float ns = 21.0f * k, th = 15.0f * k;
+            const float iw = IconPlatW(th, st.plat);
+            const float dw = DiffChip(dl, bf, ImVec2(0, 0), th, st.diff, st.ed, 1.0f, false, true);
+            const float aw = st.autoplay ? bf->CalcTextSizeA(th * 0.8f, FLT_MAX, 0.0f, "AUTO").x + th * 0.9f : 0.0f;
+            float extra = (iw > 0 ? iw + 8 * k : 0) + (dw > 0 ? dw + 6 * k : 0) + (aw > 0 ? aw + 6 * k : 0);
+            char nm[64];
+            snprintf(nm, sizeof(nm), "%s", st.me ? "YOU" : st.name);
+            float maxW = vx - 10.0f * k - x0 - extra;
+            if (maxW < 40.0f * k) maxW = 40.0f * k;
+            int len = (int)strlen(nm);
+            while (len > 0 && bf->CalcTextSizeA(ns, FLT_MAX, 0.0f, nm).x > maxW) {
+                do { len--; } while (len > 0 && ((unsigned char)nm[len] & 0xC0) == 0x80);
+                snprintf(nm + len, sizeof(nm) - len, "..");
+            }
+            ImVec2 nz = bf->CalcTextSizeA(ns, FLT_MAX, 0.0f, nm);
+            dl->AddText(bf, ns, ImVec2(x0, y1 + 2.0f * k), ResA(255, 255, 255, ca), nm);
+            float tx = x0 + nz.x + 8.0f * k;
+            const float ty = y1 + 2.0f * k + (nz.y - th) * 0.5f;
+            if (iw > 0) {
+                IconPlat(dl, ImVec2(tx + iw * 0.5f, ty + th * 0.5f), th, st.plat, ResA(200, 236, 240, ca),
+                         st.me ? ResA(44, 108, 116, ca) : ResA(30, 78, 84, ca));
+                tx += iw + 8.0f * k;
+            }
+            if (dw > 0) { DiffChip(dl, bf, ImVec2(tx, ty), th, st.diff, st.ed, ca, true, true); tx += dw + 6.0f * k; }
+            if (aw > 0 && tx + aw < vx - 4.0f * k) {
+                SlantPlate(dl, ImVec2(tx, ty), ImVec2(tx + aw, ty + th), th * 0.3f, ResA(241, 80, 175, ca),
+                           ResA(214, 52, 150, ca));
+                dl->AddText(bf, th * 0.8f, ImVec2(tx + th * 0.5f, ty + th * 0.08f), ResA(255, 255, 255, ca), "AUTO");
+            }
+        }
+        /* line 2: judgement split bar */
+        int tot = 0;
+        for (int q = 0; q < 5; q++) tot += st.jc[q];
+        const float by0 = a.y + 45.0f * k, bh = 13.0f * k;
+        dl->AddRectFilled(ImVec2(x0, by0), ImVec2(xr, by0 + bh), ResA(0, 0, 0, 0.32f * ca), 3 * k);
+        if (st.hasJc && tot > 0) {
+            float x = x0;
+            const float full = (xr - x0) * g;
+            for (int q = 0; q < 5; q++) {
+                const float w = full * st.jc[q] / tot;
+                if (w < 0.5f) continue;
+                dl->AddRectFilledMultiColor(ImVec2(x, by0), ImVec2(x + w, by0 + bh),
+                    ResA(JL[q][0], JL[q][1], JL[q][2], ca), ResA(JL[q][0], JL[q][1], JL[q][2], ca),
+                    ResA(JC[q][0], JC[q][1], JC[q][2], ca), ResA(JC[q][0], JC[q][1], JC[q][2], ca));
+                x += w;
+            }
+        }
+        /* line 3: the five counts (shrunk to fit) */
+        const float y3 = a.y + 65.0f * k;
+        if (st.hasJc && tot > 0) {
+            char vb[5][12];
+            float js = 14.0f * k;
+            for (int pass = 0; pass < 2; pass++) {
+                float tw = 0.0f;
+                for (int q = 0; q < 5; q++) {
+                    snprintf(vb[q], sizeof(vb[q]), "%d", st.jc[q]);
+                    tw += bf->CalcTextSizeA(js, FLT_MAX, 0.0f, JN[q]).x + js * 0.35f +
+                          bf->CalcTextSizeA(js, FLT_MAX, 0.0f, vb[q]).x + (q < 4 ? js * 1.0f : 0.0f);
+                }
+                if (tw <= xr - x0 || pass) break;
+                js *= (xr - x0) / tw;
+            }
+            float x = x0;
+            for (int q = 0; q < 5; q++) {
+                const float a2 = ca * ResClamp01((inMs - 420.0f - q * 60.0f) / 240.0f);
+                dl->AddText(bf, js, ImVec2(x, y3), ResA(JL[q][0], JL[q][1], JL[q][2], a2), JN[q]);
+                x += bf->CalcTextSizeA(js, FLT_MAX, 0.0f, JN[q]).x + js * 0.35f;
+                dl->AddText(bf, js, ImVec2(x, y3), ResA(255, 255, 255, a2), vb[q]);
+                x += bf->CalcTextSizeA(js, FLT_MAX, 0.0f, vb[q]).x + js * 1.0f;
+            }
+        } else {
+            dl->AddText(bf, 14.0f * k, ImVec2(x0, y3), ResA(169, 205, 211, 0.8f * ca),
+                        st.final ? "no note data" : "waiting for this player's result");
+        }
+        /* line 4: max combo, cool rate | % */
+        const float y4 = a.y + 88.0f * k;
+        {
+            char pc[16];
+            snprintf(pc, sizeof(pc), "%.2f%%", (double)(st.pct * (st.final ? g : 1.0f)));
+            const float ps2 = 21.0f * k;
+            ImVec2 pz = big->CalcTextSizeA(ps2, FLT_MAX, 0.0f, pc);
+            dl->AddText(big, ps2, ImVec2(xr - pz.x, y4 - 3.0f * k), ResA(255, 255, 255, ca), pc);
+            char l4[96];
+            int o = snprintf(l4, sizeof(l4), "MAX COMBO %dx", st.max_combo);
+            if (st.hasJc && tot > 0)
+                o += snprintf(l4 + o, sizeof(l4) - o, "    COOL RATE %d%%", (int)(st.jc[0] * 100.0f / tot + 0.5f));
+            if (st.border > 0.0f)
+                snprintf(l4 + o, sizeof(l4) - o, "    CLEAR AT %.0f%%", (double)st.border);
+            float fs4 = 13.5f * k;
+            const float av = xr - pz.x - 12.0f * k - x0;
+            const float w4 = bf->CalcTextSizeA(fs4, FLT_MAX, 0.0f, l4).x;
+            if (w4 > av && w4 > 0.0f) fs4 *= av / w4;
+            dl->AddText(bf, fs4, ImVec2(x0, y4 + 1.0f * k), ResA(200, 228, 232, ca), l4);
+        }
+    }
+
+    /* footer: keys */
+    {
+        const float fy = (PY1 - 33.0f) * k, h = 22.0f * k, fsz = 15.0f * k;
+        float x = (PX0 + 22.0f) * k;
+        x += ResKeyCap(dl, bf, ImVec2(x, fy), h, kResKeyA, e0) + 6.0f * k;
+        dl->AddText(bf, fsz, ImVec2(x, fy + 2.0f * k), ResA(255, 255, 255, e0), "Close");
+        x += bf->CalcTextSizeA(fsz, FLT_MAX, 0.0f, "Close").x + 22.0f * k;
+        if (pages > 1) {
+            x += ResKeyCap(dl, bf, ImVec2(x, fy), h, "L", e0) + 4.0f * k;
+            x += ResKeyCap(dl, bf, ImVec2(x, fy), h, "R", e0) + 6.0f * k;
+            dl->AddText(bf, fsz, ImVec2(x, fy + 2.0f * k), ResA(255, 255, 255, e0), "Page");
+        }
+        const char* note = sn.standingsComplete ? "" : "Waiting for the other players...";
+        ImVec2 nz = bf->CalcTextSizeA(fsz, FLT_MAX, 0.0f, note);
+        dl->AddText(bf, fsz, ImVec2((PX1 - 22.0f) * k - nz.x, fy + 2.0f * k), ResA(255, 201, 51, e0), note);
+    }
+}
+
 void DrawResultsAvatars() {
     Snapshot sn;
     GetSnapshot(&sn);
@@ -622,6 +915,13 @@ void DrawResultsAvatars() {
     u.clicked = false; u.down = false;
     u.t = (float)ImGui::GetTime();
     const float pulse = 0.8f + 0.2f * sinf(u.t * 6.28318f * 0.8f);
+    /* expanded panel: 0 closed .. 1 open; the hexagon column hands over
+     * to it while it is on screen */
+    float pp = 0.0f;
+    if (sn.resPanel == 2)
+        pp = sn.resPanelMs < 0 ? 1.0f : ResClamp01(sn.resPanelMs / 420.0f);
+    else if (sn.resPanel == 3 && sn.resPanelMs >= 0)
+        pp = 1.0f - ResClamp01(sn.resPanelMs / 240.0f);
 
     /* rows are rank groups: consecutive standings sharing one rank.
      * first 3 groups, plus the local player's group if not among them */
@@ -692,6 +992,7 @@ void DrawResultsAvatars() {
             if (!sn.standing[first + m].me) ord[no++] = first + m;
         const float rowTop = top;
         top += rowH[i];
+        if (pp > 0.0f) continue;          /* the panel draws the players */
         float p = (age - (1.0f + 0.12f * i)) / 0.5f;
         if (p <= 0.0f) continue;
         if (p > 1.0f) p = 1.0f;
@@ -801,6 +1102,17 @@ void DrawResultsAvatars() {
             }
             u.dl->AddText(nf, nsz, npos, IM_COL32(255, 255, 255, (int)(255 * alpha)), nm);
         }
+    }
+    if (pp > 0.0f) {
+        Ui pu = u;
+        pu.font = ImGui::GetFont();
+        pu.fs = pu.font->FontSize;
+        DrawResultsPanel(pu, sn, pp, sn.resPanel == 2 && sn.resPanelMs >= 0 ? (float)sn.resPanelMs : 99999.0f, ds);
+    } else if (age > 1.6f && (sn.resPanel == 1 || (sn.resPanel == 3 && sn.resCanReopen))) {
+        /* how to open it, above the first hexagon */
+        const float ha = ResClamp01((age - 1.6f) / 0.4f) * (0.82f + 0.18f * pulse);
+        ResHint(u.dl, ImGui::GetFont(), ds.x - 8.0f * k, 222.0f * k, k,
+                sn.resPanel == 1 ? kResKeyA : kResKeyY, "Details", ha);
     }
     EndWin();
 }
@@ -2175,6 +2487,34 @@ void DrawGaugeRace() {
                 mp::avatar::Ref ta = av_[i]; av_[i] = av_[j]; av_[j] = ta;
             }
     float myx = X(s.myPct);
+    /* The game's BORDER / G / E ticks must stay on top of the other
+     * players' bars, and ImGui can only draw over the game: so the bars
+     * leave a slot open at each tick (stem + its dark outline, measured:
+     * -1.4 .. +3.3 units around 130 + 11 * pct) and the game's own tick
+     * shows through. */
+    float gapA[3], gapB[3]; int ng = 0;
+    for (int q = 0; q < 3; q++) {
+        if (s.gaugeTick[q] < 0.0f || s.gaugeTick[q] > 100.0f) continue;
+        const float tx0 = (130.0f + 11.0f * s.gaugeTick[q]) * k;
+        gapA[ng] = tx0 - 1.4f * k; gapB[ng] = tx0 + 3.3f * k; ng++;
+    }
+    for (int i = 0; i + 1 < ng; i++)            /* left to right */
+        for (int j = i + 1; j < ng; j++)
+            if (gapA[j] < gapA[i]) {
+                float t = gapA[i]; gapA[i] = gapA[j]; gapA[j] = t;
+                t = gapB[i]; gapB[i] = gapB[j]; gapB[j] = t;
+            }
+    /* calls seg(a, b) for every part of [x0, x1] outside the tick slots */
+    auto spans = [&](float x0, float x1, auto&& seg) {
+        float x = x0;
+        for (int q = 0; q < ng && x < x1; q++) {
+            if (gapB[q] <= x) continue;
+            if (gapA[q] >= x1) break;
+            if (gapA[q] > x) seg(x, gapA[q]);
+            x = gapB[q];
+        }
+        if (x < x1) seg(x, x1);
+    };
     /* lead fill over [x(myPct), x(d)] for whoever is ahead; drawing
      * nearest-last makes each visible segment a lead over the next */
     bool anyLead = false;
@@ -2184,19 +2524,24 @@ void DrawGaugeRace() {
         anyLead = true;
         ImU32 c = cs_[i];
         int a = dc_[i] ? 80 : 235;
-        ImVec2 p0(myx, 692 * k), p1(X(d), 710 * k);
-        dl->AddRectFilledMultiColor(
-            p0, p1, _shade(c, 1.35f, a), _shade(c, 1.35f, a),
-            _shade(c, 1.0f, a), _shade(c, 1.0f, a));
-        dl->AddLine(ImVec2(p0.x, p0.y), ImVec2(p1.x, p0.y),
-                    IM_COL32(255, 255, 255, dc_[i] ? 28 : 70), 1.0f);
-        dl->AddRectFilled(ImVec2(p1.x - 2 * k, p0.y), p1,
-                          _shade(c, 0.6f, a), 0);
+        const float y0 = 692 * k, y1 = 710 * k, xe = X(d);
+        spans(myx, xe, [&](float xa, float xb) {
+            dl->AddRectFilledMultiColor(
+                ImVec2(xa, y0), ImVec2(xb, y1), _shade(c, 1.35f, a), _shade(c, 1.35f, a),
+                _shade(c, 1.0f, a), _shade(c, 1.0f, a));
+            dl->AddLine(ImVec2(xa, y0), ImVec2(xb, y0),
+                        IM_COL32(255, 255, 255, dc_[i] ? 28 : 70), 1.0f);
+        });
+        spans(xe - 2 * k, xe, [&](float xa, float xb) {
+            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), _shade(c, 0.6f, a), 0);
+        });
     }
     /* dark seam where the local player's own fill ends */
     if (anyLead)
-        dl->AddRectFilled(ImVec2(myx, 692 * k), ImVec2(myx + 2 * k, 710 * k),
-                          IM_COL32(0, 0, 0, 170), 0);
+        spans(myx, myx + 2 * k, [&](float xa, float xb) {
+            dl->AddRectFilled(ImVec2(xa, 692 * k), ImVec2(xb, 710 * k),
+                              IM_COL32(0, 0, 0, 170), 0);
+        });
     /* spread avatar centres slightly when markers sit at the same % so
      * every portrait stays visible; ds_ is sorted largest-first (right-to-left) */
     float tx[8], ax[8];

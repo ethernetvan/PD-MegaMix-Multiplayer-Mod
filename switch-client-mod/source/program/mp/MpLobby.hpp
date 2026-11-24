@@ -111,6 +111,12 @@ struct Snapshot {
     struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t max_combo;
              int32_t life; int rank; bool final; bool me; bool connected;
              int diff, ed;    /* the chart this player was on (-1 unknown) */
+             int32_t jc[5];   /* COOL GOOD SAFE BAD MISS of the final */
+             bool hasJc;
+             float border;    /* that console's clear % (0 unknown) */
+             int clear;       /* its verdict: 1 clear, 0 not, -1 unknown */
+             bool drop, autoplay;
+             int plat;        /* PLAT_* */
              avatar::Ref av; } standing[8];
     int      standingCount;
     int32_t  resultsAgeMs;  /* ms on the results screen, -1 when not shown */
@@ -127,6 +133,12 @@ struct Snapshot {
     bool     minusHeld;
     int      minusHeldMs;
     bool     sameDiff;        /* room option: everyone plays the picker's difficulty */
+    float    gaugeTick[3];    /* % of the gauge's BORDER / G / E ticks, < 0 none */
+    /* expanded results panel: 0 none, 1 armed (A opens), 2 open, 3 closed
+     * (Y reopens); ms since it was opened / closed (-1 never) */
+    int      resPanel, resPage, resPerPage;
+    int32_t  resPanelMs;
+    bool     resCanReopen;
     int      myDiff, myEd;    /* this console's song-select difficulty */
 };
 
