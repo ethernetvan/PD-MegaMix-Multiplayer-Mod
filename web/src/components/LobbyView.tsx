@@ -12,7 +12,7 @@ import { autoLabel } from "../autoplay";
 import { clearStatus, hasSessionResults, sessionOrder } from "../session";
 import { memberAvatar, memberName, PhaseBadge } from "./Overview";
 import { DiffChip, PlatIcon } from "./Chips";
-import { diffLabel } from "../difficulty";
+import { diffLabel, mixedDifficulty } from "../difficulty";
 
 const PICK_LABEL: Record<PickMode, string> = {
   rotate: "Rotate",
@@ -34,6 +34,8 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
     .filter((m): m is MemberSnap => !!m)
     .sort((a, b) => b.pct - a.pct || b.score - a.score);
   const ranks = competitionRanks(rows);
+  /* difficulty tags only when the players aren't all on the same chart */
+  const mixed = mixedDifficulty(rows);
 
   const rowEls = useRef(new Map<string, HTMLTableRowElement>());
   const prevIdx = useRef(new Map<string, number>());
@@ -144,7 +146,7 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
                       />
                       <span>
                         {m.name}
-                        <DiffChip diff={m.diff} ed={m.ed} short />
+                        {mixed && <DiffChip diff={m.diff} ed={m.ed} short />}
                         {m.autoplay && (
                           <span className="badge auto">{autoLabel(m.autoplay_pct, m.autoplay_mode)}</span>
                         )}
@@ -235,12 +237,14 @@ function ResCard({
   tags,
   hideRank,
   win,
+  showDiff,
 }: {
   r: StandingRow;
   m: MemberSnap | undefined;
   delay: number;
   tags: string[];
   hideRank?: boolean;
+  showDiff: boolean; /* the players weren't all on the same chart */
   win: boolean; /* in the top group (a tie for first ranks as 2) */
 }) {
   const score = useCountUp(r.score, delay + 150);
@@ -266,7 +270,7 @@ function ResCard({
         />
         <span className="res-name">
           {r.name}
-          <DiffChip diff={r.diff} ed={r.ed} />
+          {showDiff && <DiffChip diff={r.diff} ed={r.ed} />}
           {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct, r.autoplay_mode)}</span>}
           {win && <span className="badge star">★ WINNER</span>}
           {tags.map((t) => (
@@ -382,6 +386,7 @@ function ResultsBoard({ l }: { l: LobbySnap }) {
     else groups.push([r]);
   }
   let seen = 0;
+  const mixed = mixedDifficulty(st.e);
   return (
     <section className="panel res-panel">
       <span className="res-ribbon" aria-hidden>
@@ -401,6 +406,7 @@ function ResultsBoard({ l }: { l: LobbySnap }) {
               delay={(n - 1 - i0) * 170}
               tags={tags.get(r.mid) ?? []}
               win={i0 === 0}
+              showDiff={mixed}
             />
           );
         }
@@ -421,6 +427,7 @@ function ResultsBoard({ l }: { l: LobbySnap }) {
                   tags={tags.get(r.mid) ?? []}
                   hideRank
                   win={i0 === 0}
+                  showDiff={mixed}
                 />
               ))}
             </div>
@@ -541,6 +548,7 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
   const st = l.standings;
   if (!st) return null;
   if (st.complete) return <ResultsBoard l={l} />;
+  const mixed = mixedDifficulty(st.e);
   return (
     <section className="panel">
       <h3>
@@ -574,7 +582,7 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
                     />
                     <span>
                       {r.name}
-                      <DiffChip diff={r.diff} ed={r.ed} short />
+                      {mixed && <DiffChip diff={r.diff} ed={r.ed} short />}
                       {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct, r.autoplay_mode)}</span>}
                     </span>
                   </span>
