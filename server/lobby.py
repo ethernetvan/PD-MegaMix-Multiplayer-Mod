@@ -62,7 +62,9 @@ S->C: welcome/error/pong (existing);
       joined, left, disconnected, reconnected, leader, owner,
       same_diff (the owner switched the room option, value 1/0));
       standings {round, complete:bool, e:[{cid,name,score,pct,max_combo,life,rank,final:bool,
-                 border, clear:bool|null, drop:bool, diff, ed}]};
+                 border, clear:bool|null, drop:bool, diff, ed, jc:[5], autoplay:bool}]};
+      (jc = COOL GOOD SAFE BAD MISS counts of the final, [] until it arrives;
+      the consoles' expanded results panel draws its bars from them)
       (rank: tied rows share the LOWEST position of their group, 1-3-3-4);
       round_end {round, next_leader}.
 
@@ -142,6 +144,16 @@ def _diff_of(msg):
     if isinstance(e, bool) or not isinstance(e, int) or not 0 <= e <= 1:
         e = 0
     return (d, e if d == 3 else 0)
+
+
+def _jc(v):
+    """judgement counts from a final: five non-negative ints (COOL GOOD
+    SAFE BAD MISS); junk entries count as 0, anything else -> []"""
+    if not isinstance(v, list) or not v:
+        return []
+    out = [x if isinstance(x, int) and not isinstance(x, bool) and
+           0 <= x <= 99999 else 0 for x in v[:5]]
+    return out + [0] * (5 - len(out))
 
 
 def _f(v, default=0.0):
@@ -1062,7 +1074,7 @@ class LobbyManager:
         clear = msg.get("clear")
         m.final = {"score": msg.get("score", 0), "pct": msg.get("pct", 0.0),
                    "max_combo": msg.get("max_combo", 0),
-                   "jc": msg.get("jc", []), "life": msg.get("life", 0),
+                   "jc": _jc(msg.get("jc")), "life": msg.get("life", 0),
                    "border": _f(msg.get("border"),
                                 m.state.get("border", 0.0)),
                    # the console's verdict; None = an old client sent none
@@ -1105,7 +1117,9 @@ class LobbyManager:
                          "clear": f["clear"] if f else None,
                          "drop": bool(f and f["drop"]),
                          "diff": self.diff_of(lobby, m)[0],
-                         "ed": self.diff_of(lobby, m)[1]})
+                         "ed": self.diff_of(lobby, m)[1],
+                         "jc": f["jc"] if f else [],
+                         "autoplay": m.autoplay})
         rows.sort(key=lambda x: (-x["pct"], -x["score"]))
         _competition_ranks(rows)
         complete = all(row["final"] for row in rows) if rows else True

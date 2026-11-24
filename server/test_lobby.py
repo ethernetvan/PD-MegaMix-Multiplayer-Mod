@@ -1305,3 +1305,26 @@ class T7(T6):
         self.assertEqual(lb.phase, "PLAYING")       # a is still playing
         rows, complete = self.lm._standings(lb, 402.5)
         self.assertFalse(complete)
+
+    def test_standings_carry_judgement_counts(self):
+        for c in "abc": self.mk(c)
+        lb = self._mk(3)
+        self.lm.on_message("b", {"t": "autoplay", "on": True, "pct": 96},
+                           100.5)
+        rid = self._playing(lb, "abc")
+        self._fin("a", rid, 90.0, 20, jc=[400, 30, 5, 2, 3])
+        # junk from a client: wrong types, negatives, too long / too short
+        self._fin("b", rid, 80.0, 10, jc=[7, "x", -4, True, 2.5, 9, 9])
+        st = [m for _, m in self.msgs("a", "standings")][-1]
+        by = {r["cid"]: r for r in st["e"]}
+        self.assertEqual(by["a"]["jc"], [400, 30, 5, 2, 3])
+        self.assertEqual(by["b"]["jc"], [7, 0, 0, 0, 0])
+        self.assertEqual(by["c"]["jc"], [])          # no final yet
+        self.assertEqual({c: r["autoplay"] for c, r in by.items()},
+                         {"a": False, "b": True, "c": False})
+        self._fin("c", rid, 70.0, 5, jc=[1, 2])
+        rows, _ = self.lm._standings(lb, 104.5)
+        self.assertEqual({r["cid"]: r["jc"] for r in rows}["c"],
+                         [1, 2, 0, 0, 0])
+        # the web member snapshot gets the same sanitized list
+        self.assertEqual(self.lm._member(lb, "b").final["jc"], [7, 0, 0, 0, 0])
