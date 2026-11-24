@@ -37,11 +37,11 @@ export default function Header({ onLogin }: { onLogin: () => void }) {
         </span>
       )}
       <span className="spacer" />
-      {you.name || you.admin ? (
+      {you.name || you.admin || you.owns.length > 0 ? (
         <span className="who">
           Signed in as{" "}
           <button className="btn link who-name" onClick={onLogin}>
-            {you.name ?? "server admin"}
+            {you.name ?? (you.admin ? "server admin" : `host of ${you.owns.join(", ")}`)}
           </button>
           {you.admin && <span className="badge admin">Admin</span>}
           <button className="btn ghost" onClick={logout}>

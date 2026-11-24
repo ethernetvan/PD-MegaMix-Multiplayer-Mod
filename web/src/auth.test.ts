@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { stripToken, tokenFromUrl } from "./auth";
+import { formatRoomKey, stripToken, tokenFromUrl } from "./auth";
+
+describe("formatRoomKey", () => {
+  it("accepts what people type", () => {
+    expect(formatRoomKey("abcde-fghjk")).toBe("ABCDE-FGHJK");
+    expect(formatRoomKey("  ABCDE fghjk ")).toBe("ABCDE-FGHJK");
+    expect(formatRoomKey("ABCDEFGH23")).toBe("ABCDE-FGH23");
+  });
+  it("refuses anything that can't be a key", () => {
+    for (const bad of ["", "ABCDE", "ABCDE-FGHJ1", "ABCDE-FGHJO", "ABCDE-FGHJKL", "абвгд-ежзик"])
+      expect(formatRoomKey(bad)).toBeNull();
+  });
+});
 
 describe("tokenFromUrl", () => {
   it("extracts the token", () => {

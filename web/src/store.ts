@@ -8,7 +8,11 @@ export interface Store {
   dispatch: Dispatch<Action>;
   socket: MpSocket;
   toast: (text: string) => void;
-  auth: (name: string | null, token: string | null) => Promise<ReplyMsg>;
+  auth: (
+    name: string | null,
+    token: string | null,
+    key?: string | null,
+  ) => Promise<ReplyMsg>;
   logout: () => void;
 }
 

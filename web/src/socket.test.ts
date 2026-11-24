@@ -4,6 +4,7 @@ import {
   endpointLabel,
   isLocalHost,
   resolveWsTarget,
+  credsAfterRefusal,
   retryAuthName,
 } from "./api/socket";
 
@@ -75,6 +76,29 @@ describe("connStatus", () => {
   it("first attempt is connecting, retries are reconnecting", () => {
     expect(connStatus(false)).toBe("connecting");
     expect(connStatus(true)).toBe("reconnecting");
+  });
+});
+
+describe("credsAfterRefusal", () => {
+  const all = { name: "n", token: "t", key: "ABCDE-FGHJK" };
+  it("drops the refused credential and keeps the rest", () => {
+    expect(credsAfterRefusal({ ok: false, error: "bad_token" }, all)?.creds).toEqual({
+      name: "n",
+      token: null,
+      key: "ABCDE-FGHJK",
+    });
+    expect(credsAfterRefusal({ ok: false, error: "bad_key" }, all)?.creds).toEqual({
+      name: "n",
+      token: "t",
+      key: null,
+    });
+  });
+  it("nothing to retry when it worked or nothing was saved", () => {
+    expect(credsAfterRefusal({ ok: true }, all)).toBeNull();
+    expect(credsAfterRefusal({ ok: false, error: "bad_request" }, all)).toBeNull();
+    expect(
+      credsAfterRefusal({ ok: false, error: "bad_key" }, { ...all, key: null }),
+    ).toBeNull();
   });
 });
 

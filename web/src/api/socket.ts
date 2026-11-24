@@ -1,4 +1,4 @@
-import { getCreds, saveCreds } from "../auth";
+import { getCreds, saveCreds, type Creds } from "../auth";
 import type { ConnStatus } from "../state";
 import type { ReplyMsg, ServerMsg, You } from "../types";
 
@@ -100,6 +100,27 @@ export const retryAuthName = (
   hadToken: boolean,
 ): boolean => !reply.ok && reply.error === "bad_token" && hadToken;
 
+// A saved credential the server no longer accepts (the server restarted
+// with another token; the room closed or changed owner): what is left to
+// sign in with, and what to tell the user. null = nothing to retry.
+export const credsAfterRefusal = (
+  reply: { ok: boolean; error?: string },
+  c: Creds,
+): { creds: Creds; notice: string } | null => {
+  if (reply.ok) return null;
+  if (reply.error === "bad_token" && c.token)
+    return {
+      creds: { ...c, token: null },
+      notice: "Saved admin token is no longer valid — sign in again",
+    };
+  if (reply.error === "bad_key" && c.key)
+    return {
+      creds: { ...c, key: null },
+      notice: "Saved room key no longer works — the room closed or has a new owner",
+    };
+  return null;
+};
+
 export class MpSocket {
   onmessage: (msg: ServerMsg) => void = () => {};
   onstatus: (s: ConnStatus) => void = () => {};
@@ -169,29 +190,25 @@ export class MpSocket {
     ws.onerror = () => ws.close();
   }
 
-  private reauth() {
-    const { name, token } = getCreds();
-    if (!name && !token) return;
-    this.request({ t: "auth", name, token })
-      .then(async (r) => {
+  private async reauth() {
+    let c = getCreds();
+    try {
+      // each refused credential is dropped and the rest tried again
+      for (let i = 0; i < 3 && (c.name || c.token || c.key); i++) {
+        const r = await this.request({ t: "auth", ...c });
         if (r.ok && r.you) {
           this.onyou(r.you);
           return;
         }
-        if (retryAuthName(r, !!token)) {
-          saveCreds({ name, token: null });
-          this.onnotice(
-            "Saved admin token is no longer valid — sign in again",
-          );
-          try {
-            const r2 = await this.request({ t: "auth", name, token: null });
-            if (r2.ok && r2.you) this.onyou(r2.you);
-          } catch {
-            /* stay signed out */
-          }
-        }
-      })
-      .catch(() => {});
+        const next = credsAfterRefusal(r, c);
+        if (!next) return;
+        c = next.creds;
+        saveCreds(c);
+        this.onnotice(next.notice);
+      }
+    } catch {
+      /* stay signed out */
+    }
   }
 
   request(msg: Record<string, unknown>): Promise<ReplyMsg> {
@@ -211,8 +228,12 @@ export class MpSocket {
     });
   }
 
-  auth(name: string | null, token: string | null): Promise<ReplyMsg> {
-    return this.request({ t: "auth", name, token });
+  auth(
+    name: string | null,
+    token: string | null,
+    key: string | null = null,
+  ): Promise<ReplyMsg> {
+    return this.request({ t: "auth", name, token, key });
   }
 
   action(msg: Record<string, unknown>): Promise<ReplyMsg> {

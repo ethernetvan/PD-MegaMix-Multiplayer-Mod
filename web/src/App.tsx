@@ -63,10 +63,10 @@ export default function App() {
   }, []);
 
   const auth = useCallback(
-    async (name: string | null, token: string | null) => {
-      const r = await socket.auth(name, token);
+    async (name: string | null, token: string | null, key: string | null = null) => {
+      const r = await socket.auth(name, token, key);
       if (r.ok && r.you) {
-        saveCreds({ name: r.you.name, token });
+        saveCreds({ name: r.you.name, token, key });
         dispatch({ type: "you", you: r.you });
       }
       return r;
@@ -75,9 +75,9 @@ export default function App() {
   );
 
   const logout = useCallback(() => {
-    saveCreds({ name: null, token: null });
+    saveCreds({ name: null, token: null, key: null });
     socket
-      .auth(null, null)
+      .auth(null, null, null)
       .then((r) => {
         if (r.you) dispatch({ type: "you", you: r.you });
       })
