@@ -1077,6 +1077,15 @@ static void RoomPage(const Snapshot& sn, RowCur& rc) {
         PanelSE(2);
         CmdSameDiff(!sn.sameDiff);
     }
+    if (sn.noFail >= 0 &&
+        OptRow("##nofail", RowPos(rc), w, "No Fail Mode", sn.noFail ? "On" : "Off",
+               owner ? "On: songs don't end when the life gauge runs out. Off: they do. Applies to every player"
+                     : (sn.noFail ? "Songs don't end when the life gauge runs out (set by the room owner)"
+                                  : "A song ends when the life gauge runs out (set by the room owner)"),
+               owner)) {
+        PanelSE(2);
+        CmdNoFail(!sn.noFail);
+    }
     if (sn.selPv > 0 && sn.selName[0])
         OptRow("##song", RowPos(rc), w, "Selected Song", sn.selName[0] ? sn.selName : "-",
                "The song the picker has selected", false);

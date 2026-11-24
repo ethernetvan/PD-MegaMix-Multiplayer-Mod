@@ -10,6 +10,7 @@
 
 #include "../platform/MpLog.hpp"
 #include "../mp/MpNet.hpp"
+#include "../mp/MpLobby.hpp"
 #include "../mp/MpMenu.hpp"
 #include "../mp/MpInput.hpp"
 #include "diva.h"
@@ -180,6 +181,16 @@ void OnStageResult(bool init);
 /* PV game task hooks                                                  */
 /* ------------------------------------------------------------------ */
 HOOK(bool, __fastcall, TaskPvGameInit, addr::TaskPvGameInit, uint64_t a1) {
+    /* room rule: every console plays with the same No Fail Mode. The task
+     * keeps its launch data at +0x68 (TaskPvGame::Data, MMPlusMods
+     * pv_game.cpp), no_fail at +0x1BA; the init below copies it to
+     * PVGameData::no_fail, which is what the game tests at life 0. */
+    int nf = mp::lobby::RoundNoFail();
+    if (nf >= 0) {
+        uint8_t* p = (uint8_t*)a1 + 0x68 + 0x1BA;
+        WriteLog("[MP] No Fail Mode: room %s (this game had %s)\n", nf ? "on" : "off", *p ? "on" : "off");
+        *p = (uint8_t)nf;
+    }
     return originalTaskPvGameInit(a1);
 }
 HOOK(bool, __fastcall, TaskPvGameCtrl, addr::TaskPvGameCtrl, uint64_t a1) {

@@ -80,6 +80,10 @@ static char  s_ackSig[120] = "";
 static char  s_unavailFor[96] = "";    /* names the pick isn't available for */
 /* room option (owner): everyone plays the song picker's difficulty */
 static bool    s_sameDiff = false;
+/* room option (owner): the game's No Fail Mode for everyone. -1 = the
+ * server has no such rule (the game's own setting stays), else 0 / 1;
+ * s_roundNoFail = what the running round was launched with */
+static int     s_noFail = -1, s_roundNoFail = -1;
 /* this console's song-select difficulty, and what the server was told */
 static int32_t s_myD = -1, s_myE = 0;
 static int32_t s_sentD = -2, s_sentE = 0;
@@ -558,6 +562,7 @@ static void ResetLobbyState() {
     s_playedRound = 0; s_finalSentRound = 0;
     s_finalLine[0] = 0; s_finalLineRound = 0;
     s_sameDiff = false;
+    s_noFail = -1; s_roundNoFail = -1;
     s_resPanel = 0; s_resPage = 0; s_resPanelAt = 0;
     s_folWantD = -1; s_folWantE = 0;
     s_folDiffBanner[0] = s_folDiffBanner[1] = s_folDiffBanner[2] = -1;
@@ -603,6 +608,9 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
         if (gi2 >= 0) s_groupPaused = line[tok[gi2].start] == 't'; }
     {   int sd = mpjson::Find(line, tok, ntok, "same_diff");
         s_sameDiff = sd >= 0 && line[tok[sd].start] == 't'; }
+    {   int nf = mpjson::Find(line, tok, ntok, "no_fail");
+        s_noFail = nf < 0 ? -1 : (line[tok[nf].start] == 't' ? 1 : 0);
+        if (strcmp(s_serverPhase, "SELECT") == 0) s_roundNoFail = -1; }
     int32_t rd = 0; gi("round", &rd); s_round = rd;
     int32_t spv = -1; if (gi("sel_pv", &spv)) s_selPv = spv;
     bool wasLeader = s_amLeader;
@@ -949,6 +957,8 @@ static void ProcessLine(const char* line) {
         s_launchHandledRound = rd;
         s_round = rd;
         s_roundOver = false;
+        {   int nf = mpjson::Find(line, tok, ntok, "no_fail");
+            s_roundNoFail = nf < 0 ? -1 : (line[tok[nf].start] == 't' ? 1 : 0); }
         int32_t pv = 0; i = mpjson::Find(line, tok, ntok, "pv");
         if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) pv = v;
         s_selPv = pv;
@@ -1136,6 +1146,13 @@ static void ProcessLine(const char* line) {
         int32_t value = 0;
         i = mpjson::Find(line, tok, ntok, "value");
         if (i >= 0) mpjson::ToInt(line, tok[i], &value);
+        if (strcmp(k, "no_fail") == 0) {
+            PushBanner(value ? "No Fail Mode on: songs don't end when the "
+                               "life gauge runs out"
+                             : "No Fail Mode off: a song ends when the life "
+                               "gauge runs out");
+            return;
+        }
         if (strcmp(k, "same_diff") == 0) {
             PushBanner(value ? "Same difficulty: everyone plays the song "
                                "picker's difficulty"
@@ -1513,7 +1530,8 @@ static float ClearBorder(const diva::PVGameData* pv) {
 
 /* final {.., border, clear, drop}: clear reflects the FINAL state (a run
  * that passed the border and then sank under it is NOT CLEAR); a song
- * quit from the pause menu never clears; drop = all life lost */
+ * quit from the pause menu never clears; drop = all life lost (in No Fail
+ * Mode: the song ended with none left, the game's results say DROP x OUT) */
 static void SendFinal(const diva::PVGameData* pv, bool quit) {
     if (!pv) return;
     float border = ClearBorder(pv);
@@ -2316,6 +2334,7 @@ void GetSnapshot(Snapshot* out) {
         d.autoplay = s_members[i].autoplay;
     }
     out->sameDiff = s_sameDiff;
+    out->noFail = s_noFail;
     out->resPanel = s_resPanel; out->resPage = s_resPage;
     out->resPerPage = kResPerPage;
     out->resPanelMs = s_resPanelAt > 0
@@ -2465,6 +2484,15 @@ void CmdPickMode(const char* mode, const char* cid) {
 void CmdSameDiff(bool on) {
     SendLine(on ? "{\"t\":\"set_opt\",\"key\":\"same_diff\",\"value\":true}"
                 : "{\"t\":\"set_opt\",\"key\":\"same_diff\",\"value\":false}");
+}
+void CmdNoFail(bool on) {
+    SendLine(on ? "{\"t\":\"set_opt\",\"key\":\"no_fail\",\"value\":true}"
+                : "{\"t\":\"set_opt\",\"key\":\"no_fail\",\"value\":false}");
+}
+int RoundNoFail() {
+    std::lock_guard<std::recursive_mutex> lk(s_mtx);
+    if (!s_code[0]) return -1;
+    return s_roundNoFail >= 0 ? s_roundNoFail : s_noFail;
 }
 void CmdKick(const char* cid) {
     if (!cid || !*cid) return;

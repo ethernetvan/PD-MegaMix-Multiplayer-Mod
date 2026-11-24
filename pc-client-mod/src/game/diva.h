@@ -233,7 +233,7 @@ struct PVGameData
 	float clear_border;     /* song+difficulty clear % (Switch +0x2D0D0) */
 	float clear_border_eff; /* running border, reaches clear_border at the end */
 	uint8_t gap2D310[13];
-	uint8_t byte2D31D;
+	uint8_t no_fail;        /* +0x2D31D: No Fail Mode of this song (from TaskPvGame's data) */
 	uint8_t gap2D31E;
 	uint8_t byte2D31F;
 	int64_t challenge_time_start;
