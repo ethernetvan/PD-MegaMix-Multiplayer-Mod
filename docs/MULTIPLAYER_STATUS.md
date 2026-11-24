@@ -396,6 +396,41 @@ Server, web, Switch and PC (`pc-client-mod/`), all on `main` (pc-port was merged
   Y reopen -> close -> A reaches the game (`dbg_menu` res_score -> res_vp); MM+ with 8 players on one page,
   Enter / F7 / Esc. NOT verified: a real Switch, a real pad or keyboard on PC (admin taps only).
 
+## Round 16: room join errors (2026-11-24)
+- **Before:** JOIN ROOM went back to HOME whatever the server answered; a wrong code only gave the banner
+  `Lobby error: not_found`. Offline, `lobby_join` / `lobby_create` went into the send queue and reached the
+  server whenever the session came back (on the Switch the greyed HOME cards still take a touch; the PC rows
+  were never greyed).
+- **Lobby layer (both `MpLobby.cpp`, same edits):** `CmdLobbyJoin(code, quiet)` keeps the join's state for the
+  UI (`Snapshot.joinState` JOIN_IDLE / PENDING / FAILED, `joinCode`, `joinErr`). `lobby` = in; `lobby_error`
+  `not_found` / `full` / `already_in_lobby` while pending = "Room ABCD not found - check the code" / "Room ABCD
+  is full" / "You're already in a room"; no answer within 6 s, or the session dropping, fails it too. A code
+  with anything but letters and digits is refused locally (it also broke the JSON line). Offline, join and
+  create send nothing and queue nothing. A failure is a banner unless the caller asked `quiet` and the overlay
+  is open to show it (admin `lobby_join` -> banner).
+- **Switch (`MpUi.cpp`):** JOIN ROOM stays up after JOIN (the keyboard closes itself on submit and is reopened
+  the next frame); the room screen replaces it once the server lets the console in. Right of the title:
+  "Joining ABCD...", the refusal in red with a red field until the code is edited, "Not connected to the
+  server" for as long as the console is offline. A touch on a greyed HOME card = cancel SE + a banner saying
+  why. On text screens the keyboard window is raised over the panel every frame: a tap on the panel used to
+  leave it under the panel's screen dim (every opening after the first).
+- **PC (`MpPanelPc.cpp`):** Create Room and the Join button are off while offline (their help line says why).
+  The join's outcome shows in the help band (yellow) with the code field outlined in pink until the code is
+  edited; Enter in the field while offline -> "Not connected to a server yet - can't join a room".
+- **Verified:** Ryujinx - wrong code through the keyboard's JOIN key and the dialog's JOIN button, edit clears
+  the note, right code -> room screen, 8-member room -> full, admin `lobby_join` -> banner (overlay closed and
+  open), server killed on the join screen -> offline note, three JOIN presses offline -> nothing reaches the
+  restarted server, touch on the greyed CREATE ROOM card -> banner. MM+ (private unfocused instance, DLL =
+  HEAD + this change) - wrong code by Enter and by the Join button, edit clears it, right code -> room, server
+  killed -> rows off + help line, Enter offline -> note and nothing reaches the restarted server, admin
+  `lobby_join` -> banner. NOT verified: the 6 s timeout and a drop while a join is pending, a real Switch, a
+  real keyboard / mouse on PC (text went in as injected ImGui characters and posted `WM_CHAR`).
+- **Offline input for tests** (admin taps need the server): Ryujinx takes `PostMessage` `WM_KEYDOWN` / `WM_KEYUP`
+  on its top-level hwnd as pad keys and `WM_LBUTTONDOWN` / `WM_LBUTTONUP` there (client coords) as a touch,
+  each about two times out of three. MM+: post `WM_MOUSEMOVE`, `WM_LBUTTONDOWN`, `WM_LBUTTONUP` back to back (the
+  ImGui backend answers a posted move with `WM_MOUSELEAVE` at once); `WM_CHAR` / `WM_KEYDOWN` reach the panel's
+  text fields while the window is unfocused. Nothing global, no focus change.
+
 ## Round 18: No Fail room option, Same difficulty checked PC <-> Switch (2026-11-24)
 - **Room option `no_fail`** (owner, default off): every console plays the round with the game's No Fail Mode on
   or off, whatever its own setting in the song's confirm panel. Protocol (docstring of `server/lobby.py`):
