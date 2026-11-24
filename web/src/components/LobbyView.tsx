@@ -11,6 +11,8 @@ import Trophies from "./Trophies";
 import { autoLabel } from "../autoplay";
 import { clearStatus, hasSessionResults, sessionOrder } from "../session";
 import { memberAvatar, memberName, PhaseBadge } from "./Overview";
+import { DiffChip, PlatIcon } from "./Chips";
+import { diffLabel } from "../difficulty";
 
 const PICK_LABEL: Record<PickMode, string> = {
   rotate: "Rotate",
@@ -142,6 +144,7 @@ function LiveBoard({ l, now }: { l: LobbySnap; now: number }) {
                       />
                       <span>
                         {m.name}
+                        <DiffChip diff={m.diff} ed={m.ed} short />
                         {m.autoplay && (
                           <span className="badge auto">{autoLabel(m.autoplay_pct, m.autoplay_mode)}</span>
                         )}
@@ -263,6 +266,7 @@ function ResCard({
         />
         <span className="res-name">
           {r.name}
+          <DiffChip diff={r.diff} ed={r.ed} />
           {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct, r.autoplay_mode)}</span>}
           {win && <span className="badge star">★ WINNER</span>}
           {tags.map((t) => (
@@ -455,7 +459,11 @@ function SessionPodium({ l }: { l: LobbySnap }) {
 
 function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
   if (l.phase === "SELECT") {
-    const notReady = l.members.filter((m) => m.connected && !m.ready);
+    const noSong = l.sel ? l.members.filter((m) => m.nosong) : [];
+    const notReady = l.members.filter(
+      (m) => m.connected && !m.ready && !noSong.includes(m),
+    );
+    const picker = memberOf(l, l.leader);
     return (
       <section className="panel status">
         <h3>Song select</h3>
@@ -467,7 +475,32 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
             <span className="dim">Selected</span>
             <span className="sel-name">♪ {l.sel.name}</span>
             <span className="pv-chip">PV {l.sel.pv}</span>
+            {l.same_diff && <DiffChip diff={picker?.diff} ed={picker?.ed} />}
           </p>
+        )}
+        {noSong.length > 0 && (
+          <div className="nosong-strip" role="status">
+            <span className="nosong-ico" aria-hidden>
+              !
+            </span>
+            <span className="nosong-text">
+              <b>
+                {noSong.length === 1
+                  ? `${noSong[0].name} doesn't have this song`
+                  : `${noSong.length} players don't have this song`}
+              </b>
+              <span className="nosong-sub">
+                {noSong.length === 1
+                  ? "They will sit this round out"
+                  : `${noSong.map((m) => m.name).join(", ")} will sit this round out`}
+              </span>
+            </span>
+            <span className="nosong-hexes">
+              {noSong.map((m) => (
+                <HexAvatar key={m.mid} name={m.name} src={m.avatar ?? undefined} size={30} />
+              ))}
+            </span>
+          </div>
         )}
         <SessionPodium l={l} />
         {notReady.length > 0 && (
@@ -541,6 +574,7 @@ function PhasePanel({ l, now }: { l: LobbySnap; now: number }) {
                     />
                     <span>
                       {r.name}
+                      <DiffChip diff={r.diff} ed={r.ed} short />
                       {r.autoplay && <span className="badge auto">{autoLabel(r.autoplay_pct, r.autoplay_mode)}</span>}
                     </span>
                   </span>
@@ -585,16 +619,27 @@ function Members({ l }: { l: LobbySnap }) {
                 }
               />
               <span className="mem-num">{i + 1}</span>
+              {(m.plat === "pc" || m.plat === "switch") && (
+                <span className="mem-plat">
+                  <PlatIcon plat={m.plat} size={14} />
+                </span>
+              )}
             </span>
             <span className="mem-name">{m.name}</span>
             {m.session && <Trophies places={m.session.places} size={16} />}
             <span className="mem-badges">
+              <DiffChip diff={m.diff} ed={m.ed} />
+              {m.nosong && l.phase === "SELECT" && (
+                <span className="badge nosong" title="This console doesn't have the selected song">
+                  No song
+                </span>
+              )}
               {m.mid === l.owner && <span className="badge">Owner</span>}
               {m.mid === l.leader && <span className="badge pick">Picker</span>}
               {m.role !== "player" && <span className="badge">{m.role}</span>}
               {m.autoplay && <span className="badge auto">{autoLabel(m.autoplay_pct, m.autoplay_mode)}</span>}
               {!m.connected && <span className="badge off">offline</span>}
-              {m.connected && !m.ready && (
+              {m.connected && !m.ready && !(m.nosong && l.phase === "SELECT") && (
                 <span className="badge warn">{m.reason || "not ready"}</span>
               )}
               {m.back_in_sel && <span className="badge">back in select</span>}
@@ -664,6 +709,28 @@ function AdminPanel({ l }: { l: LobbySnap }) {
       {assigning && l.pick_mode !== "assigned" && (
         <p className="dim">Pick a member to assign as the picker</p>
       )}
+      <div className="opt-row">
+        <span className="opt-label">
+          Same difficulty
+          <span className="dim">
+            {l.same_diff
+              ? "Everyone plays the picker's difficulty"
+              : "Everyone picks their own difficulty"}
+          </span>
+        </span>
+        <div className="seg" role="group" aria-label="Same difficulty">
+          {[true, false].map((v) => (
+            <button
+              key={String(v)}
+              className={`seg-btn${!!l.same_diff === v ? " on" : ""}`}
+              aria-pressed={!!l.same_diff === v}
+              onClick={() => act({ op: "set_opt", key: "same_diff", value: v })}
+            >
+              {v ? "On" : "Off"}
+            </button>
+          ))}
+        </div>
+      </div>
       {l.pending_pick_mode && (
         <p className="dim">
           {PICK_LABEL[l.pending_pick_mode.mode]}
@@ -788,6 +855,14 @@ export default function LobbyView({ code }: { code: string }) {
             {memberName(l, l.leader)}
           </span>
           <span>{PICK_LABEL[l.pick_mode]}</span>
+          {l.same_diff && (
+            <span className="mi" title="Room option: everyone plays the picker's difficulty">
+              same difficulty
+              {diffLabel(memberOf(l, l.leader)?.diff, memberOf(l, l.leader)?.ed) && (
+                <DiffChip diff={memberOf(l, l.leader)?.diff} ed={memberOf(l, l.leader)?.ed} />
+              )}
+            </span>
+          )}
         </div>
       </div>
       {l.group_paused && <div className="banner">Group paused</div>}

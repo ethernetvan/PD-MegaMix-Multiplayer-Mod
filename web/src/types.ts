@@ -2,6 +2,7 @@
 
 export type Phase = "SELECT" | "LOADING" | "PLAYING" | "RESULTS";
 export type PickMode = "owner" | "assigned" | "rotate";
+export type Platform = "switch" | "pc" | "bot";
 
 export interface ServerInfo {
   name: string;
@@ -14,6 +15,8 @@ export interface ConsoleEntry {
   mid: string;
   name: string;
   mod: string;
+  /* which version of the mod: Switch (Mega Mix) or PC (Mega Mix+) */
+  plat?: Platform;
   lobby: string | null;
   avatar: string | null;
 }
@@ -40,6 +43,14 @@ export interface RoundSnap {
 export interface MemberSnap {
   mid: string;
   name: string;
+  plat?: Platform;
+  /* the member's chart: 0..3 = EASY NORMAL HARD EXTREME (-1 = not
+     reported), ed 1 = the EXTRA edition; the round's chart while one is
+     running, else what song select is set to */
+  diff?: number;
+  ed?: number;
+  /* this console doesn't have the picker's current song */
+  nosong?: boolean;
   connected: boolean;
   role: string;
   loaded: boolean;
@@ -93,6 +104,10 @@ export interface StandingRow {
   border: number;
   clear: boolean | null;
   drop: boolean;
+  /* the chart this player was on (see MemberSnap.diff) */
+  diff?: number;
+  ed?: number;
+  plat?: Platform;
   autoplay: boolean;
   autoplay_pct: number;
   autoplay_mode?: string;
@@ -112,6 +127,8 @@ export interface LobbySnap {
   leader: string | null;
   assigned: string | null;
   pending_pick_mode: { mode: PickMode; assigned: string | null } | null;
+  /* room option: everyone plays the picker's difficulty */
+  same_diff?: boolean;
   group_paused: boolean;
   vote: VoteInfo | null;
   sel: { pv: number; name: string } | null;
@@ -150,6 +167,8 @@ export interface FeedEntry {
   op?: string;
   by?: string | null;
   mode?: string;
+  key?: string;
+  on?: boolean;
 }
 
 export interface HelloMsg {

@@ -20,6 +20,10 @@ export function feedText(e: FeedEntry): string {
           return `${e.name}'s life is low (${e.value})`;
         case "drop_out":
           return `${e.name} dropped out (no life left)`;
+        case "same_diff":
+          return e.value
+            ? `${e.name} turned on Same difficulty: everyone plays the picker's difficulty`
+            : `${e.name} turned off Same difficulty: everyone picks their own`;
         default:
           return `${e.name ?? "?"}: ${e.ev}`;
       }
@@ -47,6 +51,8 @@ export function feedText(e: FeedEntry): string {
         return `${e.by ?? "web"} hid ${e.name}'s portrait`;
       if (e.op === "set_pick_mode")
         return `${e.by ?? "web"} set pick mode to ${e.mode}${e.name ? ` (${e.name})` : ""}`;
+      if (e.op === "set_opt" && e.key === "same_diff")
+        return `${e.by ?? "web"} switched Same difficulty ${e.on ? "on" : "off"}`;
       return `${e.by ?? "web"}: ${e.op}`;
     default:
       return e.kind;

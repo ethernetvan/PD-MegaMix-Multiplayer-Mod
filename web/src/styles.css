@@ -2327,3 +2327,211 @@ tr.off td {
     grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
   }
 }
+
+/* ---------- difficulty chips (the game's difficulty colours) ---------- */
+.diff-chip {
+  display: inline-block;
+  margin-left: 6px;
+  clip-path: var(--parr-sm);
+  padding: 2px 10px;
+  font-family: var(--font-disp);
+  font-weight: 700;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  line-height: 1.35;
+  vertical-align: middle;
+  white-space: nowrap;
+  color: #fff;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
+}
+
+.diff-chip.d-easy {
+  background: linear-gradient(180deg, #4fc3ff, #1a8fe0);
+}
+
+.diff-chip.d-normal {
+  background: linear-gradient(180deg, #6fdc4a, #2fa52c);
+}
+
+.diff-chip.d-hard {
+  background: linear-gradient(180deg, #ffd84a, #f0a400);
+  color: #4a3200;
+  text-shadow: none;
+}
+
+.diff-chip.d-extreme {
+  background: linear-gradient(180deg, #ff6a5e, #d42a2a);
+}
+
+.diff-chip.d-exextreme {
+  background: linear-gradient(180deg, #c07bf0, #7b35c4);
+}
+
+.mem-badges .diff-chip,
+.sel-song .diff-chip,
+.meta .diff-chip {
+  margin-left: 0;
+}
+
+/* ---------- platform icon (Switch = Mega Mix, PC = Mega Mix+) ---------- */
+.plat-icon {
+  vertical-align: -3px;
+  flex: none;
+}
+
+.plat-icon .pi-body {
+  fill: #e8f6f8;
+}
+
+.plat-icon .pi-cut {
+  fill: #0d3f46;
+}
+
+.plat-icon.p-pc .pi-body {
+  fill: #c9f6ff;
+}
+
+/* on a member tile: opposite the member number */
+.mem-plat {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d3f46;
+  border: 1px solid rgba(101, 255, 255, 0.5);
+}
+
+.mem-plat .plat-icon {
+  vertical-align: 0;
+}
+
+/* ---------- missing song ---------- */
+.badge.nosong {
+  background: var(--stripes-pink);
+  background-size: 12px 12px;
+  color: #fff;
+  text-shadow: 0 1px 0 rgba(120, 10, 60, 0.6);
+}
+
+.members li:has(.badge.nosong) {
+  border-color: var(--pink-frame);
+  background: rgba(241, 80, 175, 0.16);
+}
+
+.nosong-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 10px;
+  padding: 8px 16px 8px 10px;
+  clip-path: var(--notch-sm);
+  background: var(--stripes-pink);
+  background-size: 22px 22px;
+  color: #fff;
+  animation: nosong-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.nosong-ico {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  color: var(--pink-hot);
+  font-family: var(--font-logo);
+  font-weight: 800;
+  font-size: 20px;
+  line-height: 1;
+  animation: nosong-pulse 1.6s ease-in-out infinite;
+}
+
+.nosong-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  text-shadow: 0 1px 0 rgba(120, 10, 60, 0.55);
+}
+
+.nosong-text b {
+  font-family: var(--font-disp);
+  font-style: italic;
+  font-size: 17px;
+  letter-spacing: 0.03em;
+}
+
+.nosong-sub {
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.92;
+}
+
+.nosong-hexes {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3));
+}
+
+@keyframes nosong-in {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+}
+
+@keyframes nosong-pulse {
+  50% {
+    transform: scale(1.14);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nosong-strip,
+  .nosong-ico {
+    animation: none;
+  }
+}
+
+/* ---------- host option rows ---------- */
+.opt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 8px 0;
+  margin-bottom: 6px;
+  border-top: 1px solid var(--panel-soft);
+  border-bottom: 1px solid var(--panel-soft);
+}
+
+.opt-row .seg {
+  margin-bottom: 0;
+}
+
+.opt-label {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-disp);
+  font-weight: 700;
+  font-style: italic;
+  font-size: 16px;
+  letter-spacing: 0.04em;
+}
+
+.opt-label .dim {
+  font-family: inherit;
+  font-style: normal;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0;
+}

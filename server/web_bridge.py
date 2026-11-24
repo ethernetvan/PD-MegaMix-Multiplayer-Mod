@@ -793,7 +793,7 @@ class WebBridge:
             key, value = msg.get("key"), msg.get("value")
             if key != "same_diff" or not isinstance(value, bool):
                 return err("bad_opt")
-            entry["key"], entry["value"] = key, value
+            entry["key"], entry["on"] = key, value
             lm.on_message(lobby.owner_cid,
                           {"t": "set_opt", "key": key, "value": value}, now)
         elif op == "set_leader":

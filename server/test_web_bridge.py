@@ -440,7 +440,7 @@ class Actions(unittest.IsolatedAsyncioTestCase):
         self.assertIs(self.web.snapshot()["lobbies"][0]["same_diff"], True)
         feed = [e for e in self.web.feeds[self.code]
                 if e.get("op") == "set_opt"]
-        self.assertEqual((feed[-1]["key"], feed[-1]["value"]),
+        self.assertEqual((feed[-1]["key"], feed[-1]["on"]),
                          ("same_diff", True))
 
     async def test_set_leader(self):

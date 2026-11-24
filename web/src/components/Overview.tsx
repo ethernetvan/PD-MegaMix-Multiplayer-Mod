@@ -1,6 +1,7 @@
 import { useStore } from "../store";
 import type { LobbySnap } from "../types";
 import HexAvatar from "./HexAvatar";
+import { PlatIcon } from "./Chips";
 
 export function memberName(l: LobbySnap, mid: string | null | undefined) {
   return l.members.find((m) => m.mid === mid)?.name ?? "?";
@@ -90,7 +91,7 @@ export default function Overview() {
             <li key={c.mid}>
               <HexAvatar name={c.name} src={c.avatar ?? undefined} size={30} status="online" />
               <span className="console-name">
-                <b>{c.name}</b>{" "}
+                <b>{c.name}</b> <PlatIcon plat={c.plat} size={16} />{" "}
                 <span className="dim">
                   {c.lobby ? `in lobby ${c.lobby}` : "not in a lobby"}
                 </span>
