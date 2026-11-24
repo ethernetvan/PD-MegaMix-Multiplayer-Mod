@@ -431,6 +431,54 @@ Server, web, Switch and PC (`pc-client-mod/`), all on `main` (pc-port was merged
   ImGui backend answers a posted move with `WM_MOUSELEAVE` at once); `WM_CHAR` / `WM_KEYDOWN` reach the panel's
   text fields while the window is unfocused. Nothing global, no focus change.
 
+## Round 17: security pass (2026-11-24)
+Found by reading every network-facing path (server, web bridge, both clients); each server item has a test in
+`server/test_security.py`.
+- **Server, anyone who can connect could stop it:** `state` / `final` fields were stored as sent, so one
+  message with `pct: "x"` made the board sort raise inside the ticker and every lobby's timers stopped for good
+  (also `NaN`, which came back out as JSON no browser parses). All client fields are now typed and clamped
+  (`_int` / `_num` / `_text` in `lobby.py`), `NaN` / `Infinity` are refused at parse (`parse_msg`), a lobby
+  that raises in `tick` no longer stops the others, and the ticker survives any exception.
+- **One stalled client froze everyone:** `drain_outbox` awaited each recipient's socket, so a client that
+  stopped reading blocked the ticker and all other deliveries. `Server.send` never waits; a client with more
+  than 1 MiB queued is dropped. The outbox is also taken as one batch (two callers used to resend or drop each
+  other's messages).
+- **Other server fixes:** a `hello` with a non-text `mod` made every later hello fail; names, song titles and
+  reasons were unbounded and untyped (a 200 kB or non-string name went to every console and browser); every
+  cid ever seen stayed in memory; rooms are capped (2000) so `_new_code` can't spin; log lines no longer carry
+  raw client text (forged lines); discovery ignores junk and oversized datagrams.
+- **Web bridge:** on Windows a request path with backslashes (`/%5C%5Chost%5Cshare%5Cx`) reached
+  `os.path.realpath` as a UNC path, which makes the server process open an SMB connection to `host` (any web
+  page could trigger it against a local server). Paths are now checked as text before the filesystem is
+  asked. Added `nosniff`, `X-Frame-Options`, `Referrer-Policy` and a CSP; `/api/state` is `no-store`; an admin
+  token given with `--web-token` / `MP_WEB_TOKEN` is no longer printed; the generated one is 128 bits.
+- **Web owner login by name** (anyone can read the owner's name from `/api/state`): now a switch,
+  `--owner-name-login auto|on|off` / `MP_OWNER_NAME_LOGIN`; `auto` = on locally, **off with `--cloud`** (the
+  admin token still works; the login dialog says so). Owners manage their room from the game.
+- **Seat hijack by cid:** lobby messages give every member's cid to every member, and a hello with that cid
+  replaced the connection. Clients now send a secret `key` (`[multiplayer] client_key`, 128 bits from the
+  OS / kernel generator, made on first run) and the server ties each cid to the first key seen for it until
+  180 s after the cid is gone (`claim_cid`); any other hello gets `cid_in_use`. A console told `cid_in_use`
+  takes a new `client_id` (copied config). Old clients (no key) work as before and stay hijackable.
+- **Clients (same edits on Switch and PC):** `sel_status` built two lists with `off += snprintf(...)`; with 8
+  long names the offset passed the buffer and the next call wrote out of bounds (`s_notReady[128]`, a 96-byte
+  stack buffer) - reachable by any server, and through the real server by room members' names. All such
+  appends go through `mpjson::Appendf`. Server numbers that feed draw code are finite and clamped
+  (`mpjson::ToNum`). Lines are NUL-terminated before `strstr` runs on them.
+- **`dbg_cmd` is off by default:** it let whichever server a console found (LAN discovery takes the first
+  answer) press buttons, move the cursor, change the saved server address and write dumps to the SD card.
+  `[multiplayer] debug_commands = true` turns it back on for development; `tools/record_demo.py` and
+  `mm-re/tools/ryu_multi.py setup` set it, `tools/package_emu_pack.py` clears it (and the key).
+- **Verified:** 206 server tests; web typecheck, tests, build; Switch build on Ryujinx - key generated and
+  sent, a hello for its cid without / with another key refused while it stayed connected, admin taps ignored
+  with `debug_commands = false` and working with `true`, and a hostile server (`%TEMP%\mmsec\rogue.py`:
+  oversized names in `sel_status`, out-of-range numbers, NaN, deep nesting, 50 kB lines, an unsolicited
+  portrait) left it running and pinging. PC: builds with 0 warnings; NOT run by this pass. NOT verified: the
+  old client builds actually crashing on the `sel_status` payload (read from the code), a real Switch.
+- **Still open (by design, need bigger changes):** no TLS to consoles (the key and everything else can be
+  read or changed on the path); a console trusts whatever server it finds; scores are whatever the client
+  says; rooms are public (`/api/state` lists the codes) with no ban; no rate limits (proposed, not built).
+
 ## Round 18: No Fail room option, Same difficulty checked PC <-> Switch (2026-11-24)
 - **Room option `no_fail`** (owner, default off): every console plays the round with the game's No Fail Mode on
   or off, whatever its own setting in the song's confirm panel. Protocol (docstring of `server/lobby.py`):
