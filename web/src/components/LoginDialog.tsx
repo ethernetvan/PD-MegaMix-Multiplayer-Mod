@@ -5,9 +5,10 @@ import { useStore } from "../store";
 export default function LoginDialog({ onClose }: { onClose: () => void }) {
   const { auth, state } = useStore();
   const saved = getCreds();
+  const nameLogin = state.nameLogin;
   const [name, setName] = useState(state.you.name ?? "");
   const [token, setToken] = useState(saved.token ?? "");
-  const [showToken, setShowToken] = useState(!!saved.token);
+  const [showToken, setShowToken] = useState(!!saved.token || !nameLogin);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -16,7 +17,10 @@ export default function LoginDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setErr(null);
     try {
-      const r = await auth(name.trim() || null, token.trim() || null);
+      const r = await auth(
+        nameLogin ? name.trim() || null : null,
+        token.trim() || null,
+      );
       if (r.ok) onClose();
       else setErr(r.error === "bad_token" ? "Wrong admin token." : r.error ?? "failed");
     } catch {
@@ -29,26 +33,35 @@ export default function LoginDialog({ onClose }: { onClose: () => void }) {
     <div className="overlay" onClick={onClose}>
       <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <h2>Login</h2>
-        <label>
-          Lobby creator&apos;s username
-          <input
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. MikuFan"
-          />
-        </label>
-        <p className="hint">
-          Must match the in-game name of the lobby owner to unlock owner
-          controls for their lobbies.
-        </p>
-        <button
-          type="button"
-          className="btn link"
-          onClick={() => setShowToken(!showToken)}
-        >
-          {showToken ? "▾" : "▸"} Server admin token
-        </button>
+        {nameLogin ? (
+          <>
+            <label>
+              Lobby creator&apos;s username
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. MikuFan"
+              />
+            </label>
+            <p className="hint">
+              Must match the in-game name of the lobby owner to unlock owner
+              controls for their lobbies.
+            </p>
+            <button
+              type="button"
+              className="btn link"
+              onClick={() => setShowToken(!showToken)}
+            >
+              {showToken ? "▾" : "▸"} Server admin token
+            </button>
+          </>
+        ) : (
+          <p className="hint">
+            This server only accepts the server admin token. Room owners
+            manage their room from the game&apos;s multiplayer menu.
+          </p>
+        )}
         {showToken && (
           <label>
             Admin token

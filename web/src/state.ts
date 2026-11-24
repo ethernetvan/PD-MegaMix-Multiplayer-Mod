@@ -8,6 +8,8 @@ export interface AppState {
   you: You;
   feeds: Record<string, FeedEntry[]>;
   clockOffset: number;
+  /** the server accepts a login by the lobby owner's in-game name */
+  nameLogin: boolean;
 }
 
 export const initialState: AppState = {
@@ -16,11 +18,12 @@ export const initialState: AppState = {
   you: { name: null, admin: false, owns: [] },
   feeds: {},
   clockOffset: 0,
+  nameLogin: true,
 };
 
 export type Action =
   | { type: "status"; status: ConnStatus }
-  | { type: "hello"; feed: Record<string, FeedEntry[]> }
+  | { type: "hello"; feed: Record<string, FeedEntry[]>; nameLogin?: boolean }
   | { type: "snapshot"; snap: Snapshot }
   | { type: "feed"; lobby: string; entry: FeedEntry }
   | { type: "you"; you: You };
@@ -35,7 +38,7 @@ export function reducer(state: AppState, a: Action): AppState {
       const feeds: Record<string, FeedEntry[]> = {};
       for (const [code, list] of Object.entries(a.feed))
         feeds[code] = list.slice(-FEED_MAX);
-      return { ...state, feeds };
+      return { ...state, feeds, nameLogin: a.nameLogin !== false };
     }
     case "snapshot": {
       const codes = new Set(a.snap.lobbies.map((l) => l.code));

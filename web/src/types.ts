@@ -174,6 +174,9 @@ export interface FeedEntry {
 export interface HelloMsg {
   t: "hello";
   feed: Record<string, FeedEntry[]>;
+  /** false: the server only accepts the admin token (no login by the
+   *  lobby owner's name); absent on older servers = allowed */
+  name_login?: boolean;
 }
 
 export interface FeedMsg {

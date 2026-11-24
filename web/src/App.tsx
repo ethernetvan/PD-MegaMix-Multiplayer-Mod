@@ -43,7 +43,8 @@ export default function App() {
 
   useEffect(() => {
     socket.onmessage = (m) => {
-      if (m.t === "hello") dispatch({ type: "hello", feed: m.feed });
+      if (m.t === "hello")
+        dispatch({ type: "hello", feed: m.feed, nameLogin: m.name_login });
       else if (m.t === "snapshot") dispatch({ type: "snapshot", snap: m });
       else if (m.t === "feed")
         dispatch({ type: "feed", lobby: m.lobby, entry: m.entry });

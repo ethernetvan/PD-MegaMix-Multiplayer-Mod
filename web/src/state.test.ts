@@ -45,6 +45,14 @@ describe("reducer", () => {
       feed: { ABCD: [ev(1), ev(2)] },
     });
     expect(s.feeds.ABCD).toHaveLength(2);
+    expect(s.nameLogin).toBe(true);
+  });
+
+  it("hello tells whether the server takes a login by owner name", () => {
+    const off = reducer(initialState, { type: "hello", feed: {}, nameLogin: false });
+    expect(off.nameLogin).toBe(false);
+    const on = reducer(off, { type: "hello", feed: {}, nameLogin: true });
+    expect(on.nameLogin).toBe(true);
   });
 
   it("feed appends and caps at 100 per lobby", () => {
