@@ -4,6 +4,9 @@
 #include <cstdint>
 #include "../nc/diva_nc.hpp"
 
+struct ImDrawList;
+struct ImFont;
+
 namespace mp::lobby {
 
 void Init();
@@ -62,13 +65,20 @@ void CmdSetName(const char* name);
  * mode on the next pv_sel frame as a dbg_sel_lists message. */
 void DbgSelLists(const int32_t* pvs, int n);
 
+/* which version of the mod a member runs (lobby `plat`) */
+enum { PLAT_UNKNOWN = 0, PLAT_SWITCH = 1, PLAT_PC = 2 };
+
 /* For MpUi: snapshot getters (copies; safe to call on UI thread). */
 struct MemberInfo { char cid[20]; char name[40]; bool connected, is_leader,
                     ready; char reason[24]; char role[12]; int32_t score; float pct;
                     avatar::Ref av; /* Shared Set A slot 1 module (-1 unknown) + chara/mh/img */
                     /* room session ranking: 1-based position (0 unknown),
                      * wins, and times ranked 1st / 2nd / 3rd */
-                    int32_t srPos, wins, places[3]; };
+                    int32_t srPos, wins, places[3];
+                    int plat;            /* PLAT_* */
+                    int diff, ed;        /* difficulty 0..3 (-1 unknown), EXTRA edition */
+                    bool nosong;         /* doesn't have the picker's current song */
+                    };
 struct Snapshot {
     int      phase;           /* LPhase */
     bool     connected;
@@ -100,6 +110,7 @@ struct Snapshot {
     bool     standingsComplete;
     struct { char cid[20]; char name[40]; int32_t score; float pct; int32_t max_combo;
              int32_t life; int rank; bool final; bool me; bool connected;
+             int diff, ed;    /* the chart this player was on (-1 unknown) */
              avatar::Ref av; } standing[8];
     int      standingCount;
     int32_t  resultsAgeMs;  /* ms on the results screen, -1 when not shown */
@@ -115,11 +126,17 @@ struct Snapshot {
     int      voteAgreed, voteNeed, voteEndsIn;
     bool     minusHeld;
     int      minusHeldMs;
+    bool     sameDiff;        /* room option: everyone plays the picker's difficulty */
+    int      myDiff, myEd;    /* this console's song-select difficulty */
 };
 
 /* group pause / pick mode commands */
 void CmdPickMode(const char* mode, const char* cid);
 void CmdKick(const char* cid);       /* owner only */
+void CmdSameDiff(bool on);           /* owner only: room option same_diff */
+/* Song select: the "doesn't have this song" tag, right edge at rx, top at
+ * y (s = 720p scale); returns the height it used, 0 when nobody lacks it. */
+float DrawNoSongTag(ImDrawList* dl, ImFont* font, float rx, float y, float s);
 void CmdPauseReq();
 void CmdResumeReq();
 bool OverlayOpen();

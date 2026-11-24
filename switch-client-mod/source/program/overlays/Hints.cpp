@@ -388,11 +388,13 @@ static void DrawMpBadge(ImDrawList* drawList, ImFont* font, float s) {
         drawList->AddText(font, fsz, ImVec2(rx - ts2.x - 8 * s, y + 4 * s),
             IM_COL32(255, 235, 170, 255), line);
 
-        /* leader: second pill listing who can't play the pick */
+        /* everyone: who doesn't have the picker's song (or that we don't) */
+        float y2 = y + ts2.y + 8 * s + 5.0f * s;
+        y2 += mp::lobby::DrawNoSongTag(drawList, font, rx, y2, s);
+        /* leader: a pill listing who has the song but can't select it */
         if (sn.connected && meLeader && sn.unavailFor[0]) {
-            float y2 = y + ts2.y + 8 * s + 4.0f * s;
             char line2[140];
-            snprintf(line2, sizeof(line2), "Not available for: %.96s",
+            snprintf(line2, sizeof(line2), "Can't select it: %.96s",
                      sn.unavailFor);
             int l2 = (int)strlen(line2);
             while (l2 > 0 && font->CalcTextSizeA(fsz, FLT_MAX, 0, line2).x > maxW) {

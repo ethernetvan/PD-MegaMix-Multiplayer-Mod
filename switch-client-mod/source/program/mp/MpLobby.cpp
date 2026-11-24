@@ -49,6 +49,9 @@ struct MRec {
     int32_t max_combo; int32_t life; int rank; bool final;
     avatar::Ref av;
     int32_t sr[5];   /* session ranking: pos, wins, 1st, 2nd, 3rd places */
+    int8_t  plat;    /* PLAT_* (which version of the mod) */
+    int8_t  diff, ed;/* difficulty 0..3 (-1 unknown), 1 = EXTRA edition */
+    bool    nosong;  /* its console doesn't have the picker's song */
 };
 static MRec s_members[8];
 static int  s_memberCount = 0;
@@ -75,6 +78,21 @@ static int   s_jumpVerify = 0;
 static bool  s_jumpFailedDiff = false;
 static char  s_ackSig[120] = "";
 static char  s_unavailFor[96] = "";    /* names the pick isn't available for */
+/* room option (owner): everyone plays the song picker's difficulty */
+static bool    s_sameDiff = false;
+/* this console's song-select difficulty, and what the server was told */
+static int32_t s_myD = -1, s_myE = 0;
+static int32_t s_sentD = -2, s_sentE = 0;
+static int64_t s_diffSentAt = 0;
+/* same_diff: the picker's (d,e) the follow target was resolved against
+ * (-1 = not forced), the last fallback banner, and the difficulty-only
+ * sync used while the picker has no song up */
+static int32_t s_folWantD = -1, s_folWantE = 0;
+static int32_t s_folDiffBanner[3] = {-1, -1, -1};
+static int     s_diffSyncTries = 0;
+static int32_t s_diffSyncSig = -1;
+static int64_t s_diffSyncAt = 0;
+static int     s_launchDiffTries = 0;
 static int32_t s_slPvs[24];
 static int   s_slN = 0;
 static bool  s_slPending = false;
@@ -84,7 +102,6 @@ static bool    s_folMissing = false; /* not selectable at any difficulty */
 static int32_t s_folTD = -1, s_folTE = -1;  /* (diff,ed) to jump to */
 static int     s_folFail = 0;        /* failed verify attempts, this target */
 static bool    s_folGaveUp = false;
-static int32_t s_folBannerPv = -1;   /* last target we bannered about */
 static int32_t s_folLastD = -1, s_folLastE = -1;
 static int64_t s_launchStartMs = 0;
 static int   s_launchStage = 0;
@@ -159,7 +176,7 @@ static BoardRow s_board[8];
 static int  s_boardCount = 0;
 struct StandingRow { char cid[20]; char name[40]; int32_t score; float pct;
                      int32_t max_combo; int32_t life; int rank; bool final;
-                     bool connected; };
+                     bool connected; int32_t diff, ed; };
 static StandingRow s_standings[8];
 static int  s_standingCount = 0;
 
@@ -199,6 +216,32 @@ static void ReportScene() {
     char m[64];
     snprintf(m, sizeof(m), "{\"t\":\"scene\",\"where\":\"%s\"}", s_scene);
     SendLine(m);
+}
+/* diff {d, e}: this console's song-select difficulty, on change */
+static void ReportDiff() {
+    if (s_myD < 0 || !s_connected) return;
+    if (s_myD == s_sentD && s_myE == s_sentE) return;
+    s_sentD = s_myD; s_sentE = s_myE;
+    s_diffSentAt = (int64_t)NowMs();
+    char m[64];
+    snprintf(m, sizeof(m), "{\"t\":\"diff\",\"d\":%d,\"e\":%d}", s_myD, s_myE);
+    SendLine(m);
+}
+/* the song picker's difficulty when the room forces it on everyone */
+static bool ForcedDiff(int32_t* d, int32_t* e) {
+    if (!s_sameDiff || s_amLeader) return false;
+    for (int i = 0; i < s_memberCount; i++)
+        if (strcmp(s_members[i].cid, s_leaderCid) == 0) {
+            if (s_members[i].diff < 0) return false;
+            *d = s_members[i].diff; *e = s_members[i].ed;
+            return true;
+        }
+    return false;
+}
+static const char* DiffName(int32_t d, int32_t e) {
+    static const char* DNM[] = {"EASY", "NORMAL", "HARD", "EXTREME"};
+    if (d == 3 && e) return "EXTRA EXTREME";
+    return DNM[d >= 0 && d < 4 ? d : 0];
 }
 static void SetScene(const char* w) {
     if (strcmp(s_scene, w) == 0) return;
@@ -349,6 +392,12 @@ static void ClearAllInput() { input::ResetAll(); s_relGuard = 0;
 static const uint64_t MASK_FOLLOWER =
     nn::hid::A | nn::hid::Up | nn::hid::Down | nn::hid::L | nn::hid::R |
     nn::hid::Y;
+/* same_diff rooms: the difficulty follows the picker too */
+static const uint64_t MASK_FOLLOWER_SD =
+    MASK_FOLLOWER | nn::hid::Left | nn::hid::Right;
+static bool IsFollowerMask(uint64_t m) {
+    return m == MASK_FOLLOWER || m == MASK_FOLLOWER_SD;
+}
 static const uint64_t MASK_ALL_NO_MINUS = ~(uint64_t)nn::hid::Minus;
 
 /* rooms with 2+ members: Retry is impossible and pause is group-synced */
@@ -415,6 +464,10 @@ static void ResetLobbyState() {
     s_resultsShownAt = 0;
     s_playedRound = 0; s_finalSentRound = 0;
     s_finalLine[0] = 0; s_finalLineRound = 0;
+    s_sameDiff = false;
+    s_folWantD = -1; s_folWantE = 0;
+    s_folDiffBanner[0] = s_folDiffBanner[1] = s_folDiffBanner[2] = -1;
+    s_diffSyncTries = 0; s_diffSyncSig = -1;
     s_roundOver = false; s_autoReturn = false;
     s_standingsRound = 0;
     s_launchHandledRound = -1;   /* round numbers restart in every room */
@@ -449,6 +502,8 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
     gs("assigned", s_assignedCid, sizeof(s_assignedCid));
     {   int gi2 = mpjson::Find(line, tok, ntok, "group_paused");
         if (gi2 >= 0) s_groupPaused = line[tok[gi2].start] == 't'; }
+    {   int sd = mpjson::Find(line, tok, ntok, "same_diff");
+        s_sameDiff = sd >= 0 && line[tok[sd].start] == 't'; }
     int32_t rd = 0; gi("round", &rd); s_round = rd;
     int32_t spv = -1; if (gi("sel_pv", &spv)) s_selPv = spv;
     bool wasLeader = s_amLeader;
@@ -511,6 +566,23 @@ static void HandleLobby(const char* line, jsmntok_t* tok, int ntok) {
                     if (mpjson::ToInt(line, tok[a], &sv)) m.sr[k] = sv;
                 }
             }
+            m.plat = PLAT_UNKNOWN; m.diff = -1; m.ed = 0;
+            if ((j = mpjson::Find(line, tok + i, end - i, "plat")) >= 0) {
+                char pb[8] = "";
+                mpjson::Copy(line, tok[i + j], pb, sizeof(pb));
+                m.plat = strcmp(pb, "pc") == 0 ? PLAT_PC
+                       : strcmp(pb, "switch") == 0 ? PLAT_SWITCH : PLAT_UNKNOWN;
+            }
+            v = -1;
+            if ((j = mpjson::Find(line, tok + i, end - i, "diff")) >= 0 &&
+                mpjson::ToInt(line, tok[i + j], &v) && v >= 0 && v <= 3)
+                m.diff = (int8_t)v;
+            v = 0;
+            if ((j = mpjson::Find(line, tok + i, end - i, "ed")) >= 0 &&
+                mpjson::ToInt(line, tok[i + j], &v))
+                m.ed = (m.diff == 3 && v == 1) ? 1 : 0;
+            if ((j = mpjson::Find(line, tok + i, end - i, "nosong")) >= 0)
+                m.nosong = line[tok[i + j].start] == 't';
             s_memberCount++;
             i = end;
         }
@@ -586,6 +658,13 @@ static void HandleStandings(const char* line, jsmntok_t* tok, int ntok) {
             mpjson::ToInt(line, tok[i + j], &v)) r.rank = v;
         if ((j = mpjson::Find(line, tok + i, end - i, "final")) >= 0)
             r.final = line[tok[i + j].start] == 't';
+        r.diff = -1; r.ed = 0;
+        if ((j = mpjson::Find(line, tok + i, end - i, "diff")) >= 0 &&
+            mpjson::ToInt(line, tok[i + j], &v) && v >= 0 && v <= 3)
+            r.diff = v;
+        if ((j = mpjson::Find(line, tok + i, end - i, "ed")) >= 0 &&
+            mpjson::ToInt(line, tok[i + j], &v))
+            r.ed = (r.diff == 3 && v == 1) ? 1 : 0;
         s_standingCount++;
         i = end;
     }
@@ -637,6 +716,8 @@ static void ProcessLine(const char* line) {
             SendLine(s_finalLine);
         }
         if (s_inLobbyDirty()) s_readyDirty = true;
+        s_sentD = -2;                 /* a new session: report it again */
+        ReportDiff();
         ReportAutoPlay(AutoPlay::g_enabled);
         ReportScene();
         avatar::OnWelcome();
@@ -715,9 +796,14 @@ static void ProcessLine(const char* line) {
                 if (k == 1 &&
                     (j = mpjson::Find(line, tok + i, end - i, "reason")) >= 0)
                     mpjson::Copy(line, tok[i + j], rs, sizeof(rs));
-                off += snprintf(s_notReady + off, sizeof(s_notReady) - off,
-                                "%s%s%s; ", nm, rs[0] ? ":" : "", rs);
-                if (k != 1 && nm[0] && uoff < (int)sizeof(unavail) - 20)
+                /* players without the song are flagged per member
+                 * (nosong), not listed here */
+                if (k != 0 && strcmp(rs, "wrong_song") != 0)
+                    off += snprintf(s_notReady + off, sizeof(s_notReady) - off,
+                                    "%s%s%s; ", nm, rs[0] ? ":" : "", rs);
+                /* missing songs have their own tag (members' nosong);
+                 * this list is who has it but can't select it */
+                if (k == 2 && nm[0] && uoff < (int)sizeof(unavail) - 20)
                     uoff += snprintf(unavail + uoff, sizeof(unavail) - uoff,
                                      "%s, ", nm);
                 i = end;
@@ -728,7 +814,7 @@ static void ProcessLine(const char* line) {
             strncpy(s_unavailFor, unavail, sizeof(s_unavailFor) - 1);
             s_unavailFor[sizeof(s_unavailFor) - 1] = 0;
             if (s_amLeader && unavail[0])
-                PushBanner("Not available for %s", unavail);
+                PushBanner("%s can't select this song", unavail);
         }
         return;
     }
@@ -775,6 +861,7 @@ static void ProcessLine(const char* line) {
                 SetPhase(L_LAUNCHING, "Leader started - finish module "
                                       "selection to join");
                 s_launchStage = 0;
+                s_launchDiffTries = 0;
                 s_launchBlocking = false;
                 s_launchStartMs = NowMs();
                 ClearAllInput();
@@ -924,6 +1011,12 @@ static void ProcessLine(const char* line) {
         int32_t value = 0;
         i = mpjson::Find(line, tok, ntok, "value");
         if (i >= 0) mpjson::ToInt(line, tok[i], &value);
+        if (strcmp(k, "same_diff") == 0) {
+            PushBanner(value ? "Same difficulty: everyone plays the song "
+                               "picker's difficulty"
+                             : "Same difficulty off: pick your own difficulty");
+            return;
+        }
         /* the results screen has its own standings; don't cover its title */
         bool onResults = s_resultsShownAt > 0;
         bool player = strcmp(k, "combo") == 0 || strcmp(k, "low_life") == 0 ||
@@ -954,7 +1047,7 @@ static void ApplyBlocks() {
     /* follower lock only on the song list itself: the module picker /
      * customize run inside song select and must stay usable */
     if (s_phase == L_SELECT && !s_amLeader && s_selActive && s_selBrowsing)
-        SetBlocks(MASK_FOLLOWER, true);
+        SetBlocks(s_sameDiff ? MASK_FOLLOWER_SD : MASK_FOLLOWER, true);
     else if (s_phase == L_LOADING ||
              (s_phase == L_LAUNCHING && s_launchBlocking))
         SetBlocks(MASK_ALL_NO_MINUS, false);
@@ -1242,12 +1335,13 @@ static void SendFinal(const PVGameData* pv, bool quit) {
     snprintf(m, sizeof(m),
         "{\"t\":\"final\",\"round\":%d,\"score\":%d,\"pct\":%.2f,"
         "\"max_combo\":%d,\"jc\":[%d,%d,%d,%d,%d],\"life\":%d,"
-        "\"border\":%.2f,\"clear\":%s,\"drop\":%s,\"quit\":%s}",
+        "\"border\":%.2f,\"clear\":%s,\"drop\":%s,\"quit\":%s,"
+        "\"diff\":%d,\"ed\":%d}",
         s_playedRound, pv->score, (double)pv->percentage, pv->max_combo,
         pv->judge_count[0], pv->judge_count[1], pv->judge_count[2],
         pv->judge_count[3], pv->judge_count[4], pv->life, (double)border,
         clear ? "true" : "false", drop ? "true" : "false",
-        quit ? "true" : "false");
+        quit ? "true" : "false", s_myD, s_myE);
     SendLine(m);
     strncpy(s_finalLine, m, sizeof(s_finalLine) - 1);
     s_finalLine[sizeof(s_finalLine) - 1] = 0;
@@ -1289,6 +1383,16 @@ void OnPvSelDest() {
     ApplyBlocks();
 }
 
+/* The Random entry (cursor pv -2): the song the game rolled for it, from
+ * the selector's random_pv slot; -1 while there is none. */
+static int32_t RandomPv(const void* sel) {
+    uintptr_t p = reinterpret_cast<uintptr_t>(sel);
+    uintptr_t data2 = *reinterpret_cast<uintptr_t*>(p + 0x260D8);
+    if (!data2) return -1;
+    int32_t* e = *reinterpret_cast<int32_t**>(data2);
+    return e ? *e : -1;
+}
+
 /* Resolve the follow target once per target/(diff,ed) change: the leader's
  * pv if selectable at any (d,e), else a name-matched pv that is, else
  * missing (no jumps, wrong_song). */
@@ -1300,6 +1404,11 @@ static void ResolveFollow(const void* sel) {
     int32_t curD = *reinterpret_cast<const int32_t*>((const char*)sel + 0x261A0);
     int32_t curE = *reinterpret_cast<const int32_t*>((const char*)sel + 0x261A4);
     s_folLastD = curD; s_folLastE = curE;
+    /* the difficulty we want to be on: ours, or the picker's when the
+     * room says everyone plays the same one */
+    int32_t wantD = curD, wantE = curE;
+    bool forced = ForcedDiff(&wantD, &wantE);
+    s_folWantD = forced ? wantD : -1; s_folWantE = forced ? wantE : 0;
 
     auto anySelectable = [&](int32_t p) {
         for (int d = 0; d < 4; d++)
@@ -1313,28 +1422,25 @@ static void ResolveFollow(const void* sel) {
         if (fb > 0 && anySelectable(fb)) pv = fb;
     }
     if (!anySelectable(pv)) {
+        /* shown by the song-select tag (DrawNoSongTag) while it lasts */
         s_folMissing = true;
-        if (s_folBannerPv != s_localPv) {
-            s_folBannerPv = s_localPv;
-            PushBanner("You don't have %s",
-                       s_selName[0] ? s_selName : "this song");
-        }
         return;
     }
     s_folTarget = pv;
-    if (SongQuickJump::PvSelectableAt(sel, pv, curD, curE)) {
-        s_folTD = curD; s_folTE = curE;
+    if (SongQuickJump::PvSelectableAt(sel, pv, wantD, wantE)) {
+        s_folTD = wantD; s_folTE = wantE;
     } else if (SongQuickJump::ClosestSelectable(
-                   sel, pv, curD, curE, &s_folTD, &s_folTE)) {
-        static const char* DNM[] = {"EASY", "NORMAL", "HARD", "EXTREME"};
-        auto dn = [](int32_t d, int32_t e, char* out) {
-            if (e) strcpy(out, "EXTRA EXTREME");
-            else snprintf(out, 14, "%s", DNM[d >= 0 && d < 4 ? d : 0]);
-        };
-        char cn[16], nn[16];
-        dn(curD, curE, cn); dn(s_folTD, s_folTE, nn);
-        PushBanner("No %s chart for %s - switched to %s",
-                   cn, s_selName[0] ? s_selName : "this song", nn);
+                   sel, pv, wantD, wantE, &s_folTD, &s_folTE)) {
+        /* once per (song, wanted, fallback): a forced target is resolved
+         * again after every jump */
+        int32_t sig[3] = { pv, wantD * 2 + wantE, s_folTD * 2 + s_folTE };
+        if (memcmp(sig, s_folDiffBanner, sizeof(sig)) != 0) {
+            memcpy(s_folDiffBanner, sig, sizeof(sig));
+            PushBanner("No %s chart for %s - switched to %s",
+                       DiffName(wantD, wantE),
+                       s_selName[0] ? s_selName : "this song",
+                       DiffName(s_folTD, s_folTE));
+        }
     }
 }
 
@@ -1398,6 +1504,15 @@ void OnPvSelFrame(const void* sel) {
     uint64_t now = NowMs();
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
     s_lastSelState = state;
+    const int32_t curD = *reinterpret_cast<const int32_t*>(
+                            (const char*)sel + 0x261A0);
+    const int32_t curE = *reinterpret_cast<const int32_t*>(
+                            (const char*)sel + 0x261A4);
+    if (curD >= 0 && curD <= 3) {
+        s_myD = curD; s_myE = (curD == 3 && curE == 1) ? 1 : 0;
+        /* settle for a moment so a held D-pad sends one message */
+        if ((int64_t)now - s_diffSentAt >= 250) ReportDiff();
+    }
 
     /* follower lock follows the song list: drop it while the module picker
      * or customize is open, and keep buttons held at that moment blocked
@@ -1407,11 +1522,11 @@ void OnPvSelFrame(const void* sel) {
                     CustomizeSelUi::IsOpen();
         bool browsing = state == 6 && !busy && !cust;
         if (browsing != s_selBrowsing) {
-            bool wasLocked = s_baseMask == MASK_FOLLOWER;
+            bool wasLocked = IsFollowerMask(s_baseMask);
             s_selBrowsing = browsing;
             ApplyBlocks();
-            if (wasLocked && s_baseMask != MASK_FOLLOWER) {
-                s_relGuard |= input::NavHeld() & MASK_FOLLOWER;
+            if (wasLocked && !IsFollowerMask(s_baseMask)) {
+                s_relGuard |= input::NavHeld() & MASK_FOLLOWER_SD;
                 int sx = 0, sy = 0;
                 input::NavStick(&sx, &sy);
                 if (sx >= 8000 || sx <= -8000 || sy >= 8000 || sy <= -8000)
@@ -1499,19 +1614,31 @@ void OnPvSelFrame(const void* sel) {
     }
 
     /* leader: send sel on pv change */
+    auto sendSel = [&](int32_t pv) {
+        s_lastSelMs = now;
+        s_lastSentSel = pv;
+        s_unavailFor[0] = 0;
+        char nm[48] = "";
+        SongQuickJump::PvName(pv, nm, sizeof(nm));
+        char esc[80]; mpjson::EscapeInto(esc, sizeof(esc), nm);
+        char m[200];
+        snprintf(m, sizeof(m),
+            "{\"t\":\"sel\",\"pv\":%d,\"name\":\"%s\"}", pv, esc);
+        SendLine(m);
+    };
     if (s_phase == L_SELECT && s_amLeader && state == 6 && !busy) {
         if (selPv != -2 && selPv != s_lastSentSel &&
-            now - s_lastSelMs >= 100) {
-            s_lastSelMs = now;
-            s_lastSentSel = selPv;
-            s_unavailFor[0] = 0;
-            char nm[48] = "";
-            SongQuickJump::PvName(selPv, nm, sizeof(nm));
-            char esc[80]; mpjson::EscapeInto(esc, sizeof(esc), nm);
-            char m[200];
-            snprintf(m, sizeof(m),
-                "{\"t\":\"sel\",\"pv\":%d,\"name\":\"%s\"}", selPv, esc);
-            SendLine(m);
+            now - s_lastSelMs >= 100)
+            sendSel(selPv);
+    }
+    /* leader on the Random entry: the cursor's pv stays -2, the song the
+     * game rolled is only known once A opened the confirm panel. Send it
+     * then, so everyone else navigates to it before the start. */
+    if (s_phase == L_SELECT && s_amLeader && state == 8 && selPv == -2) {
+        int32_t rp = RandomPv(sel);
+        if (rp > 0 && rp != s_lastSentSel && now - s_lastSelMs >= 100) {
+            WriteLog("[MP-L] random pick -> pv %d\n", rp);
+            sendSel(rp);
         }
     }
 
@@ -1522,12 +1649,8 @@ void OnPvSelFrame(const void* sel) {
         s_committed = true;
         int32_t pv = selPv;
         if (pv == -2) {
-            uintptr_t p = reinterpret_cast<uintptr_t>(sel);
-            uintptr_t data2 = *reinterpret_cast<uintptr_t*>(p + 0x260D8);
-            if (data2) {
-                int32_t* e = *reinterpret_cast<int32_t**>(data2);
-                if (e) pv = *e;
-            }
+            int32_t rp = RandomPv(sel);
+            if (rp > 0) pv = rp;
         }
         char nm[48] = "";
         SongQuickJump::PvName(pv, nm, sizeof(nm));
@@ -1541,32 +1664,50 @@ void OnPvSelFrame(const void* sel) {
     }
 
     /* follower: re-resolve when the target or our difficulty changes */
+    int32_t fwD = -1, fwE = 0;              /* the picker's, when forced */
+    const bool forced = ForcedDiff(&fwD, &fwE);
+    if (!forced) { fwD = -1; fwE = 0; }
     if (!s_amLeader && s_localPv > 0) {
-        int32_t curD = *reinterpret_cast<const int32_t*>(
-                          (const char*)sel + 0x261A0);
-        int32_t curE = *reinterpret_cast<const int32_t*>(
-                          (const char*)sel + 0x261A4);
         if (s_localPv != s_folLeaderPv ||
-            curD != s_folLastD || curE != s_folLastE) {
+            curD != s_folLastD || curE != s_folLastE ||
+            fwD != s_folWantD || fwE != s_folWantE) {
             ResolveFollow(sel);
             if (s_folMissing)
                 SendSelAck(false, false, -1, "");
         }
     }
     /* follower: follow the leader's pick */
+    const bool offDiff = forced && s_folTD >= 0 &&
+                         (curD != s_folTD || curE != s_folTE);
     if (s_phase == L_SELECT && !s_amLeader && s_folTarget > 0 &&
-        !s_folGaveUp && state == 6 && !busy && selPv != s_folTarget &&
+        !s_folGaveUp && state == 6 && !busy &&
+        (selPv != s_folTarget || offDiff) &&
         now - s_lastJumpMs >= 150) {
         s_lastJumpMs = now;
         s_lastJumpTarget = s_folTarget;
         s_jumpVerify = 4;
         FollowJump(sel, s_folTarget);
     }
+    /* same_diff with no song to follow (the picker hasn't settled on one,
+     * or this console lacks it): stay on our song and match the picker's
+     * difficulty when our song has that chart */
+    if (s_phase == L_SELECT && !s_amLeader && forced && s_folTarget <= 0 &&
+        state == 6 && !busy && selPv > 0 && (curD != fwD || curE != fwE)) {
+        int32_t sig = selPv * 8 + fwD * 2 + fwE;
+        if (sig != s_diffSyncSig) { s_diffSyncSig = sig; s_diffSyncTries = 0; }
+        if (s_diffSyncTries < 3 && (int64_t)now - s_diffSyncAt >= 400 &&
+            SongQuickJump::PvSelectableAt(sel, selPv, fwD, fwE)) {
+            s_diffSyncAt = (int64_t)now;
+            s_diffSyncTries++;
+            SongQuickJump::JumpSelectorToPvAt(
+                const_cast<void*>(sel), selPv, fwD, fwE);
+        }
+    }
     /* jump verify + ack */
     if (s_jumpVerify > 0) {
         s_jumpVerify--;
         if (s_jumpVerify == 0) {
-            bool ok = (selPv == s_lastJumpTarget);
+            bool ok = (selPv == s_lastJumpTarget) && !offDiff;
             if (ok) s_jumpFailedDiff = false;
             if (!ok && state == 6) s_folFail++;
             if (s_folFail >= 3 && !s_folGaveUp) {
@@ -1601,7 +1742,11 @@ void OnPvSelFrame(const void* sel) {
                 s_launchBlocking = true;
                 SetBlocks(MASK_ALL_NO_MINUS, true);
                 int32_t target = s_folTarget > 0 ? s_folTarget : s_localPv;
-                if (selPv == target) {
+                /* same_diff: get onto the picker's difficulty first; after
+                 * a few failed tries start on ours rather than miss the
+                 * round */
+                bool diffOff = offDiff && s_launchDiffTries < 4;
+                if (selPv == target && !diffOff) {
                     input::Tap(nn::hid::A, 80, 80, true);
                     s_launchStage = 1;
                     s_launchStageAt = now;
@@ -1609,6 +1754,7 @@ void OnPvSelFrame(const void* sel) {
                 } else if (s_folTarget > 0 &&
                            now - s_lastJumpMs >= 150) {
                     s_lastJumpMs = now;
+                    if (selPv == target) s_launchDiffTries++;
                     FollowJump(sel, target);
                 }
             }
@@ -1744,16 +1890,18 @@ void OnPvGameFrame(PVGameData* pv) {
             if (pv->paused) {
                 s_apActive = false;
                 s_loadedSent = true;
-                char m[64];
+                char m[96];
                 snprintf(m, sizeof(m),
-                    "{\"t\":\"loaded\",\"round\":%d}", s_round);
+                    "{\"t\":\"loaded\",\"round\":%d,\"diff\":%d,\"ed\":%d}",
+                    s_round, s_myD, s_myE);
                 SendLine(m);
             } else if (now - s_apT0 > 3000) {
                 s_apActive = false;
                 s_loadedSent = true;
-                char m[64];
+                char m[96];
                 snprintf(m, sizeof(m),
-                    "{\"t\":\"loaded\",\"round\":%d}", s_round);
+                    "{\"t\":\"loaded\",\"round\":%d,\"diff\":%d,\"ed\":%d}",
+                    s_round, s_myD, s_myE);
                 SendLine(m);
             } else if (now - s_apLastTap >= 150) {
                 input::Tap(nn::hid::Plus, 50, 100, true);
@@ -1948,7 +2096,17 @@ void GetSnapshot(Snapshot* out) {
         d.srPos = s_members[i].sr[0];
         d.wins = s_members[i].sr[1];
         for (int k = 0; k < 3; k++) d.places[k] = s_members[i].sr[2 + k];
+        d.plat = s_members[i].plat;
+        d.diff = s_members[i].diff; d.ed = s_members[i].ed;
+        /* flags only mean something while a song is being picked; our
+         * own comes straight from the selector (no server round trip) */
+        d.nosong = s_phase == L_SELECT && !d.is_leader &&
+            (strcmp(s_members[i].cid, s_myCid) == 0
+                 ? (!s_amLeader && s_localPv > 0 && s_folMissing)
+                 : s_members[i].nosong);
     }
+    out->sameDiff = s_sameDiff;
+    out->myDiff = s_myD; out->myEd = s_myE;
     int lc = 0, pc = 0;
     for (int i = 0; i < s_memberCount; i++)
         if (strcmp(s_members[i].role, "player") == 0) {
@@ -1984,6 +2142,7 @@ void GetSnapshot(Snapshot* out) {
         d.score = r.score; d.pct = r.pct; d.max_combo = r.max_combo;
         d.life = r.life; d.rank = r.rank; d.final = r.final;
         d.connected = r.connected;
+        d.diff = r.diff; d.ed = r.ed;
         d.me = r.cid[0] ? (strcmp(r.cid, s_myCid) == 0)
                         : (strstr(r.name, s_myName) != nullptr && s_myName[0]);
         d.av = avatar::Ref{};
@@ -2081,6 +2240,10 @@ void CmdPickMode(const char* mode, const char* cid) {
         snprintf(m, sizeof(m),
             "{\"t\":\"set_pick_mode\",\"mode\":\"%s\"}", mode);
     SendLine(m);
+}
+void CmdSameDiff(bool on) {
+    SendLine(on ? "{\"t\":\"set_opt\",\"key\":\"same_diff\",\"value\":true}"
+                : "{\"t\":\"set_opt\",\"key\":\"same_diff\",\"value\":false}");
 }
 void CmdKick(const char* cid) {
     if (!cid || !*cid) return;
