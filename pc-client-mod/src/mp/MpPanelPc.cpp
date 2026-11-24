@@ -16,6 +16,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
 
 namespace mp::lobby {
 
@@ -224,18 +225,6 @@ static float TxtBigW(const char* s, float px) {
     if (!f) return TxtW(s, px / ImGui::GetFontSize());
     return f->CalcTextSizeA(px, FLT_MAX, 0.0f, s).x;
 }
-/* dark outline + fill, readable over busy menu art */
-static void TxtShadow(ImDrawList* dl, ImVec2 p, const char* s, float sc,
-                      ImU32 col) {
-    float fs = ImGui::GetFontSize() * sc;
-    ImFont* f = ImGui::GetFont();
-    const ImU32 out = IM_COL32(6, 10, 16, 200);
-    dl->AddText(f, fs, ImVec2(p.x - 1, p.y), out, s);
-    dl->AddText(f, fs, ImVec2(p.x + 1, p.y), out, s);
-    dl->AddText(f, fs, ImVec2(p.x, p.y - 1), out, s);
-    dl->AddText(f, fs, ImVec2(p.x, p.y + 1), out, s);
-    dl->AddText(f, fs, p, col, s);
-}
 
 /* ---------------- members data (Switch ports) ---------------- */
 static const ImU32 kRacePalette[8] = {
@@ -250,14 +239,14 @@ static ImU32 RaceColor(const Snapshot& s, const char* cid) {
     return IM_COL32(180, 180, 180, 255);
 }
 static const char* MemberStatus(const MemberInfo& m) {
-    if (!m.connected) return "disconnected";
-    if (m.nosong) return "no song";
-    if (m.ready) return "ready";
-    if (strcmp(m.reason, "modules") == 0) return "choosing modules";
-    if (strcmp(m.reason, "wrong_song") == 0) return "wrong song";
-    if (strcmp(m.reason, "difficulty") == 0) return "difficulty";
-    if (strcmp(m.reason, "not_in_sel") == 0) return "not in song select";
-    return "not ready";
+    if (!m.connected) return "Disconnected";
+    if (m.nosong) return "No song";
+    if (m.ready) return "Ready";
+    if (strcmp(m.reason, "modules") == 0) return "Choosing modules";
+    if (strcmp(m.reason, "wrong_song") == 0) return "Wrong song";
+    if (strcmp(m.reason, "difficulty") == 0) return "Difficulty";
+    if (strcmp(m.reason, "not_in_sel") == 0) return "Not in song select";
+    return "Not ready";
 }
 static ImU32 MemberDot(const MemberInfo& m) {
     return !m.connected ? kDim : (m.nosong ? kRed : (m.ready ? kGreen : kYellow));
@@ -417,30 +406,97 @@ static void StatusDot(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
     dl->AddCircle(c, r, IM_COL32(8, 14, 24, 255), 16, 1.6f * s_sc);
 }
 
+/* the shape the draw list's path holds (a convex outline around hc) filled
+ * with col, except a round hole (hc, hr) that stays open. A fan of quads
+ * from the hole to the outline, split at the outline's own corners so its
+ * edges stay exact; the fill is not anti-aliased (abutting AA quads leave
+ * seams), the two edges get a 1 px stroke instead, so the path is expected
+ * half a pixel inside the wanted outline and the fill stops half a pixel
+ * short of the hole. Clears the path. */
+static void PathFillWithHole(ImDrawList* dl, ImVec2 hc, float hr, ImU32 col) {
+    hr += 0.5f;
+    ImVec2 pts[64];
+    int n = dl->_Path.Size < 64 ? dl->_Path.Size : 64;
+    for (int i = 0; i < n; i++) pts[i] = dl->_Path[i];
+    dl->PathClear();
+    if (n < 3) return;
+    float ang[96];
+    int na = 0;
+    for (int i = 0; i < n; i++) ang[na++] = atan2f(pts[i].y - hc.y, pts[i].x - hc.x);
+    for (int i = 0; i < 24; i++) ang[na++] = -3.14159265f + i * (6.2831853f / 24.0f);
+    std::sort(ang, ang + na);
+    auto outer = [&](float t, ImVec2* out) {
+        const ImVec2 d(cosf(t), sinf(t));
+        float best = -1.0f;
+        for (int i = 0; i < n; i++) {
+            const ImVec2 p = pts[i], q = pts[(i + 1) % n];
+            const ImVec2 e(q.x - p.x, q.y - p.y), w(p.x - hc.x, p.y - hc.y);
+            const float cr = d.x * e.y - d.y * e.x;
+            if (fabsf(cr) < 1e-6f) continue;
+            const float tt = (w.x * e.y - w.y * e.x) / cr, u = (w.x * d.y - w.y * d.x) / cr;
+            if (tt > best && u >= -0.001f && u <= 1.001f) best = tt;
+        }
+        if (best <= 0.0f) return false;
+        *out = ImVec2(hc.x + d.x * best, hc.y + d.y * best);
+        return true;
+    };
+    const ImDrawListFlags keep = dl->Flags;
+    dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+    for (int i = 0; i < na; i++) {
+        const float t0 = ang[i], t1 = i + 1 < na ? ang[i + 1] : ang[0] + 6.2831853f;
+        if (t1 - t0 < 1e-5f) continue;
+        ImVec2 p0, p1;
+        if (!outer(t0, &p0) || !outer(t1, &p1)) continue;
+        dl->AddQuadFilled(ImVec2(hc.x + cosf(t0) * hr, hc.y + sinf(t0) * hr), p0, p1,
+                          ImVec2(hc.x + cosf(t1) * hr, hc.y + sinf(t1) * hr), col);
+    }
+    dl->Flags = keep;
+    dl->AddPolyline(pts, n, col, ImDrawFlags_Closed, 1.0f);
+    dl->AddCircle(hc, hr, col, 20, 1.0f);
+}
+
 /* which version of the mod a member runs: a Joy-Con pair for the Switch
  * game (Mega Mix), a monitor for the PC game (Mega Mix+). h tall, centred
- * on c; cut = the colour behind it (for the screen / stick cut-outs). */
+ * on c; cut = the colour behind it for the screen / stick cut-outs, or 0
+ * to leave them open (the icon sits on a backdrop, not on a flat plate). */
 static float IconPlatW(float h, int plat) {
     return plat == PLAT_PC ? h * 1.22f : (plat == PLAT_SWITCH ? h * 0.90f : 0.0f);
 }
 static void IconPlat(ImDrawList* dl, ImVec2 c, float h, int plat, ImU32 col, ImU32 cut) {
+    const bool open = (cut >> IM_COL32_A_SHIFT) == 0;
     if (plat == PLAT_PC) {
         const float w = h * 1.22f, sh = h * 0.70f;
         ImVec2 a(c.x - w * 0.5f, c.y - h * 0.5f), b(c.x + w * 0.5f, c.y - h * 0.5f + sh);
-        dl->AddRectFilled(a, b, col, h * 0.12f);
         const float in = h * 0.115f;
-        dl->AddRectFilled(ImVec2(a.x + in, a.y + in), ImVec2(b.x - in, b.y - in), cut, h * 0.04f);
+        if (open) {     /* the bezel alone: a stroke as thick as the bezel */
+            dl->AddRect(ImVec2(a.x + in * 0.5f, a.y + in * 0.5f), ImVec2(b.x - in * 0.5f, b.y - in * 0.5f), col,
+                        h * 0.12f - in * 0.5f, 0, in);
+        } else {
+            dl->AddRectFilled(a, b, col, h * 0.12f);
+            dl->AddRectFilled(ImVec2(a.x + in, a.y + in), ImVec2(b.x - in, b.y - in), cut, h * 0.04f);
+        }
         dl->AddRectFilled(ImVec2(c.x - h * 0.09f, b.y), ImVec2(c.x + h * 0.09f, c.y + h * 0.40f), col);
         dl->AddRectFilled(ImVec2(c.x - h * 0.34f, c.y + h * 0.36f), ImVec2(c.x + h * 0.34f, c.y + h * 0.5f),
                           col, h * 0.06f);
     } else if (plat == PLAT_SWITCH) {
         const float w = h * 0.90f, gap = h * 0.09f, r = h * 0.24f;
         ImVec2 a(c.x - w * 0.5f, c.y - h * 0.5f), b(c.x + w * 0.5f, c.y + h * 0.5f);
-        dl->AddRectFilled(a, ImVec2(c.x - gap * 0.5f, b.y), col, r, ImDrawFlags_RoundCornersLeft);
-        dl->AddRectFilled(ImVec2(c.x + gap * 0.5f, a.y), b, col, r, ImDrawFlags_RoundCornersRight);
         const float hw = (w - gap) * 0.5f;
-        dl->AddCircleFilled(ImVec2(a.x + hw * 0.52f, a.y + h * 0.30f), h * 0.11f, cut, 12);
-        dl->AddCircleFilled(ImVec2(b.x - hw * 0.52f, a.y + h * 0.62f), h * 0.11f, cut, 12);
+        const ImVec2 s0(a.x + hw * 0.52f, a.y + h * 0.30f), s1(b.x - hw * 0.52f, a.y + h * 0.62f);
+        if (open) {     /* each half around its stick */
+            const float o = 0.5f;
+            dl->PathRect(ImVec2(a.x + o, a.y + o), ImVec2(c.x - gap * 0.5f - o, b.y - o), r - o,
+                         ImDrawFlags_RoundCornersLeft);
+            PathFillWithHole(dl, s0, h * 0.11f, col);
+            dl->PathRect(ImVec2(c.x + gap * 0.5f + o, a.y + o), ImVec2(b.x - o, b.y - o), r - o,
+                         ImDrawFlags_RoundCornersRight);
+            PathFillWithHole(dl, s1, h * 0.11f, col);
+        } else {
+            dl->AddRectFilled(a, ImVec2(c.x - gap * 0.5f, b.y), col, r, ImDrawFlags_RoundCornersLeft);
+            dl->AddRectFilled(ImVec2(c.x + gap * 0.5f, a.y), b, col, r, ImDrawFlags_RoundCornersRight);
+            dl->AddCircleFilled(s0, h * 0.11f, cut, 12);
+            dl->AddCircleFilled(s1, h * 0.11f, cut, 12);
+        }
     }
 }
 
@@ -465,58 +521,75 @@ static bool s_urlInit = false;
 static bool s_confirmLeave = false;
 static int  s_tab = 0;          /* 0 lobby, 1 settings */
 
-/* podium: session top-3 (Switch DrawRoom port); returns the bottom y */
+/* white text with a coloured outline, centred on cx (podium captions on
+ * the panel's backdrop) */
+static void PodiumText(ImDrawList* dl, ImFont* f, float px, float cx, float y, const char* s,
+                       ImU32 fill, ImU32 outl) {
+    ImVec2 p(cx - f->CalcTextSizeA(px, FLT_MAX, 0.0f, s).x * 0.5f, y);
+    const float o = px * 0.075f;
+    for (int k = 0; k < 8; k++) {
+        float ang = k * 0.785398f;
+        dl->AddText(f, px, ImVec2(p.x + cosf(ang) * o, p.y + sinf(ang) * o), outl, s);
+    }
+    dl->AddText(f, px, ImVec2(p.x, p.y + o * 0.8f), outl, s);
+    dl->AddText(f, px, p, fill, s);
+}
+/* podium: the session's top three in a row, the hexagons standing on one
+ * line so the plates, names and role captions line up. No status dot and
+ * no trophies (the list below has both); the platform icon's cut-outs are
+ * left open. Returns the bottom y. */
 static float DrawPodium(ImDrawList* dl, const Snapshot& sn, const int* order,
                         ImVec2 a, ImVec2 b) {
     int n = sn.memberCount < 3 ? sn.memberCount : 3;
     float cw = (b.x - a.x) / 3.0f;
     float xoff = (3.0f - n) * cw * 0.5f;
-    const float rads[3] = { S(33), S(27), S(24) };
-    float cy = a.y + S(40);
+    const float rads[3] = { S(66), S(56), S(48) };
+    const float tip = a.y + rads[0] * 2.0f + S(4);     /* shared bottom tip */
+    const ImU32 outl = IM_COL32(0, 96, 150, 255);      /* as the room code */
+    ImFont* bf = FontLoader::Big() ? FontLoader::Big() : ImGui::GetFont();
     float bot = a.y;
     for (int i = 0; i < n; i++) {
         const MemberInfo& m = sn.members[order[i]];
         float cx = a.x + xoff + cw * (i + 0.5f);
         float r = rads[i];
-        ImVec2 ac(cx, cy);
         bool you = strcmp(m.cid, sn.myCid) == 0;
-        DrawHexAvatar(dl, ac, r, MemberRef(sn, m), RaceColor(sn, m.cid),
+        DrawHexAvatar(dl, ImVec2(cx, tip - r), r, MemberRef(sn, m), RaceColor(sn, m.cid),
                       m.connected, you);
-        StatusDot(dl, ImVec2(ac.x + r * 0.66f, ac.y + r * 0.66f), S(6.5f),
-                  MemberDot(m));
-        /* numbered white plate overlapping the hexagon's bottom tip */
-        float pw = S(30), ph = S(24);
-        ImVec2 pa(cx - pw * 0.5f, cy + r * 0.58f), pb(pa.x + pw, pa.y + ph);
-        dl->AddRectFilled(pa, pb, IM_COL32(248, 248, 250, 255), S(3));
-        dl->AddRect(pa, pb, kCardInk, S(3), 0, 1.4f);
+        /* numbered white plate over the hexagon's bottom tip */
+        float pw = S(i == 0 ? 46.0f : 42.0f), ph = S(i == 0 ? 36.0f : 33.0f);
+        ImVec2 pa(cx - pw * 0.5f, tip - S(21)), pb(pa.x + pw, pa.y + ph);
+        dl->AddRectFilled(pa, pb, IM_COL32(248, 248, 250, 255), S(4));
+        dl->AddRect(pa, pb, kCardInk, S(4), 0, S(1.6f));
         char num[4]; snprintf(num, sizeof(num), "%d", i + 1);
-        TxtC(dl, pa, pb, num, i == 0 ? 1.15f : 0.95f, kCardInk);
-        /* name + role caption + trophies stacked below the plate */
+        const float npx = S(i == 0 ? 30.0f : 26.0f);
+        ImVec2 ns = bf->CalcTextSizeA(npx, FLT_MAX, 0.0f, num);
+        dl->AddText(bf, npx, ImVec2(cx - ns.x * 0.5f, (pa.y + pb.y - ns.y) * 0.5f), kCardInk, num);
+        /* name (+ platform icon), then the role caption */
         const char* nm = m.name[0] ? m.name : "(unnamed)";
-        float ny = pb.y + S(4);
-        {
-            const float ih = S(12), iw = IconPlatW(ih, m.plat);
-            const float gw = TxtW(nm, 1.0f) + (iw > 0 ? iw + S(6) : 0.0f);
-            TxtShadow(dl, ImVec2(cx - gw * 0.5f, ny), nm, 1.0f,
-                      m.connected ? kText : kDim);
-            if (iw > 0)
-                IconPlat(dl, ImVec2(cx + gw * 0.5f - iw * 0.5f,
-                                    ny + ImGui::GetFontSize() * 0.5f + S(1)),
-                         ih, m.plat, m.connected ? kMuted : kDim,
-                         IM_COL32(14, 22, 36, 255));
+        ImFont* nf = bf;                 /* the bold face is Latin only */
+        for (const unsigned char* p = (const unsigned char*)nm; *p; p++)
+            if (*p > 126 || *p < 32) { nf = ImGui::GetFont(); break; }
+        const float fpx = S(30), ih = S(20), iw = IconPlatW(ih, m.plat);
+        const float icw = iw > 0 ? iw + S(8) : 0.0f;
+        char nb[64];
+        snprintf(nb, sizeof(nb), "%s", nm);
+        for (int len = (int)strlen(nb);
+             len > 0 && nf->CalcTextSizeA(fpx, FLT_MAX, 0.0f, nb).x > cw - S(16) - icw;) {
+            do { len--; } while (len > 0 && ((unsigned char)nb[len] & 0xC0) == 0x80);
+            snprintf(nb + len, sizeof(nb) - len, "..");
         }
-        ny += ImGui::GetFontSize() + S(2);
+        const float nw = nf->CalcTextSizeA(fpx, FLT_MAX, 0.0f, nb).x;
+        const ImU32 fill = m.connected ? IM_COL32_WHITE : IM_COL32(198, 214, 222, 255);
+        float ny = pb.y + S(3);
+        PodiumText(dl, nf, fpx, cx - icw * 0.5f, ny, nb, fill, outl);
+        if (iw > 0)
+            IconPlat(dl, ImVec2(cx + (nw + icw) * 0.5f - iw * 0.5f, ny + fpx * 0.56f), ih, m.plat, fill, 0);
+        ny += fpx + S(4);
         char cap[48];
         RoleCaption(sn, m, cap, sizeof(cap));
-        if (cap[0]) {
-            Txt(dl, ImVec2(cx - TxtW(cap, 0.8f) * 0.5f, ny), cap, 0.8f, kMuted);
-            ny += ImGui::GetFontSize() * 0.8f + S(2);
-        }
-        float th = S(14);
-        float tw = DrawTrophyRow(dl, ImVec2(0, 0), th, m.places, false, 8.0f);
-        DrawTrophyRow(dl, ImVec2(cx - tw * 0.5f, ny + th * 0.5f + S(1)), th,
-                      m.places);
-        float bb = ny + th + S(4);
+        const float cpx = S(21);
+        if (cap[0]) PodiumText(dl, bf, cpx, cx, ny, cap, IM_COL32_WHITE, outl);
+        float bb = ny + cpx + S(6);      /* the caption line is always kept */
         if (bb > bot) bot = bb;
     }
     return bot;
@@ -764,14 +837,29 @@ static bool ActionRow(const char* id, ImVec2 a, float w, const char* label, cons
 }
 
 /* [key] label, right-aligned at rx on the footer; returns the new rx */
-static float KeyHint(ImDrawList* dl, float rx, float cy, const char* key, const char* label) {
+/* with an id the hint (cap and label) is a button too: *clicked when it
+ * is pressed, `help` in the band while pointed at */
+static float KeyHint(ImDrawList* dl, float rx, float cy, const char* key, const char* label,
+                     const char* id = nullptr, const char* help = nullptr, bool* clicked = nullptr) {
     ImFont* f = BoldF();
     const float px = S(25), kh = S(32);
     const float lw = TW(f, px, label), kw = TW(f, px * 0.9f, key) + S(22);
-    T(dl, f, px, ImVec2(rx - lw, cy - px * 0.5f - S(1)), gKeyText, label);
     ImVec2 ka(rx - lw - S(10) - kw, cy - kh * 0.5f), kb(ka.x + kw, cy + kh * 0.5f);
-    dl->AddRectFilled(ka, kb, gKeyCap, S(5));
-    T(dl, f, px * 0.9f, ImVec2(ka.x + S(11), cy - px * 0.45f - S(1)), IM_COL32(170, 236, 255, 255), key);
+    bool hov = false;
+    if (id) {
+        ImGui::SetCursorScreenPos(ImVec2(ka.x - S(8), ka.y - S(6)));
+        const bool hit = ImGui::InvisibleButton(id, ImVec2(rx - ka.x + S(16), kh + S(12)));
+        hov = ImGui::IsItemHovered();
+        if (hov) {
+            s_help = help;
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+        if (clicked) *clicked = hit;
+    }
+    T(dl, f, px, ImVec2(rx - lw, cy - px * 0.5f - S(1)), hov ? IM_COL32_WHITE : gKeyText, label);
+    dl->AddRectFilled(ka, kb, hov ? gSel0 : gKeyCap, S(5));
+    T(dl, f, px * 0.9f, ImVec2(ka.x + S(11), cy - px * 0.45f - S(1)),
+      hov ? IM_COL32_WHITE : IM_COL32(170, 236, 255, 255), key);
     return ka.x - S(26);
 }
 
@@ -1206,24 +1294,58 @@ void DrawPanel() {
                               ImVec2(px0, py + S(42)), gBlue);
             T(dl, bf, S(28), ImVec2(px0 + S(20), py + S(5)), IM_COL32_WHITE, ph);
             py += S(54);
-            if (sn.memberCount >= 2) {
-                /* the podium helper is laid out for a small window: draw it
-                 * 1.5x with a matching font size */
-                const float keep = s_sc;
-                s_sc *= 1.5f;
-                ImGui::SetWindowFontScale(S(20) / ImGui::GetFont()->FontSize);
-                py = DrawPodium(dl, sn, order, ImVec2(px0, py), ImVec2(px0 + pw, py + S(148))) + keep * 12.0f;
-                ImGui::SetWindowFontScale(1.0f);
-                s_sc = keep;
+            if (sn.memberCount >= 2)
+                py = DrawPodium(dl, sn, order, ImVec2(px0, py), ImVec2(px0 + pw, py + S(148))) + S(8);
+            /* the rows scroll (wheel over the list, or drag the bar) when
+             * they don't all fit above the help band; offsets in 1080p units */
+            static float s_plScroll = 0.0f, s_plScrollTo = 0.0f;
+            const float lt = py - S(6), lb = Y(930);
+            const float viewH = lb - py;
+            const float contentH = sn.memberCount * S(75);
+            const float maxScroll = contentH > viewH ? (contentH - viewH) / s_sc : 0.0f;
+            const ImVec2 mpos = io.MousePos;
+            if (maxScroll > 0.0f && io.MouseWheel != 0.0f && mpos.x >= px0 - S(20) && mpos.x <= ds.x &&
+                mpos.y >= lt && mpos.y <= lb)
+                s_plScrollTo -= io.MouseWheel * 75.0f;
+            const float tx0 = px0 + pw + S(10), tx1 = tx0 + S(8);     /* scroll bar */
+            const float trackT = py, trackH = lb - py - S(8);
+            const float thumbH = maxScroll > 0.0f ? trackH * viewH / contentH : 0.0f;
+            bool barHot = false;
+            if (maxScroll > 0.0f) {
+                ImGui::SetCursorScreenPos(ImVec2(tx0 - S(8), trackT));
+                ImGui::InvisibleButton("##plscroll", ImVec2(S(24), trackH));
+                barHot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+                if (ImGui::IsItemActive())
+                    s_plScroll = s_plScrollTo =
+                        (mpos.y - trackT - thumbH * 0.5f) / (trackH - thumbH) * maxScroll;
+                else if (ImGui::IsItemHovered())
+                    s_help = "Drag to scroll the player list";
             }
-            for (int i = 0; i < sn.memberCount; i++) {
+            if (s_plScrollTo < 0.0f) s_plScrollTo = 0.0f;
+            if (s_plScrollTo > maxScroll) s_plScrollTo = maxScroll;
+            {
+                const float k = io.DeltaTime * 18.0f;
+                s_plScroll += (s_plScrollTo - s_plScroll) * (k < 1.0f ? k : 1.0f);
+                if (fabsf(s_plScrollTo - s_plScroll) < 0.5f) s_plScroll = s_plScrollTo;
+            }
+            /* the clip also limits what the pointer can hit */
+            ImGui::PushClipRect(ImVec2(px0 - S(12), lt), ImVec2(px0 + pw + S(8), lb), true);
+            float ry = py - S(s_plScroll);
+            for (int i = 0; i < sn.memberCount; i++, ry += S(75)) {
                 const MemberInfo& m = sn.members[order[i]];
-                if (py + S(68) > Y(934)) break;
-                if (PlayerRow(dl, sn, m, i, ImVec2(px0, py), pw, owner, assignMode && !m.is_leader)) {
+                if (ry + S(75) < lt || ry > lb) continue;
+                if (PlayerRow(dl, sn, m, i, ImVec2(px0, ry), pw, owner, assignMode && !m.is_leader)) {
                     PanelSE(2);
                     CmdPickMode("assigned", m.cid);
                 }
-                py += S(75);
+            }
+            ImGui::PopClipRect();
+            if (maxScroll > 0.0f) {
+                const float ty = trackT + (trackH - thumbH) * (s_plScroll / maxScroll);
+                dl->AddRectFilled(ImVec2(tx0, trackT), ImVec2(tx1, trackT + trackH), IM_COL32(255, 255, 255, 70),
+                                  S(4));
+                dl->AddRectFilled(ImVec2(tx0, ty), ImVec2(tx1, ty + thumbH),
+                                  barHot ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 215), S(4));
             }
         }
 
@@ -1248,9 +1370,12 @@ void DrawPanel() {
         dl->AddRectFilled(ImVec2(0, by1), ds, gFooter);
         const float fcy = (by1 + ds.y) * 0.5f;
         float rx = ds.x - (s_ox + S(44));
-        rx = KeyHint(dl, rx, fcy, "Esc", "Back");
-        rx = KeyHint(dl, rx, fcy, "F8", "Close");
+        bool hintBack = false, hintClose = false;
+        rx = KeyHint(dl, rx, fcy, "Esc", "Back", "##hintback", "Close the multiplayer menu", &hintBack);
+        rx = KeyHint(dl, rx, fcy, "F8", "Close", "##hintclose", "Close the multiplayer menu - F8 opens it again",
+                     &hintClose);
         rx = KeyHint(dl, rx, fcy, "Click", "Select");
+        if (hintBack || hintClose) SetOverlayOpen(false);
         if (sn.code[0])
             for (int i = 0; i < sn.memberCount; i++)
                 if (strcmp(sn.members[i].cid, sn.myCid) == 0) {
