@@ -19,6 +19,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import time
 from lobby import LobbyManager, platform_of
 from avatars import (AvatarStore, UploadGate, RelayGate, IMG_ID,
                      parse_upload)
+from ratelimit import ConnGate
 from web_bridge import WebBridge
 import netcheck
 
@@ -50,6 +52,14 @@ CLIENT_KEY = re.compile(r"[0-9A-Za-z_-]{16,64}")
 # than the 120 s in which a returning owner gets the room back)
 KEY_KEPT_S = 180.0
 MAX_KEYS = 20000
+REFUSED = {
+    "server_full": "the server is full - try again later",
+    "too_many_connections": "too many connections from your network",
+    "too_many_new_connections":
+        "too many connections from your network - wait a minute",
+    "too_many_failures":
+        "too many failed connections from your network - wait a minute",
+}
 
 
 def _no_constants(name):
@@ -146,6 +156,53 @@ class Server:
         # could say hello as it and take its seat.
         self._cid_keys = {}
         self._key_salt = secrets.token_bytes(16)
+        # who may open a console connection at all (see ratelimit.py)
+        self.conn_gate = ConnGate()
+        self._lingering = 0           # refused connections being told why
+        self._refused_logged = {}     # address -> last log time
+
+    @staticmethod
+    def gate_key(addr):
+        """The address a connection is counted against, None = not counted
+        per address (this machine never is: bots, emulators, test tools)."""
+        host = str(addr[0]) if addr else ""
+        try:
+            ip = ipaddress.ip_address(host.split("%")[0])
+        except ValueError:
+            return host[:64] or None
+        if getattr(ip, "ipv4_mapped", None):
+            ip = ip.ipv4_mapped
+        return None if ip.is_loopback else str(ip)
+
+    async def _refuse(self, reader, writer, addr, why):
+        """Turn a connection away with the reason, cheaply."""
+        now = time.time()
+        if len(self._refused_logged) > 1024:
+            self._refused_logged.clear()
+        if now - self._refused_logged.get(addr[0], 0) > 30:
+            self._refused_logged[addr[0]] = now
+            log(f"CONN {addr[0]}:{addr[1]} refused: {why}")
+        if self._lingering < 64:
+            # let its hello arrive first: closing a socket with unread data
+            # resets it, and the console would never see the reason
+            self._lingering += 1
+            try:
+                await asyncio.wait_for(reader.readline(), 1.0)
+            except Exception:
+                pass
+            finally:
+                self._lingering -= 1
+        try:
+            writer.write((json.dumps(
+                {"t": "error", "code": "server_full" if why == "server_full"
+                 else "rate_limited", "msg": REFUSED[why]}) + "\n").encode())
+            await asyncio.wait_for(writer.drain(), 2)
+        except Exception:
+            pass
+        try:
+            writer.close()
+        except Exception:
+            pass
 
     def _key_digest(self, key):
         return hmac.new(self._key_salt, key.encode(), hashlib.sha256).digest()
@@ -278,16 +335,37 @@ class Server:
             log(f"  avatar_img from '{client.name}' rejected: {reason}")
 
     async def handle(self, reader, writer):
-        addr = writer.get_extra_info("peername")
+        addr = writer.get_extra_info("peername") or ("?", 0)
+        # a WebSocket console says what it may be counted against itself
+        # (web_bridge: behind the cloud proxy the socket peer isn't it)
+        gkey = (writer.gate_key if hasattr(writer, "gate_key")
+                else self.gate_key(addr))
+        why = self.conn_gate.admit(gkey, time.time())
+        if why:
+            await self._refuse(reader, writer, addr, why)
+            return
+        try:
+            await self._session(reader, writer, addr, gkey)
+        finally:
+            self.conn_gate.release(gkey)
+
+    async def _session(self, reader, writer, addr, gkey):
         client = Client(reader, writer, addr)
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=5)
         except asyncio.TimeoutError:
             log(f"CONN {addr[0]}:{addr[1]} no hello within 5s, closing")
+            self.conn_gate.failed(gkey, time.time())
+            writer.close()
+            return
+        except (ConnectionError, ValueError, OSError,
+                asyncio.IncompleteReadError):
+            self.conn_gate.failed(gkey, time.time())
             writer.close()
             return
         hello = parse_msg(line)
         if hello is None or hello.get("t") != "hello":
+            self.conn_gate.failed(gkey, time.time())
             writer.close()
             return
         if hello.get("proto") != PROTO:
@@ -296,6 +374,7 @@ class Server:
             await writer.drain()
             writer.close()
             log(f"CONN {addr[0]}:{addr[1]} proto mismatch -> rejected")
+            self.conn_gate.failed(gkey, time.time())
             return
 
         # identity: `cid` names the console to everyone, `key` (newer
@@ -317,6 +396,7 @@ class Server:
             writer.close()
             log(f"CONN {addr[0]}:{addr[1]} {refuse[0]} "
                 f"cid={clean(cid, 24)} -> rejected")
+            self.conn_gate.failed(gkey, time.time())
             return
         client.cid = cid
         name = hello.get("name")
@@ -406,7 +486,7 @@ class Server:
                     log(f"SEL '{client.name}' DEST")
                 elif t == "dbg_result":
                     log(f"RESULT '{client.name}' {compact_result(msg)}")
-                elif t in ("set_name", "lobby_create", "lobby_join",
+                elif t in ("set_name", "lobby_create", "lobby_join", "web_key",
                            "lobby_leave", "kick", "sel", "sel_ack", "start_req",
                            "launch_fail", "loaded", "state", "final",
                            "back_in_sel", "ready", "set_pick_mode", "autoplay",
@@ -648,6 +728,25 @@ def main():
                     default=(os.environ.get("MP_PUBLIC_URL")
                              or os.environ.get("RENDER_EXTERNAL_URL")),
                     help="public base URL printed in the log")
+    ap.add_argument("--proxy-secret",
+                    default=os.environ.get("MP_PROXY_SECRET"),
+                    help="cloud mode: the secret cloudflare/worker.js sends "
+                         "with each console's real address (its PROXY_SECRET); "
+                         "without it consoles that come through the Worker "
+                         "share one address and are not limited per address "
+                         "(default $MP_PROXY_SECRET)")
+    ap.add_argument("--max-consoles", type=int, default=500,
+                    help="console connections served at once (default 500)")
+    ap.add_argument("--conn-per-ip", type=int, default=8,
+                    help="console connections open at once from one address "
+                         "(default 8, 0 = no limit; this machine is never "
+                         "limited)")
+    ap.add_argument("--new-conn-per-min", type=int, default=20,
+                    help="new console connections per minute from one "
+                         "address (default 20, 0 = no limit)")
+    ap.add_argument("--failed-hello-per-min", type=int, default=10,
+                    help="failed hellos per minute from one address before "
+                         "it has to wait (default 10, 0 = no limit)")
     ap.add_argument("--lobby-max", type=int, default=8,
                     help="max members per lobby (consoles support 8)")
     ap.add_argument("--no-avatar-relay", action="store_true",
@@ -667,11 +766,17 @@ def main():
                  countdown=args.countdown, cloud=args.cloud,
                  name=args.server_name)
     srv.lobby.max_members = args.lobby_max
+    big = 1 << 30
+    srv.conn_gate = ConnGate(per_ip=args.conn_per_ip or big,
+                             new_per_min=args.new_conn_per_min or big,
+                             fails_per_min=args.failed_hello_per_min or big,
+                             total=args.max_consoles or big)
     srv.avatar_relay = not args.no_avatar_relay
     if args.web_port:
         srv.web = WebBridge(srv, args.web_host, args.web_port,
                             args.web_token or secrets.token_urlsafe(16))
         srv.web.announce_token = not args.web_token
+        srv.web.proxy_secret = args.proxy_secret or None
         if args.owner_name_login not in ("auto", "on", "off"):
             ap.error("--owner-name-login must be auto, on or off")
         srv.web.name_login = (args.owner_name_login == "on" or

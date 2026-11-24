@@ -4,6 +4,13 @@
 Protocol v1 (NDJSON, "t" = type)
 C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {code};
       lobby_leave {}; kick {cid} (owner only); sel {pv, name} (leader, SELECT only);
+      web_key {} (owner only: answered with web_key {code, key, url} - the
+      key that gives a browser this room's host controls on the dashboard;
+      a new owner gets a new key and the old one stops working);
+      limits: lobby_create 3/min and lobby_join 10/min per client (error
+      rate_limited); set_name / avatar / diff / ready / autoplay are always
+      applied but resend the lobby at most 2/s per client and kind (the
+      rest ride on one deferred resend);
       sel_ack {pv, has:bool, ok:bool, fb_pv:int (-1 none), fb_name:str};
       start_req {pv, name} (leader, SELECT only); launch_fail {round};
       loaded {round}; state {round, score, combo, pct, life, border};
@@ -84,8 +91,11 @@ Every public method appends (cid, msg_dict) to self.outbox; the caller drains
 it and sends. `now` is always a float-seconds argument (testable clock).
 """
 
+import hmac
 import math
 import random
+import secrets
+from collections import deque
 
 CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ"
 # everything a client sends is clamped to these before it is stored or relayed
@@ -96,6 +106,30 @@ MAX_PV = 9999999
 MAX_SCORE = 2000000000
 MAX_LOBBIES = 2000       # of 24^4 codes; _new_code must always find a free one
 MAX_SESSION_KEPT = 64    # leavers' session stats remembered per lobby
+# per-client request budgets
+CREATE_PER_MIN = 3       # lobby_create
+JOIN_PER_MIN = 10        # lobby_join attempts (wrong codes included)
+BROADCAST_PER_S = 2      # lobby resends one client may cause, per kind of
+#                          change (set_name, avatar, diff, ready, autoplay)
+# room web key: what the owner types into the web dashboard to manage the
+# room from a browser. No I/O/0/1; shown as ABCDE-FGHJK (50 bits).
+WEB_KEY_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+WEB_KEY_LEN = 10
+
+
+def new_web_key():
+    return "".join(secrets.choice(WEB_KEY_CHARS) for _ in range(WEB_KEY_LEN))
+
+
+def norm_web_key(v):
+    """What a person typed -> the key (no dashes/spaces, upper case), or
+    None when it can't be one."""
+    if not isinstance(v, str) or len(v) > 64:
+        return None
+    k = "".join(ch for ch in v.upper() if ch not in "- \t")
+    if len(k) != WEB_KEY_LEN or any(ch not in WEB_KEY_CHARS for ch in k):
+        return None
+    return k
 SELECT_DC_REMOVED_S = 60.0
 SELECT_LEADER_HANDOFF_S = 10.0
 LEADER_LOADED_START_S = 30.0
@@ -310,6 +344,13 @@ class Lobby:
         # cid -> (wins, placement_score, places) of members who left; given
         # back when they rejoin, gone with the lobby once it empties
         self.session_kept = {}
+        # web key of the current owner (made when the owner asks for it);
+        # only valid while web_key_owner is still the owner
+        self.web_key = None
+        self.web_key_owner = None
+        # resends held back by a client's broadcast budget:
+        # "lobby" | "status" -> (time due, budget keys it counts against)
+        self.deferred = {}
 
     def effective_leader(self):
         if self.pick_mode == "owner":
@@ -333,6 +374,9 @@ class LobbyManager:
         self.max_lobbies = MAX_LOBBIES
         # called with a cid once nothing about it is kept here any more
         self.on_forget = lambda cid: None
+        self._budget = {}           # (cid, kind) -> deque of request times
+        self._budget_ops = 0
+        self.web_url = ""           # dashboard address, told with the web key
         self._rng = random.Random()
         self._client_names = {}     # cid -> display name (all clients)
         self._client_modules = {}   # cid -> avatar module id (all clients)
@@ -424,6 +468,7 @@ class LobbyManager:
                             for m in lobby.members]}
 
     def _broadcast_lobby(self, lobby):
+        lobby.deferred.pop("lobby", None)       # this carries everything
         for m in lobby.members:
             self._send(m.cid, self._lobby_msg(lobby, m.cid))
 
@@ -433,6 +478,85 @@ class LobbyManager:
 
     def _error(self, cid, code, msg):
         self._send(cid, {"t": "lobby_error", "code": code, "msg": msg})
+
+    def _allow(self, cid, kind, limit, window, now):
+        """Sliding-window budget per client and kind of request; False =
+        over it. Budgets outlive a disconnect (a reconnect must not reset
+        them) and are dropped once their window has passed."""
+        self._budget_ops += 1
+        if self._budget_ops % 512 == 0:
+            for k in [k for k, q in self._budget.items()
+                      if not q or not 0 <= now - q[-1] < 60.0]:
+                del self._budget[k]
+        q = self._budget.get((cid, kind))
+        if q is None:
+            q = self._budget[(cid, kind)] = deque()
+        while q and not 0 <= now - q[0] < window:
+            q.popleft()
+        if len(q) >= limit:
+            return False
+        q.append(now)
+        return True
+
+    def _throttled(self, lobby, cid, kind, now, slot="lobby"):
+        """A change by `cid` that only needs something resent (the lobby to
+        everyone, or sel_status to the leader). True: send it now. False:
+        the client is over BROADCAST_PER_S for this kind of change; the new
+        state is stored already, and one resend is booked for the moment its
+        budget frees up - nothing is lost, it just can't be used to make the
+        server fan out a lobby message to every member at any rate."""
+        key = (cid, "b:" + kind)
+        if self._allow(cid, "b:" + kind, BROADCAST_PER_S, 1.0, now):
+            return True
+        due = self._budget[key][0] + 1.0
+        cur = lobby.deferred.get(slot)
+        keys = cur[1] if cur else set()
+        keys.add(key)
+        lobby.deferred[slot] = (min(due, cur[0]) if cur else due, keys)
+        return False
+
+    def _flush_deferred(self, lobby, now):
+        for slot, (due, keys) in list(lobby.deferred.items()):
+            if now < due:
+                continue
+            lobby.deferred.pop(slot, None)
+            for k in keys:              # the catch-up resend counts too
+                q = self._budget.get(k)
+                if q is not None:
+                    q.append(now)
+            if slot == "lobby":
+                self._broadcast_lobby(lobby)
+            elif lobby.phase == "SELECT" and lobby.sel_pv is not None:
+                self._send_sel_status(lobby)
+
+    # ------------------------------------------------- room web key
+    def web_key_of(self, lobby):
+        """The current owner's web key (made on first use; a key made for an
+        earlier owner is never handed to the next one)."""
+        if lobby.web_key is None or lobby.web_key_owner != lobby.owner_cid:
+            lobby.web_key = new_web_key()
+            lobby.web_key_owner = lobby.owner_cid
+        return lobby.web_key
+
+    @staticmethod
+    def web_key_ok(lobby, key):
+        """Does `key` (normalized) open this lobby right now?"""
+        return bool(key and lobby.web_key and lobby.owner_cid is not None
+                    and lobby.web_key_owner == lobby.owner_cid
+                    and hmac.compare_digest(lobby.web_key, key))
+
+    def _web_key(self, cid, now):
+        lobby = self._lobby_of(cid)
+        if lobby is None:
+            self._error(cid, "not_in_lobby", "not in a lobby")
+            return
+        if lobby.owner_cid != cid:
+            self._error(cid, "not_owner", "only the room owner has a web key")
+            return
+        key = self.web_key_of(lobby)
+        self._send(cid, {"t": "web_key", "code": lobby.code,
+                         "key": key[:5] + "-" + key[5:],
+                         "url": self.web_url})
 
     def _new_code(self):
         while True:
@@ -500,6 +624,8 @@ class LobbyManager:
             self._join(cid, msg.get("code", ""), now)
         elif t == "lobby_leave":
             self._leave(cid, "left", now)
+        elif t == "web_key":
+            self._web_key(cid, now)
         elif t == "sel":
             self._sel(cid, msg, now)
         elif t == "sel_ack":
@@ -543,19 +669,19 @@ class LobbyManager:
                 if isinstance(mode, str):
                     m.autoplay_mode = mode[:16]
                 lobby = self._lobby_of(cid)
-                if lobby:
+                if lobby and self._throttled(lobby, cid, "autoplay", now):
                     self._broadcast_lobby(lobby)
         elif t in ("pause_req", "resume_req"):
             self._pause_req(cid, msg, now, t == "pause_req")
         elif t == "avatar":
             self._set_avatar(cid, msg.get("module"), msg.get("chara", -1),
-                             msg.get("mh", 0))
+                             msg.get("mh", 0), now)
 
     @staticmethod
     def _int_in(v, lo, hi):
         return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
 
-    def _set_avatar(self, cid, module, chara=-1, mh=0):
+    def _set_avatar(self, cid, module, chara=-1, mh=0, now=None):
         if not self._int_in(module, -1, 99999):
             self._error(cid, "bad_avatar", "module must be an int in -1..99999")
             return
@@ -568,7 +694,10 @@ class LobbyManager:
             return
         self._client_modules[cid] = module
         self._client_avatar[cid] = (chara, mh)
-        self.touch_avatar(cid)
+        lobby = self._lobby_of(cid)
+        if lobby and (now is None or
+                      self._throttled(lobby, cid, "avatar", now)):
+            self._broadcast_lobby(lobby)
 
     def touch_avatar(self, cid):
         """Resend the lobby of `cid` (its avatar/portrait changed)."""
@@ -586,7 +715,8 @@ class LobbyManager:
         m = self._member(lobby, cid)
         if m and name:
             m.name = name
-            self._broadcast_lobby(lobby)
+            if self._throttled(lobby, cid, "name", now):
+                self._broadcast_lobby(lobby)
 
     # ------------------------------------------------- lobby lifecycle
     def _create(self, cid, now):
@@ -595,6 +725,10 @@ class LobbyManager:
             return
         if len(self.lobbies) >= self.max_lobbies:
             self._error(cid, "server_full", "too many rooms on this server")
+            return
+        if not self._allow(cid, "create", CREATE_PER_MIN, 60.0, now):
+            self._error(cid, "rate_limited",
+                        "too many rooms created - wait a minute")
             return
         lobby = Lobby(self._new_code())
         lobby.leader_cid = cid
@@ -623,6 +757,10 @@ class LobbyManager:
     def _join(self, cid, code, now):
         if self._lobby_of(cid) is not None:
             self._error(cid, "already_in_lobby", "already in a lobby")
+            return
+        if not self._allow(cid, "join", JOIN_PER_MIN, 60.0, now):
+            self._error(cid, "rate_limited",
+                        "too many join attempts - wait a minute")
             return
         lobby = self.lobbies.get(code) if isinstance(code, str) else None
         if lobby is None:
@@ -851,7 +989,7 @@ class LobbyManager:
             return
         self._client_diff[cid] = de
         lobby = self._lobby_of(cid)
-        if lobby:
+        if lobby and self._throttled(lobby, cid, "diff", now):
             self._broadcast_lobby(lobby)
 
     def _pause_req(self, cid, msg, now, pause):
@@ -951,7 +1089,8 @@ class LobbyManager:
         m.ready = bool(msg.get("ready"))
         m.ready_reason = _text(msg.get("reason"), MAX_REASON)
         m.ready_pv = _int(msg.get("pv"), -2, MAX_PV, -1)
-        if lobby.phase == "SELECT" and lobby.sel_pv is not None:
+        if lobby.phase == "SELECT" and lobby.sel_pv is not None and \
+                self._throttled(lobby, cid, "ready", now, "status"):
             self._send_sel_status(lobby)
 
     # ------------------------------------------------- round start
@@ -1354,6 +1493,8 @@ class LobbyManager:
                 self.log(f"lobby {lobby.code}: tick error {e!r}")
 
     def _tick_lobby(self, lobby, now):
+        if lobby.deferred:
+            self._flush_deferred(lobby, now)
         r = lobby.round
         if r is not None and r.started and not r.start_sent \
                 and r.countdown_at is not None \

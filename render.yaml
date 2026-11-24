@@ -31,3 +31,7 @@ services:
       # Render dashboard under Environment
       - key: MP_WEB_TOKEN
         generateValue: true
+      # optional: the same value as the Worker's PROXY_SECRET (cloudflare/
+      # worker.js) - lets the server limit connections per console address
+      - key: MP_PROXY_SECRET
+        sync: false

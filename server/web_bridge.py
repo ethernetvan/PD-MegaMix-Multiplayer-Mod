@@ -32,7 +32,11 @@ import time
 import urllib.parse
 from collections import OrderedDict, deque
 
+from lobby import LobbyManager, norm_web_key
+
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+# CF-Connecting-IP of every Worker subrequest to another Cloudflare zone
+WORKERS_PEER = "2a06:98c0:3600::103"
 MAX_HEAD = 16384          # request line + headers cap
 MAX_MSG = 65536           # max assembled WS client message
 SWITCH_MAX_MSG = 1 << 17  # console messages: avatar_img lines are ~64 KiB
@@ -161,13 +165,25 @@ async def read_frame(reader, masked=True, max_msg=MAX_MSG):
             return op0, b"".join(parts)
 
 
-def forwarded_peer(hdrs, peer):
+def vouched_ip(hdrs, proxy_secret):
+    """The console address our Worker passed along (X-Console-IP), believed
+    only with the secret both sides were given (cloudflare/worker.js);
+    None otherwise."""
+    ip = hdrs.get("x-console-ip", "").strip()[:64]
+    if proxy_secret and ip and hmac.compare_digest(
+            hdrs.get("x-console-auth", "").encode(), proxy_secret.encode()):
+        return ip
+    return None
+
+
+def forwarded_peer(hdrs, peer, proxy_secret=None):
     """(ip, port) of the real client: behind Render/Cloudflare the socket
     peer is the proxy, the client is the first X-Forwarded-For hop. Only
     used for logs."""
     peer = tuple(peer or ("?", 0))[:2]
     xff = (hdrs.get("cf-connecting-ip")
            or hdrs.get("x-forwarded-for", "").split(",")[0]).strip()
+    xff = vouched_ip(hdrs, proxy_secret) or xff
     return (xff, peer[1]) if xff else peer
 
 
@@ -262,6 +278,7 @@ class WsConn:
         self.writer = writer
         self.name = None
         self.admin = False
+        self.room_key = None        # a room's web key this browser gave
         self.bad_tokens = 0
         self.last_sig = None
         self.last_sent = 0.0
@@ -307,6 +324,7 @@ class WebBridge:
         # "type the owner's name" login. Names are public (/api/state), so
         # this is LAN-level trust only: mp_server turns it off in cloud mode.
         self.name_login = True
+        self.proxy_secret = None           # shared with cloudflare/worker.js
         # print the admin token at startup (only when it was generated: a
         # token the operator chose is theirs to keep out of the logs)
         self.announce_token = True
@@ -322,6 +340,7 @@ class WebBridge:
         self.port = self._httpd.sockets[0].getsockname()[1]
         self._task = asyncio.create_task(self._push_loop())
         url = self.public_url or f"http://{lan_ip()}:{self.port}"
+        self.server.lobby.web_url = url     # told to owners with the web key
         log(f"web UI {url}/ (bind {self.host}:{self.port})")
         if self.announce_token:
             log(f"admin token: {self.token} "
@@ -330,7 +349,7 @@ class WebBridge:
             log(f"admin token: set by --web-token / MP_WEB_TOKEN, not shown "
                 f"(open {url}/?token=<token> to manage any lobby)")
         if not self.name_login:
-            log("web owner login by name: off (admin token only)")
+            log("web owner login by name: off (room web key or admin token)")
 
     # ------------------------------------------------- ids
     def mid(self, cid):
@@ -357,13 +376,22 @@ class WebBridge:
         return f"/api/avatar/{img}.png" if img else None
 
     def you_for(self, conn):
-        owns = []
+        """What this browser may do. `owns` = the rooms it has host controls
+        for: by the room's web key (the owner reads it off the console; it
+        stops working the moment the room has another owner), or - where the
+        server allows it - by the owner's name."""
+        owns = set()
+        lobbies = self.server.lobby.lobbies
         if conn.name:
             key = conn.name.strip().casefold()
-            for code, l in self.server.lobby.lobbies.items():
+            for code, l in lobbies.items():
                 o = self._member(l, l.owner_cid)
                 if o and o.name.strip().casefold() == key:
-                    owns.append(code)
+                    owns.add(code)
+        rk = getattr(conn, "room_key", None)
+        if rk:
+            owns.update(code for code, l in lobbies.items()
+                        if LobbyManager.web_key_ok(l, rk))
         return {"name": conn.name, "admin": conn.admin, "owns": sorted(owns)}
 
     # ------------------------------------------------- snapshot
@@ -694,8 +722,17 @@ class WebBridge:
             return
         if not await self._accept_ws(writer, hdrs):
             return
-        peer = forwarded_peer(hdrs, writer.get_extra_info("peername"))
-        lw = WsLineWriter(writer, peer)
+        peer = writer.get_extra_info("peername")
+        cloud = getattr(self.server, "cloud", False)
+        if cloud:       # only a proxy sets these headers; on a LAN they lie
+            peer = forwarded_peer(hdrs, peer, self.proxy_secret)
+        lw = WsLineWriter(writer, tuple(peer or ("?", 0))[:2])
+        if cloud:
+            # per-address connection limits: only against an address our
+            # Worker vouched for. What the proxy reports otherwise may be
+            # one address for every console.
+            ip = vouched_ip(hdrs, self.proxy_secret)
+            lw.gate_key = self.server.gate_key((ip, 0)) if ip else None
         try:
             await handle(WsLineReader(reader, writer), lw)
         finally:
@@ -772,17 +809,27 @@ class WebBridge:
                 "error": "bad_request"}
 
     async def _auth(self, conn, msg):
+        """auth {token?, key?, name?}: everything given must be right, or
+        nothing about the connection changes (wrong guesses count: five and
+        the connection is closed)."""
+        def bad(error):
+            conn.bad_tokens += 1
+            if conn.bad_tokens >= 5:
+                conn.alive = False
+            return {"t": "reply", "id": msg.get("id"), "ok": False,
+                    "error": error}
         tok = msg.get("token")
-        if tok:
-            if not hmac.compare_digest(str(tok), self.token):
-                conn.bad_tokens += 1
-                if conn.bad_tokens >= 5:
-                    conn.alive = False
-                return {"t": "reply", "id": msg.get("id"), "ok": False,
-                        "error": "bad_token"}
-            conn.admin = True
-        else:
-            conn.admin = False
+        if tok and not hmac.compare_digest(str(tok), self.token):
+            return bad("bad_token")
+        rk = msg.get("key")
+        if rk:
+            rk = norm_web_key(rk)
+            if rk is None or not any(
+                    LobbyManager.web_key_ok(l, rk)
+                    for l in self.server.lobby.lobbies.values()):
+                return bad("bad_key")
+        conn.admin = bool(tok)
+        conn.room_key = rk or None
         name = msg.get("name")
         conn.name = (name.strip()[:32]
                      if self.name_login and isinstance(name, str)
@@ -810,7 +857,7 @@ class WebBridge:
         op = msg.get("op")
         now = time.time()
         entry = {"ts": now, "kind": "web_action", "op": op,
-                 "by": "admin" if conn.admin else conn.name}
+                 "by": "admin" if conn.admin else (conn.name or "host")}
         if op == "kick":
             m = self._mid_member(lobby, msg.get("member"))
             if m is None or (m.cid == lobby.owner_cid and not conn.admin):
@@ -854,7 +901,8 @@ class WebBridge:
             if m is None:
                 return err("bad_member")
             if "error" in self.server.hide_avatar(
-                    m.cid, by="admin" if conn.admin else conn.name):
+                    m.cid, by="admin" if conn.admin
+                    else (conn.name or "host")):
                 return err("no_portrait")
             entry["name"] = m.name
         else:
