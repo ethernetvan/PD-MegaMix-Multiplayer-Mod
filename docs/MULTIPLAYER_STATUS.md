@@ -388,8 +388,9 @@ Server, web, Switch and PC (`pc-client-mod/`), all on `main` (pc-port was merged
   `jc:[5]` and `autoplay`. On the results screen in a room the first A never reaches the game: it opens a
   panel the hexagons fly out into, one card per player (rank, portrait, platform, chart, verdict, score,
   COOL/GOOD/SAFE/BAD/MISS bar + counts, max combo, cool rate, clear %, final %). Switch: 4 per page, L/R
-  or Left/Right flip, A/B close, Y reopens. PC: 8 on one page (two columns), Enter / F7; no reopen on the
-  Retry / Return page (that menu reads the keyboard device, which the block mask doesn't cover). State in
+  or Left/Right flip, A/B close, Y reopens. PC: 8 on one page, one column of compact rows (2026-11-24; it was two columns of cards), Enter / F7;
+  F7 can't reopen it on the Retry / Return page (that menu reads the keyboard device, which the block mask
+  doesn't cover), but the Details pill and the panel's Close hint take a mouse click on every page. State in
   `MpLobby.cpp` (`s_resPanel` 0 none / 1 armed / 2 open / 3 closed, `kResPerPage`); the auto-return driver
   is unaffected (its forced taps pass the block).
 - **Verified:** Ryujinx, 4 and 6 players (two pages, a player still playing, DROPxOUT, AUTO tag), close ->

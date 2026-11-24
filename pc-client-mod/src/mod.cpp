@@ -42,6 +42,7 @@ void DbgSetCursor(float x, float y, bool click) {
 } // namespace ImGui
 
 static HMODULE  s_self = nullptr;
+static bool s_supportedGame = false;
 static ID3D11Device*        s_dev = nullptr;
 static ID3D11DeviceContext* s_ctx = nullptr;
 static HWND     s_hwnd = nullptr;
@@ -260,7 +261,7 @@ static void MpDrawAll(IDXGISwapChain* swap) {
     mp::lobby::DrawCountdown();
     if (sn.waitingStart && sn.countdownMs < 0) mp::lobby::DrawWaiting();
     if (sn.resultsAgeMs >= 0 && sn.standingCount > 0)
-        mp::lobby::DrawResultsAvatars();
+        mp::lobby::DrawResultsAvatars(off);
     else if ((ph == 6 || ph == 5) && !sn.inSongSelect)
         mp::lobby::DrawStandings();
     mp::lobby::DrawBanners();
@@ -332,6 +333,18 @@ __declspec(dllexport) void Init() {
 
     std::wstring dir = ModDir();
     MpLogInit(dir.c_str());
+    auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    auto pe = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    s_supportedGame = base == 0x140000000ull &&
+        pe->FileHeader.TimeDateStamp == 0x635B31AB &&
+        pe->OptionalHeader.SizeOfImage == 0x23E73000;
+    if (!s_supportedGame) {
+        WriteLog("[MP] Unsupported executable (base=%p stamp=%08lx size=%08lx); "
+                 "MM+ Steam build 11004484 required. No hooks installed.\n",
+                 (void*)base, pe->FileHeader.TimeDateStamp, pe->OptionalHeader.SizeOfImage);
+        return;
+    }
     Config::SetModDir(dir.c_str());
     nn::fs::FsSetModDir(dir.c_str());
     Config::Load();
@@ -367,6 +380,7 @@ __declspec(dllexport) void PostInit() {}
 
 __declspec(dllexport) void D3DInit(IDXGISwapChain* swap, ID3D11Device* dev,
                                    ID3D11DeviceContext* ctx) {
+    if (!s_supportedGame) return;
     s_dev = dev;
     s_ctx = ctx;
     mp::avatar::SetDevice(dev, ctx);
@@ -385,7 +399,7 @@ __declspec(dllexport) void D3DInit(IDXGISwapChain* swap, ID3D11Device* dev,
 }
 
 __declspec(dllexport) void OnFrame(IDXGISwapChain* swap) {
-    if (!Config::mpEnabled) return;
+    if (!s_supportedGame || !Config::mpEnabled) return;
     mp::OnFrame();
     /* in a room the song must keep running while the window is unfocused */
     mp::input::SetBackgroundPause(!mp::lobby::InLobby());

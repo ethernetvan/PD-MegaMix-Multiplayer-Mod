@@ -541,7 +541,7 @@ static float EaseOutBack(float p) {
  * Expanded results panel: the hexagon column opens into one card per
  * player (rank, portrait, name, platform, chart, verdict, score, the
  * COOL/GOOD/SAFE/BAD/MISS split, max combo, %), like the web results.
- * resPerPage cards per page (4 in one column, 8 in two).
+ * One column, a row per player, resPerPage rows per page.
  * ============================================================== */
 #ifdef _WIN32
 static const char* const kResKeyA = "Enter";
@@ -580,41 +580,54 @@ static float ResKeyCap(ImDrawList* dl, ImFont* f, ImVec2 p, float h, const char*
     }
     return w;
 }
-/* "[key] text" pill, right edge at rx; used for the Details hint */
-static void ResHint(ImDrawList* dl, ImFont* f, float rx, float y, float k, const char* key,
-                    const char* text, float a) {
+/* "[key] text" pill, right edge at rx; used for the Details hint. With a
+ * pointer position it is a button: true while the pointer is on it. */
+static bool ResHint(ImDrawList* dl, ImFont* f, float rx, float y, float k, const char* key,
+                    const char* text, float a, const ImVec2* mouse = nullptr) {
     const float h = 22.0f * k, fsz = 15.0f * k;
     ImVec2 ts = f->CalcTextSizeA(fsz, FLT_MAX, 0.0f, text);
     const float kw = ResKeyCap(dl, f, ImVec2(0, 0), h - 6.0f * k, key, 1.0f, false);
     const float w = 8.0f * k + kw + 6.0f * k + ts.x + 10.0f * k;
     ImVec2 p0(rx - w, y), p1(rx, y + h);
-    dl->AddRectFilled(p0, p1, ResA(14, 20, 26, 0.84f * a), h * 0.5f);
-    dl->AddRect(p0, p1, ResA(255, 255, 255, 0.22f * a), h * 0.5f, 0, 1.0f);
+    const bool hot = mouse && mouse->x >= p0.x - 4.0f * k && mouse->x <= p1.x + 4.0f * k &&
+                     mouse->y >= p0.y - 4.0f * k && mouse->y <= p1.y + 4.0f * k;
+    dl->AddRectFilled(p0, p1, hot ? ResA(0, 122, 132, 0.95f * a) : ResA(14, 20, 26, 0.84f * a), h * 0.5f);
+    dl->AddRect(p0, p1, hot ? ResA(119, 234, 241, a) : ResA(255, 255, 255, 0.22f * a), h * 0.5f, 0,
+                hot ? 1.6f * k : 1.0f);
     ResKeyCap(dl, f, ImVec2(p0.x + 8.0f * k, y + 3.0f * k), h - 6.0f * k, key, a);
     dl->AddText(f, fsz, ImVec2(p0.x + 8.0f * k + kw + 6.0f * k, y + (h - ts.y) * 0.5f),
                 ResA(255, 255, 255, a), text);
+    return hot;
 }
 
 /* pp: 0 closed .. 1 open (drives the fly-out from the hexagon column);
- * inMs: ms since it opened (bar growth + score count-up) */
-static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float inMs, ImVec2 ds) {
+ * inMs: ms since it opened (bar growth + score count-up). One column: a
+ * row per player with, left to right, rank, portrait, name / verdict, the
+ * judgement split, score / %. mouse = the pointer in HUD space; returns
+ * true while it is on the Close hint. */
+static bool DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float inMs, ImVec2 ds, ImVec2 mouse) {
     ImDrawList* dl = u.dl;
     const float k = u.k, W = ds.x / k;
     ImFont* bf = ImGui::GetFont();
     ImFont* big = FontLoader::Big() ? FontLoader::Big() : bf;
-    const int per = sn.resPerPage > 0 ? sn.resPerPage : 4;
-    const int cols = per > 4 ? 2 : 1, rowsN = 4;
+    const int per = sn.resPerPage > 0 ? sn.resPerPage : 8;
     const int n = sn.standingCount;
     const int pages = (n + per - 1) / per;
     int page = sn.resPage;
     if (page >= pages) page = pages - 1;
     if (page < 0) page = 0;
     const float e0 = ResEase(pp);
+    /* the panel is as tall as its rows (every page the same once there
+     * are several) */
+    int rowsN = pages > 1 ? per : n;
+    if (rowsN < 1) rowsN = 1;
+    const float gap = 6.0f, cardH = 59.0f;
+    const float PH = 62.0f + rowsN * cardH + (rowsN - 1) * gap + 44.0f;
 
     /* backdrop + panel */
     dl->AddRectFilled(ImVec2(0, 0), ds, ResA(4, 18, 24, 0.62f * e0));
-    const float PX0 = (cols == 2 ? 46.0f : 176.0f), PX1 = W - PX0;
-    const float PY0 = 70.0f, PY1 = 694.0f;
+    const float PX0 = 150.0f, PX1 = W - PX0;
+    const float PY0 = (720.0f - PH) * 0.5f, PY1 = PY0 + PH;
     const float grow = (1.0f - e0) * 26.0f;
     ImVec2 pa((PX0 + grow) * k, (PY0 + grow * 0.6f) * k), pb((PX1 - grow) * k, (PY1 - grow * 0.6f) * k);
     dl->AddRectFilled(ImVec2(pa.x + 4 * k, pa.y + 6 * k), ImVec2(pb.x + 4 * k, pb.y + 6 * k),
@@ -650,11 +663,9 @@ static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float in
                     ResA(101, 255, 255, 0.35f * e0), 1.5f * k);
     }
 
-    /* cards */
-    const float gap = 8.0f, colGap = 12.0f;
-    const float cardsY0 = PY0 + 62.0f, cardsY1 = PY1 - 44.0f;
-    const float cardH = (cardsY1 - cardsY0 - gap * (rowsN - 1)) / rowsN;
-    const float cardW = (PX1 - PX0 - 36.0f - colGap * (cols - 1)) / cols;
+    /* rows */
+    const float cardsY0 = PY0 + 62.0f;
+    const float cardW = PX1 - PX0 - 36.0f;
     const float g = ResEase((inMs - 220.0f) / 650.0f);      /* bars + count-up */
     static const char* const JN[5] = { "COOL", "GOOD", "SAFE", "BAD", "MISS" };
     static const int JC[5][3] = { {255, 201, 51}, {67, 193, 234}, {67, 196, 85}, {63, 127, 232}, {178, 60, 240} };
@@ -663,29 +674,28 @@ static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float in
         const int idx = page * per + j;
         if (idx >= n) break;
         const auto& st = sn.standing[idx];
-        const int col = j / rowsN, row = j % rowsN;
-        /* fly out of the hexagon column: every card starts as its hexagon */
-        const float pj = ResEase(pp * 1.3f - j * 0.045f);
+        /* fly out of the hexagon column: every row starts as its hexagon */
+        const float pj = ResEase(pp * 1.3f - j * 0.035f);
         const float ca = ResClamp01((pj - 0.35f) / 0.65f);       /* contents */
-        const float fx0 = PX0 + 18.0f + col * (cardW + colGap), fy0 = cardsY0 + row * (cardH + gap);
+        const float fx0 = PX0 + 18.0f, fy0 = cardsY0 + j * (cardH + gap);
         const float sx = W - 27.5f, sy = 307.0f + (idx < 3 ? idx : 3) * 116.0f;
         const float cxm = sx + (fx0 + cardW * 0.5f - sx) * pj, cym = sy + (fy0 + cardH * 0.5f - sy) * pj;
         const float cw = 96.0f + (cardW - 96.0f) * pj, chh = 88.0f + (cardH - 88.0f) * pj;
         ImVec2 a((cxm - cw * 0.5f) * k, (cym - chh * 0.5f) * k), b((cxm + cw * 0.5f) * k, (cym + chh * 0.5f) * k);
         const bool win = st.rank == 1 && st.final;
         /* plate */
-        dl->AddRectFilled(a, b, st.me ? ResA(44, 108, 116, 0.96f * pj) : ResA(30, 78, 84, 0.94f * pj), 9 * k);
+        dl->AddRectFilled(a, b, st.me ? ResA(44, 108, 116, 0.96f * pj) : ResA(30, 78, 84, 0.94f * pj), 8 * k);
         if (win) {
             dl->AddRect(ImVec2(a.x - 2 * k, a.y - 2 * k), ImVec2(b.x + 2 * k, b.y + 2 * k),
-                        ResA(255, 201, 51, 0.30f * pj), 11 * k, 0, 4.0f * k);
-            dl->AddRect(a, b, ResA(255, 201, 51, pj), 9 * k, 0, 2.0f * k);
+                        ResA(255, 201, 51, 0.30f * pj), 10 * k, 0, 4.0f * k);
+            dl->AddRect(a, b, ResA(255, 201, 51, pj), 8 * k, 0, 2.0f * k);
         } else {
             dl->AddRect(a, b, st.me ? ResA(119, 234, 241, 0.9f * pj) : ResA(101, 255, 255, 0.3f * pj),
-                        9 * k, 0, (st.me ? 1.8f : 1.2f) * k);
+                        8 * k, 0, (st.me ? 1.8f : 1.2f) * k);
         }
-        /* portrait: travels from the column into the card */
-        const float hr = 50.0f + (36.0f - 50.0f) * pj;
-        const float hx = sx + (fx0 + 98.0f - sx) * pj, hy = sy + (fy0 + cardH * 0.5f - sy) * pj;
+        /* portrait: travels from the column into the row */
+        const float hr = 50.0f + (25.0f - 50.0f) * pj;
+        const float hx = sx + (fx0 + 88.0f - sx) * pj, hy = sy + (fy0 + cardH * 0.5f - sy) * pj;
         DrawResultHex(u, ImVec2(hx * k, hy * k), hr * k, StandingRef(sn, idx), st.me, st.connected,
                       st.final, win && pj >= 1.0f, 0.0f, false);
         if (ca <= 0.0f) continue;
@@ -693,37 +703,38 @@ static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float in
         {
             char lab[16];
             snprintf(lab, sizeof(lab), "#%d", st.rank > 0 ? st.rank : idx + 1);
-            const float ls = 30.0f * k;
+            const float ls = 25.0f * k;
             GlowText(dl, big, ls, ImVec2(a.x + 9 * k, (a.y + b.y) * 0.5f - ls * 0.55f), lab, ca, 1.0f, k);
         }
-        const float x0 = a.x + 146.0f * k, xr = b.x - 14.0f * k;
-        /* line 1: name, platform, chart, tags | verdict, score */
-        const float y1 = a.y + 9.0f * k;
-        char sc[20];
-        ResFmtScore((int)(st.score * (st.final ? g : 1.0f) + 0.5f), sc, sizeof(sc));
-        const float scs = 25.0f * k;
-        ImVec2 scz = big->CalcTextSizeA(scs, FLT_MAX, 0.0f, sc);
-        dl->AddText(big, scs, ImVec2(xr - scz.x + 1.5f * k, y1 + 1.5f * k), ResA(0, 40, 46, 0.8f * ca), sc);
-        dl->AddText(big, scs, ImVec2(xr - scz.x, y1), ResA(255, 255, 255, ca), sc);
-        const char* vt = ""; ImU32 vc = ResA(190, 204, 208, ca);
-        if (!st.final) { vt = "PLAYING..."; vc = ResA(255, 201, 51, ca); }
-        else if (st.drop) { vt = "DROP\xC3\x97OUT"; vc = ResA(255, 110, 196, ca); }
-        else if (st.clear == 1 || (st.clear < 0 && st.border > 0.0f && st.pct >= st.border)) {
-            vt = "STAGE CLEAR"; vc = ResA(119, 234, 241, ca); }
-        else if (st.clear == 0 || (st.clear < 0 && st.border > 0.0f)) vt = "NOT CLEAR...";
-        const float vs = 14.0f * k;
-        ImVec2 vz = bf->CalcTextSizeA(vs, FLT_MAX, 0.0f, vt);
-        const float vx = xr - scz.x - 12.0f * k - vz.x;
-        dl->AddText(bf, vs, ImVec2(vx, y1 + 8.0f * k), vc, vt);
+        const float x0 = a.x + 124.0f * k;            /* name / verdict column */
+        const float xb0 = a.x + 372.0f * k;           /* judgement column */
+        const float xr = b.x - 14.0f * k;             /* right edge: score / % */
+        const float xb1 = xr - 142.0f * k;
+        /* right: score over % */
         {
-            const float ns = 21.0f * k, th = 15.0f * k;
+            char sc[20];
+            ResFmtScore((int)(st.score * (st.final ? g : 1.0f) + 0.5f), sc, sizeof(sc));
+            const float scs = 22.0f * k;
+            ImVec2 scz = big->CalcTextSizeA(scs, FLT_MAX, 0.0f, sc);
+            dl->AddText(big, scs, ImVec2(xr - scz.x + 1.5f * k, a.y + 6.0f * k + 1.5f * k), ResA(0, 40, 46, 0.8f * ca), sc);
+            dl->AddText(big, scs, ImVec2(xr - scz.x, a.y + 6.0f * k), ResA(255, 255, 255, ca), sc);
+            char pc[16];
+            snprintf(pc, sizeof(pc), "%.2f%%", (double)(st.pct * (st.final ? g : 1.0f)));
+            const float ps2 = 17.0f * k;
+            ImVec2 pz = big->CalcTextSizeA(ps2, FLT_MAX, 0.0f, pc);
+            dl->AddText(big, ps2, ImVec2(xr - pz.x, a.y + 33.0f * k), ResA(200, 236, 240, ca), pc);
+        }
+        /* left: name, platform, chart, AUTO over the verdict */
+        {
+            const float y1 = a.y + 8.0f * k;
+            const float ns = 19.0f * k, th = 14.0f * k;
             const float iw = IconPlatW(th, st.plat);
             const float dw = DiffChip(dl, bf, ImVec2(0, 0), th, st.diff, st.ed, 1.0f, false, true);
             const float aw = st.autoplay ? bf->CalcTextSizeA(th * 0.8f, FLT_MAX, 0.0f, "AUTO").x + th * 0.9f : 0.0f;
-            float extra = (iw > 0 ? iw + 8 * k : 0) + (dw > 0 ? dw + 6 * k : 0) + (aw > 0 ? aw + 6 * k : 0);
+            float extra = (iw > 0 ? iw + 7 * k : 0) + (dw > 0 ? dw + 6 * k : 0) + (aw > 0 ? aw + 6 * k : 0);
             char nm[64];
             snprintf(nm, sizeof(nm), "%s", st.me ? "YOU" : st.name);
-            float maxW = vx - 10.0f * k - x0 - extra;
+            float maxW = xb0 - 12.0f * k - x0 - extra;
             if (maxW < 40.0f * k) maxW = 40.0f * k;
             int len = (int)strlen(nm);
             while (len > 0 && bf->CalcTextSizeA(ns, FLT_MAX, 0.0f, nm).x > maxW) {
@@ -731,29 +742,36 @@ static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float in
                 snprintf(nm + len, sizeof(nm) - len, "..");
             }
             ImVec2 nz = bf->CalcTextSizeA(ns, FLT_MAX, 0.0f, nm);
-            dl->AddText(bf, ns, ImVec2(x0, y1 + 2.0f * k), ResA(255, 255, 255, ca), nm);
-            float tx = x0 + nz.x + 8.0f * k;
-            const float ty = y1 + 2.0f * k + (nz.y - th) * 0.5f;
+            dl->AddText(bf, ns, ImVec2(x0, y1), ResA(255, 255, 255, ca), nm);
+            float tx = x0 + nz.x + 7.0f * k;
+            const float ty = y1 + (nz.y - th) * 0.5f;
             if (iw > 0) {
                 IconPlat(dl, ImVec2(tx + iw * 0.5f, ty + th * 0.5f), th, st.plat, ResA(200, 236, 240, ca),
                          st.me ? ResA(44, 108, 116, ca) : ResA(30, 78, 84, ca));
-                tx += iw + 8.0f * k;
+                tx += iw + 7.0f * k;
             }
             if (dw > 0) { DiffChip(dl, bf, ImVec2(tx, ty), th, st.diff, st.ed, ca, true, true); tx += dw + 6.0f * k; }
-            if (aw > 0 && tx + aw < vx - 4.0f * k) {
+            if (aw > 0 && tx + aw < xb0 - 6.0f * k) {
                 SlantPlate(dl, ImVec2(tx, ty), ImVec2(tx + aw, ty + th), th * 0.3f, ResA(241, 80, 175, ca),
                            ResA(214, 52, 150, ca));
                 dl->AddText(bf, th * 0.8f, ImVec2(tx + th * 0.5f, ty + th * 0.08f), ResA(255, 255, 255, ca), "AUTO");
             }
+            const char* vt = ""; ImU32 vc = ResA(190, 204, 208, ca);
+            if (!st.final) { vt = "PLAYING..."; vc = ResA(255, 201, 51, ca); }
+            else if (st.drop) { vt = "DROP\xC3\x97OUT"; vc = ResA(255, 110, 196, ca); }
+            else if (st.clear == 1 || (st.clear < 0 && st.border > 0.0f && st.pct >= st.border)) {
+                vt = "STAGE CLEAR"; vc = ResA(119, 234, 241, ca); }
+            else if (st.clear == 0 || (st.clear < 0 && st.border > 0.0f)) vt = "NOT CLEAR...";
+            dl->AddText(bf, 13.0f * k, ImVec2(x0, a.y + 35.0f * k), vc, vt);
         }
-        /* line 2: judgement split bar */
+        /* middle: judgement split bar, the five counts, combo line */
         int tot = 0;
         for (int q = 0; q < 5; q++) tot += st.jc[q];
-        const float by0 = a.y + 45.0f * k, bh = 13.0f * k;
-        dl->AddRectFilled(ImVec2(x0, by0), ImVec2(xr, by0 + bh), ResA(0, 0, 0, 0.32f * ca), 3 * k);
+        const float by0 = a.y + 9.0f * k, bh = 10.0f * k;
+        dl->AddRectFilled(ImVec2(xb0, by0), ImVec2(xb1, by0 + bh), ResA(0, 0, 0, 0.32f * ca), 3 * k);
         if (st.hasJc && tot > 0) {
-            float x = x0;
-            const float full = (xr - x0) * g;
+            float x = xb0;
+            const float full = (xb1 - xb0) * g;
             for (int q = 0; q < 5; q++) {
                 const float w = full * st.jc[q] / tot;
                 if (w < 0.5f) continue;
@@ -763,11 +781,10 @@ static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float in
                 x += w;
             }
         }
-        /* line 3: the five counts (shrunk to fit) */
-        const float y3 = a.y + 65.0f * k;
+        const float y3 = a.y + 24.0f * k;
         if (st.hasJc && tot > 0) {
             char vb[5][12];
-            float js = 14.0f * k;
+            float js = 13.0f * k;
             for (int pass = 0; pass < 2; pass++) {
                 float tw = 0.0f;
                 for (int q = 0; q < 5; q++) {
@@ -775,10 +792,10 @@ static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float in
                     tw += bf->CalcTextSizeA(js, FLT_MAX, 0.0f, JN[q]).x + js * 0.35f +
                           bf->CalcTextSizeA(js, FLT_MAX, 0.0f, vb[q]).x + (q < 4 ? js * 1.0f : 0.0f);
                 }
-                if (tw <= xr - x0 || pass) break;
-                js *= (xr - x0) / tw;
+                if (tw <= xb1 - xb0 || pass) break;
+                js *= (xb1 - xb0) / tw;
             }
-            float x = x0;
+            float x = xb0;
             for (int q = 0; q < 5; q++) {
                 const float a2 = ca * ResClamp01((inMs - 420.0f - q * 60.0f) / 240.0f);
                 dl->AddText(bf, js, ImVec2(x, y3), ResA(JL[q][0], JL[q][1], JL[q][2], a2), JN[q]);
@@ -787,35 +804,37 @@ static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float in
                 x += bf->CalcTextSizeA(js, FLT_MAX, 0.0f, vb[q]).x + js * 1.0f;
             }
         } else {
-            dl->AddText(bf, 14.0f * k, ImVec2(x0, y3), ResA(169, 205, 211, 0.8f * ca),
+            dl->AddText(bf, 13.0f * k, ImVec2(xb0, y3), ResA(169, 205, 211, 0.8f * ca),
                         st.final ? "no note data" : "waiting for this player's result");
         }
-        /* line 4: max combo, cool rate | % */
-        const float y4 = a.y + 88.0f * k;
         {
-            char pc[16];
-            snprintf(pc, sizeof(pc), "%.2f%%", (double)(st.pct * (st.final ? g : 1.0f)));
-            const float ps2 = 21.0f * k;
-            ImVec2 pz = big->CalcTextSizeA(ps2, FLT_MAX, 0.0f, pc);
-            dl->AddText(big, ps2, ImVec2(xr - pz.x, y4 - 3.0f * k), ResA(255, 255, 255, ca), pc);
             char l4[96];
             int o = snprintf(l4, sizeof(l4), "MAX COMBO %dx", st.max_combo);
             if (st.hasJc && tot > 0)
                 o += snprintf(l4 + o, sizeof(l4) - o, "    COOL RATE %d%%", (int)(st.jc[0] * 100.0f / tot + 0.5f));
             if (st.border > 0.0f)
                 snprintf(l4 + o, sizeof(l4) - o, "    CLEAR AT %.0f%%", (double)st.border);
-            float fs4 = 13.5f * k;
-            const float av = xr - pz.x - 12.0f * k - x0;
+            float fs4 = 12.0f * k;
+            const float av = xb1 - xb0;
             const float w4 = bf->CalcTextSizeA(fs4, FLT_MAX, 0.0f, l4).x;
             if (w4 > av && w4 > 0.0f) fs4 *= av / w4;
-            dl->AddText(bf, fs4, ImVec2(x0, y4 + 1.0f * k), ResA(200, 228, 232, ca), l4);
+            dl->AddText(bf, fs4, ImVec2(xb0, a.y + 41.0f * k), ResA(200, 228, 232, ca), l4);
         }
     }
 
-    /* footer: keys */
+    /* footer: keys; Close can be clicked */
+    bool closeHot = false;
     {
         const float fy = (PY1 - 33.0f) * k, h = 22.0f * k, fsz = 15.0f * k;
         float x = (PX0 + 22.0f) * k;
+        const float cx0 = x;
+        const float kw = ResKeyCap(dl, bf, ImVec2(0, 0), h, kResKeyA, 1.0f, false);
+        const float cx1 = x + kw + 6.0f * k + bf->CalcTextSizeA(fsz, FLT_MAX, 0.0f, "Close").x;
+        closeHot = pp >= 1.0f && mouse.x >= cx0 - 6.0f * k && mouse.x <= cx1 + 6.0f * k &&
+                   mouse.y >= fy - 5.0f * k && mouse.y <= fy + h + 5.0f * k;
+        if (closeHot)
+            dl->AddRectFilled(ImVec2(cx0 - 6.0f * k, fy - 4.0f * k), ImVec2(cx1 + 8.0f * k, fy + h + 4.0f * k),
+                              ResA(0, 122, 132, 0.9f * e0), (h + 8.0f * k) * 0.5f);
         x += ResKeyCap(dl, bf, ImVec2(x, fy), h, kResKeyA, e0) + 6.0f * k;
         dl->AddText(bf, fsz, ImVec2(x, fy + 2.0f * k), ResA(255, 255, 255, e0), "Close");
         x += bf->CalcTextSizeA(fsz, FLT_MAX, 0.0f, "Close").x + 22.0f * k;
@@ -828,14 +847,17 @@ static void DrawResultsPanel(const Ui& u, const Snapshot& sn, float pp, float in
         ImVec2 nz = bf->CalcTextSizeA(fsz, FLT_MAX, 0.0f, note);
         dl->AddText(bf, fsz, ImVec2((PX1 - 22.0f) * k - nz.x, fy + 2.0f * k), ResA(255, 201, 51, e0), note);
     }
+    return closeHot;
 }
 
-void DrawResultsAvatars() {
+void DrawResultsAvatars(ImVec2 hudOff) {
     Snapshot sn;
     GetSnapshot(&sn);
     if (sn.standingCount <= 0 || sn.resultsAgeMs < 0) return;
     const float age = sn.resultsAgeMs / 1000.0f;
     ImGuiIO& io = ImGui::GetIO();
+    /* drawn inside the HUD block: the pointer in HUD space */
+    const ImVec2 mouse(io.MousePos.x - hudOff.x, io.MousePos.y - hudOff.y);
     const ImVec2 ds = io.DisplaySize;
     const float k = ds.y / 720.0f;
 
@@ -1051,12 +1073,17 @@ void DrawResultsAvatars() {
         Ui pu = u;
         pu.font = ImGui::GetFont();
         pu.fs = pu.font->FontSize;
-        DrawResultsPanel(pu, sn, pp, sn.resPanel == 2 && sn.resPanelMs >= 0 ? (float)sn.resPanelMs : 99999.0f, ds);
-    } else if (age > 1.6f && (sn.resPanel == 1 || (sn.resPanel == 3 && sn.resCanReopen))) {
-        /* how to open it, above the first hexagon */
+        const bool closeHot = DrawResultsPanel(
+            pu, sn, pp, sn.resPanel == 2 && sn.resPanelMs >= 0 ? (float)sn.resPanelMs : 99999.0f, ds, mouse);
+        if (closeHot && sn.resPanel == 2 && ImGui::IsMouseClicked(0)) ResPanelClick();
+    } else if (age > 1.6f && (sn.resPanel == 1 || sn.resPanel == 3)) {
+        /* how to open it, above the first hexagon: the key that works on
+         * this page, and the pill itself can always be clicked */
         const float ha = ResClamp01((age - 1.6f) / 0.4f) * (0.82f + 0.18f * pulse);
-        ResHint(u.dl, ImGui::GetFont(), ds.x - 8.0f * k, 222.0f * k, k,
-                sn.resPanel == 1 ? kResKeyA : kResKeyY, "Details", ha);
+        const char* key = sn.resPanel == 1 ? kResKeyA : (sn.resCanReopen ? kResKeyY : "Click");
+        if (ResHint(u.dl, ImGui::GetFont(), ds.x - 8.0f * k, 222.0f * k, k, key, "Details", ha, &mouse) &&
+            ImGui::IsMouseClicked(0))
+            ResPanelClick();
     }
     EndWin();
 }

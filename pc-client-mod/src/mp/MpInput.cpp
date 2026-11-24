@@ -42,6 +42,7 @@
 
 namespace mp::input {
 static bool GameForeground();
+static void ResetDeviceTaps();
 
 struct TapEntry {
     uint64_t buttons;
@@ -53,6 +54,7 @@ struct TapEntry {
 static TapEntry    s_taps[32];
 static uint32_t    s_tapHead = 0, s_tapCount = 0;
 static uint64_t    s_tapStartTick = 0;
+static bool        s_tapReleasing = false;
 static std::mutex  s_mtx;
 static uint64_t    s_blocked = 0;
 static bool        s_zeroSticks = false;
@@ -104,10 +106,15 @@ void Tap(uint64_t buttons, uint32_t hold_ms, uint32_t gap_ms, bool force) {
     if (s_tapCount == 32) {
         s_tapHead = (s_tapHead + 1) & 31;
         s_tapCount--;
+        s_tapStartTick = 0;
+        s_tapReleasing = false;
     }
     uint32_t idx = (s_tapHead + s_tapCount) & 31;
     s_taps[idx] = {buttons, hold_ms, gap_ms, force};
-    if (s_tapCount == 0) s_tapStartTick = NowTick();
+    if (s_tapCount == 0) {
+        s_tapStartTick = 0;
+        s_tapReleasing = false;
+    }
     s_tapCount++;
 }
 
@@ -195,14 +202,21 @@ void NavClear() {
     s_navPrev = s_navHeld;
 }
 
-void ResetAll() {
+void CancelTaps() {
     std::lock_guard<std::mutex> lk(s_mtx);
-    s_blocked = 0;
-    s_zeroSticks = false;
     s_tapCount = 0;
-    s_spam.active = false;
-    mp::lobby::ClearGroupPause();
+    ResetDeviceTaps();
+}
 
+void ResetAll() {
+    CancelTaps();
+    {
+        std::lock_guard<std::mutex> lk(s_mtx);
+        s_blocked = 0;
+        s_zeroSticks = false;
+        s_spam.active = false;
+    }
+    mp::lobby::ClearGroupPause();
 }
 
 /* ---------------- raw-index tap injection (dbg_cmd rawtap) ---------------- */
@@ -680,10 +694,17 @@ void InstallGaksHook() {}
  * the game's mapped action indices rather than scancodes. */
 static SafetyHookInline s_kbPollHook;
 static std::mutex     s_devMtx;
-struct DevTapEntry { int32_t idx; uint64_t endTick; };
+struct DevTapEntry { int32_t idx; uint64_t endTick; bool sampled; };
 static DevTapEntry  s_devTaps[8];
 static int          s_devTapN = 0;
 static int          s_devTapSeen = 0;
+static std::atomic<uint64_t> s_deviceLogical{0};
+
+static void ResetDeviceTaps() {
+    std::lock_guard<std::mutex> lk(s_devMtx);
+    s_devTapN = 0;
+    s_deviceLogical.store(0);
+}
 
 static __int64 __fastcall KbPollDetour(uintptr_t obj) {
     __int64 r = s_kbPollHook.call<__int64>(obj);
@@ -698,15 +719,19 @@ static __int64 __fastcall KbPollDetour(uintptr_t obj) {
     uint64_t bits[3] = {};
     {   std::lock_guard<std::mutex> lk(s_devMtx);
         uint64_t now = NowTick();
+        uint64_t logical = 0;
         for (int i = s_devTapN - 1; i >= 0; i--) {
-            if (now >= s_devTaps[i].endTick) {
+            if (s_devTaps[i].sampled && now >= s_devTaps[i].endTick) {
                 s_devTaps[i] = s_devTaps[s_devTapN - 1];
                 s_devTapN--;
             } else {
                 int idx = s_devTaps[i].idx;
-                if (idx >= 0 && idx < 192) bits[idx >> 6] |= 1ull << (idx & 63);
+                bits[idx >> 6] |= 1ull << (idx & 63);
+                logical |= keys::LogicalForKey(idx);
+                s_devTaps[i].sampled = true;
             }
         }
+        s_deviceLogical.store(logical);
     }
     if (bits[0] | bits[1] | bits[2]) {
         uint64_t* bs = (uint64_t*)(obj + 0x518);
@@ -725,13 +750,7 @@ static __int64 __fastcall KbPollDetour(uintptr_t obj) {
  * ConsumeRealPress(Plus) answers our own toggle with pause_reqs
  * (pause<->resume ping-pong observed live 2026-11-18). */
 static uint64_t DevTapSuppressLogical() {
-    uint64_t supp = 0;
-    std::lock_guard<std::mutex> lk(s_devMtx);
-    uint64_t now = NowTick(), tail = MsToTick(80);
-    for (int i = 0; i < s_devTapN; i++)
-        if (now < s_devTaps[i].endTick + tail)
-            supp |= keys::LogicalForKey(s_devTaps[i].idx);
-    return supp;
+    return s_deviceLogical.load();
 }
 
 /* dbg_cmd devtap {idx,hold}: hold raw device index <idx> in the keyboard
@@ -742,17 +761,19 @@ void DevTap(int32_t idx, uint32_t hold_ms) {
     for (int i = 0; i < s_devTapN; i++) {
         if (s_devTaps[i].idx == idx) {
             s_devTaps[i].endTick = NowTick() + MsToTick(hold_ms);
+            s_devTaps[i].sampled = false;
             return;
         }
     }
     if (s_devTapN < 8) {
         s_devTaps[s_devTapN].idx = idx;
         s_devTaps[s_devTapN].endTick = NowTick() + MsToTick(hold_ms);
+        s_devTaps[s_devTapN].sampled = false;
         s_devTapN++;
     }
 }
 
-void DevTapBtn(uint64_t logical, uint32_t hold_ms) {
+void DevTapBtn(uint64_t logical) {
     int32_t idx = -1;
     switch (logical) {
     case nn::hid::A:     idx = keys::RawEnter; break;
@@ -763,7 +784,7 @@ void DevTapBtn(uint64_t logical, uint32_t hold_ms) {
     case nn::hid::Right: idx = keys::RawRight; break;
     default: return;
     }
-    DevTap(idx, hold_ms);
+    DevTap(idx, 0);
 }
 
 void InstallKbPollHook() {
@@ -807,7 +828,7 @@ void InstallKbPollHook() {
  * it (a swallowed return made the pause menu immortal and ended songs at
  * random). */
 static SafetyHookInline        s_pauseTaskHook;
-static std::atomic<uintptr_t>  s_pauseTask{0};
+static std::atomic<int>        s_pauseCursor{-1}, s_pauseState{-1};
 static std::atomic<uint64_t>   s_pauseTaskMs{0};
 static std::atomic<int>        s_pauseWant{-1};      /* -1 none, 0 run, 1 pause */
 static std::atomic<uint64_t>   s_pauseWantUntil{0};  /* ms; 0 = no expiry */
@@ -837,8 +858,6 @@ static int CurrentPauseWant() {
  * same branch the menu takes for the pause key (exe+0x65A067): resume
  * flag, closing state, close SE, out animations. */
 static bool __fastcall PauseMenuCtrlDetour(uintptr_t task) {
-    s_pauseTask.store(task, std::memory_order_relaxed);
-    s_pauseTaskMs.store(NowMs(), std::memory_order_relaxed);
     if (CurrentPauseWant() == 0 && *(volatile int*)(task + 0x6c) == 3) {
         uintptr_t base = ExeBase();
         *(volatile unsigned char*)(task + 0x75) = 1;
@@ -853,7 +872,11 @@ static bool __fastcall PauseMenuCtrlDetour(uintptr_t task) {
             s_pauseWant.store(-1, std::memory_order_relaxed);
         WriteLog("[MP] pause: menu resume issued\n");
     }
-    return s_pauseTaskHook.call<bool>(task);
+    bool done = s_pauseTaskHook.call<bool>(task);
+    s_pauseState.store(done ? -1 : *(volatile int*)(task + 0x6c));
+    s_pauseCursor.store(done ? -1 : *(volatile int*)(task + 0x278));
+    s_pauseTaskMs.store(NowMs());
+    return done;
 }
 
 void InstallPauseTaskHook() {
@@ -865,24 +888,16 @@ void InstallPauseTaskHook() {
 }
 
 static bool PauseMenuLive() {
-    uintptr_t t = s_pauseTask.load(std::memory_order_relaxed);
-    return t && NowMs() - s_pauseTaskMs.load(std::memory_order_relaxed) <= 250;
+    return NowMs() - s_pauseTaskMs.load() <= 250;
 }
 
 /* -1 when no pause-menu task has run recently (menu closed). */
 int PauseMenuCursor() {
-    if (!PauseMenuLive()) return -1;
-    return *(volatile int*)(s_pauseTask.load(std::memory_order_relaxed) + 0x278);
-}
-
-void PauseMenuSetCursor(int c) {
-    if (PauseMenuLive())
-        *(volatile int*)(s_pauseTask.load(std::memory_order_relaxed) + 0x278) = c;
+    return PauseMenuLive() ? s_pauseCursor.load() : -1;
 }
 
 int PauseMenuTaskState() {
-    if (!PauseMenuLive()) return -1;
-    return *(volatile int*)(s_pauseTask.load(std::memory_order_relaxed) + 0x6c);
+    return PauseMenuLive() ? s_pauseState.load() : -1;
 }
 
 bool GamePaused() {
@@ -926,6 +941,7 @@ static void PauseTick() {
  * pause nobody asked for), so it is switched off while in a room. */
 static int s_bgPauseOrig = -1;
 void SetBackgroundPause(bool gameDefault) {
+    if (gameDefault && s_bgPauseOrig < 0) return;
     volatile unsigned char* f =
         (volatile unsigned char*)(ExeBase() + 0x14AB9E8);
     if (s_bgPauseOrig < 0) s_bgPauseOrig = *f;
@@ -935,6 +951,7 @@ void SetBackgroundPause(bool gameDefault) {
         WriteLog("[MP] background pause %s\n",
                  gameDefault ? "restored (game default)" : "suppressed (in room)");
     }
+    if (gameDefault) s_bgPauseOrig = -1;
 }
 
 /* MP start gate: the song is held at its first frame until the server's
@@ -1087,17 +1104,24 @@ static void CollectInject(uint64_t now, uint64_t* inject, uint64_t* injectForce)
     }
     while (s_tapCount > 0) {
         const TapEntry& e = s_taps[s_tapHead];
+        if (!s_tapStartTick) s_tapStartTick = now;
         uint64_t elapsed = now - s_tapStartTick;
-        if (elapsed < MsToTick(e.hold_ms)) {
+        if (!s_tapReleasing && elapsed < MsToTick(e.hold_ms)) {
             if (e.force) *injectForce |= e.buttons;
             else         *inject |= e.buttons;
             break;
         }
-        if (elapsed < MsToTick(e.hold_ms + e.gap_ms))
+        if (!s_tapReleasing) {
+            s_tapReleasing = true;
+            s_tapStartTick = now;
+            break;
+        }
+        if (elapsed < MsToTick(e.gap_ms))
             break;                       /* release window */
         s_tapHead = (s_tapHead + 1) & 31;
         s_tapCount--;
-        s_tapStartTick = now;
+        s_tapStartTick = 0;
+        s_tapReleasing = false;
     }
 }
 
@@ -1233,19 +1257,20 @@ void Apply(diva::InputState* st) {
             rec.merged = real; rec.seenMs = nowMs;
             return;                      /* our own poll sees real input */
         }
-        s_srcReal[slot] = real;
+        uint64_t device = DevTapSuppressLogical();
+        s_srcReal[slot] = real & ~device;
         s_srcRealMs[slot] = nowMs;
         uint64_t comb = 0;
         for (int i = 0; i < 27; i++)
             if (nowMs - s_srcRealMs[i] <= 250) comb |= s_srcReal[i];
-        comb &= ~DevTapSuppressLogical();
         s_realEdges |= comb & ~s_prevRealComb;
         s_prevRealComb = comb;
         /* DevTap-produced logicals are the mod's own injection: they must
          * pass the block mask like injectForce does, or the results/pause
          * drivers can't reach menus while the block owns input (the menus
          * read the device-driven path, where Tap(force) never lands). */
-        blocked = s_blocked & ~DevTapSuppressLogical();
+        injectForce |= real & device;
+        blocked = s_blocked;
         zeroLs = s_zeroSticks;
         CollectInject(now, &inject, &injectForce);
 #ifdef MP_DEV_TOOLS
@@ -1379,7 +1404,7 @@ static uint64_t CurrentInjectBits() {
     if (s_tapCount > 0) {
         const TapEntry& e = s_taps[s_tapHead];
         uint64_t elapsed = now - s_tapStartTick;
-        if (elapsed < MsToTick(e.hold_ms)) {
+        if (!s_tapReleasing && e.hold_ms && (!s_tapStartTick || elapsed < MsToTick(e.hold_ms))) {
             if (e.force) injF |= e.buttons;
             else         inj |= e.buttons;
         }

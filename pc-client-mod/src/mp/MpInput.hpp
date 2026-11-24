@@ -32,6 +32,7 @@ void EndBypass();
 
 /* Clear every block/injection (emergency exit). */
 void ResetAll();
+void CancelTaps();
 
 /* Rising edges of REAL input (pre-block) � lets the lobby see a real
  * press even while the button is blocked for the game. */
@@ -82,7 +83,7 @@ void DevTap(int32_t idx, uint32_t hold_ms);
  * end-menu, pause menu) read the DI8-driven path and never consume
  * InputState-level nav writes, so menu drivers must inject through here;
  * the press still feeds the menu model once via the merged `real` stream. */
-void DevTapBtn(uint64_t logical, uint32_t hold_ms);
+void DevTapBtn(uint64_t logical);
 
 /* Hook the keyboard poller (exe+0x2B0CF0) so DevTap bits land in the
  * +0x518 bitset after the original poll, before the caller's edge diff. */
@@ -93,7 +94,6 @@ void InstallKbPollHook();
  * menu is not up. Feeds mp::menu's guard/veto instead of blind counting. */
 void InstallPauseTaskHook();
 int  PauseMenuCursor();
-void PauseMenuSetCursor(int c);
 int  PauseMenuTaskState();
 /* StageResult task (StageResultSwitchCtrl hook, vt[2] = exe+0x64C200): the
  * real end-menu cursor (0=Retry 1=Return to Song List). -1 when the results

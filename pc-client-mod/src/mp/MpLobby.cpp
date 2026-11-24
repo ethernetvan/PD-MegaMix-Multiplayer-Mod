@@ -11,6 +11,7 @@
 #include "../game/diva.h"
 #include "../platform/NxShim.hpp"
 #include <mutex>
+#include <atomic>
 #include <cstring>
 #include <cstdio>
 #include <cstdarg>
@@ -105,6 +106,9 @@ static int     s_resPanel = 0;
 static int     s_resPage = 0;
 static int64_t s_resPanelAt = 0;     /* ms of the last open/close, 0 none */
 static const int  kResPerPage = 8;      /* players per page */
+/* a click on the results screen's Details hint (opens) or on the open
+ * panel's Close hint; set on the present thread, taken by Pump */
+static std::atomic<int> s_resClick{0};
 /* the game's Retry / Return menu can't be shielded from the keyboard on
  * every platform: where it can't, the panel only reopens before it */
 static const bool kResReopenOnMenu = false;
@@ -140,9 +144,9 @@ static bool  s_recGaveUp = false;        /* bounded: gave up, released claim */
 static int64_t s_blockBannerAt = 0;      /* rate limit for swallow banners */
 static int   s_prevPvPaused = 0;
 /* results auto-return driver */
-static bool  s_retBannered = false;
+static uint64_t s_driveStarted = 0;
 static int64_t s_driveLastTap = 0;
-static int   s_scoreTries = 0;
+static int   s_driveTries = 0;
 /* retry watch: armed on a results dest in a guarded room; a song clock
  * that keeps running with no pv_sel init = the user hit Retry anyway */
 static bool  s_retryWatch = false;
@@ -152,6 +156,7 @@ static int   s_retryRecStage = 0;        /* 0 off; 1 pause, 2 nav, 3 A, 4 sel */
 static int   s_retryRecTries = 0;
 static int64_t s_retryRecLastTap = 0;
 static int64_t s_retryRecT0 = 0;
+static uint64_t s_retryRecDeadline = 0;
 static int   s_retryRecRounds = 0;
 static char  s_scene[12] = "other";
 static int32_t s_playedRound = 0;        /* round actually played this boot */
@@ -565,6 +570,7 @@ void ClearGroupPause() {
 
 static void ResetLobbyState() {
     s_phase = L_NONE;
+    s_round = 0;
     s_code[0] = 0; s_leaderCid[0] = 0;
     s_webKey[0] = 0;
     s_memberCount = 0; s_boardCount = 0; s_standingCount = 0;
@@ -601,7 +607,7 @@ static void ResetLobbyState() {
     s_quitting = false; s_prevPvPaused = 0;
     s_topRightBusy = false;
     s_retryWatch = false; s_retryRecStage = 0;
-    s_retBannered = false; s_scoreTries = 0;
+    s_driveStarted = 0; s_driveTries = 0;
     /* never leave the game frozen: a held sync-pause must die with the
      * room (leave, kick, disconnect, round teardown all land here) */
     ReleaseSyncPause(s_groupPaused);
@@ -833,6 +839,34 @@ static bool CidInArray(const char* line, const jsmntok_t* tok, int ntok,
     return false;
 }
 
+static void FinishRound(bool nextLeader, bool wasPaused) {
+    input::CancelTaps();
+    s_selPv = -1; s_leaderPv = -1; s_localPv = -1;
+    s_folLeaderPv = -1; s_folTarget = -1; s_folMissing = false;
+    s_folFail = 0; s_folGaveUp = false; s_folTD = -1; s_folTE = -1;
+    s_committed = false; s_startSeen = false; s_loadedSent = false;
+    ReleaseLoaderHold("round ended");
+    ReleaseSyncPause(wasPaused);
+    s_jumpFailedDiff = false; s_standingsComplete = false;
+    s_backInSelSent = false; s_resultInitAt = 0;
+    s_unavailFor[0] = 0;
+    s_amLeader = nextLeader;
+    s_roundOver = true;
+    s_groupPaused = false;
+    if (s_selActive) {
+        SetPhase(L_SELECT, s_amLeader ? "You're the leader - pick a song"
+                                      : "Back in lobby - next round");
+    } else {
+        /* on results / in the song / loading: never become an
+           L_SELECT follower away from song select */
+        SetPhase(L_RESULTS, "Round over");
+        s_autoReturn = true;
+    }
+    ApplyBlocks();
+    if (s_amLeader) PushBanner("You're the leader - pick a song");
+    else PushBanner("Round over - back in song select");
+}
+
 static void ProcessLine(const char* line) {
     jsmn_parser ps; jsmn_init(&ps);
     jsmntok_t tok[384];      /* 8 members x ~20 tokens + header */
@@ -889,10 +923,17 @@ static void ProcessLine(const char* line) {
         }
     }
     if (strcmp(t, "lobby") == 0) {
+        char prevCode[sizeof(s_code)];
+        memcpy(prevCode, s_code, sizeof(prevCode));
+        bool activeRound = s_round > 0 && !s_roundOver;
+        bool wasPaused = s_groupPaused;
         HandleLobby(line, tok, ntok);
         s_expectLobby = false;
         s_joinState = JOIN_IDLE;
-        if (s_phase == L_NONE || s_phase == L_DROPPED) {
+        if (activeRound && strcmp(prevCode, s_code) == 0 &&
+            s_round == 0 && strcmp(s_serverPhase, "SELECT") == 0) {
+            FinishRound(s_amLeader, wasPaused);
+        } else if (s_phase == L_NONE || s_phase == L_DROPPED) {
             ReportAutoPlay(AutoPlay::g_enabled);
             ReportScene();
             SetPhase(strcmp(s_serverPhase, "SELECT") == 0
@@ -1016,8 +1057,10 @@ static void ProcessLine(const char* line) {
     if (strcmp(t, "launch") == 0) {
         int32_t rd = 0, i = mpjson::Find(line, tok, ntok, "round"), v;
         if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) rd = v;
-        if (s_launchHandledRound == rd) return;
+        if (!s_code[0] || rd <= s_launchHandledRound || rd <= 0) return;
         s_launchHandledRound = rd;
+        s_startSeen = false;
+        s_loadedSent = false;
         s_round = rd;
         s_roundOver = false;
         {   int nf = mpjson::Find(line, tok, ntok, "no_fail");
@@ -1030,6 +1073,7 @@ static void ProcessLine(const char* line) {
         if (s_resultsShownAt == 0)
             s_standingCount = 0;   /* don't show last round's standings */
         if (s_committed) {
+            s_committed = false;
             s_amPlayer = true;
             s_expectLoad = true;
             SetPhase(L_LOADING, "Loading...");
@@ -1086,7 +1130,8 @@ static void ProcessLine(const char* line) {
     if (strcmp(t, "start") == 0) {
         int32_t rd = 0, i = mpjson::Find(line, tok, ntok, "round"), v;
         if (i >= 0 && mpjson::ToInt(line, tok[i], &v)) rd = v;
-        if (s_startSeen && rd == s_round) return;
+        if (!s_code[0] || s_roundOver || rd != s_launchHandledRound || rd <= 0 || s_startSeen)
+            return;
         s_startSeen = true;
         s_round = rd;
         s_countdownEndMs = 0;
@@ -1166,32 +1211,15 @@ static void ProcessLine(const char* line) {
         return;
     }
     if (strcmp(t, "round_end") == 0) {
+        int32_t rd = 0;
+        int ri = mpjson::Find(line, tok, ntok, "round");
+        if (!s_code[0] || s_roundOver || ri < 0 ||
+            !mpjson::ToInt(line, tok[ri], &rd) || rd <= 0 || rd != s_round)
+            return;
         int i = mpjson::Find(line, tok, ntok, "next_leader");
         char nl[24] = "";
         if (i >= 0) mpjson::Copy(line, tok[i], nl, sizeof(nl));
-        s_selPv = -1; s_leaderPv = -1; s_localPv = -1;
-    s_folLeaderPv = -1; s_folTarget = -1; s_folMissing = false;
-    s_folFail = 0; s_folGaveUp = false; s_folTD = -1; s_folTE = -1;
-        s_committed = false; s_startSeen = false; s_loadedSent = false;
-        s_loaderHold = false;
-        s_jumpFailedDiff = false; s_standingsComplete = false;
-        s_backInSelSent = false; s_resultInitAt = 0;
-        s_unavailFor[0] = 0;
-        s_amLeader = strcmp(nl, s_myCid) == 0;
-        s_roundOver = true;
-        s_groupPaused = false;
-        if (s_selActive) {
-            SetPhase(L_SELECT, s_amLeader ? "You're the leader - pick a song"
-                                          : "Back in lobby - next round");
-        } else {
-            /* on results / in the song / loading: never become an
-               L_SELECT follower away from song select */
-            SetPhase(L_RESULTS, "Round over");
-            s_autoReturn = true;
-        }
-        ApplyBlocks();
-        if (s_amLeader) PushBanner("You're the leader - pick a song");
-        else PushBanner("Round over - back in song select");
+        FinishRound(strcmp(nl, s_myCid) == 0, s_groupPaused);
         return;
     }
     if (strcmp(t, "event") == 0) {
@@ -1397,7 +1425,7 @@ void Pump() {
                 }
             } else {
                 /* in a song outside a group round: resume locally */
-                input::Tap(nn::hid::Plus, 60, 100, true);
+                input::PauseWant(0, 1500);
             }
         }
         if (ev & menu::EV_RETRY_BLOCKED) {
@@ -1429,6 +1457,7 @@ void Pump() {
     {
         const bool can = s_resultsShownAt > 0 && s_code[0] &&
                          s_standingCount > 0;
+        const bool click = s_resClick.exchange(0) != 0;
         if (!can) {
             s_resPanel = 0; s_resPage = 0; s_resPanelAt = 0;
         } else if (s_autoReturn) {
@@ -1446,7 +1475,7 @@ void Pump() {
             const int pages = (s_standingCount + kResPerPage - 1) / kResPerPage;
             if (s_resPage >= pages) s_resPage = pages - 1;
             if (s_resPanel == 2) {
-                if (e & (nn::hid::A | nn::hid::B)) {
+                if ((e & (nn::hid::A | nn::hid::B)) || click) {
                     s_resPanel = 3; s_resPanelAt = (int64_t)now;
                     /* the closing press is still down: keep it from the
                      * game until it is released */
@@ -1461,9 +1490,12 @@ void Pump() {
                 const menu::Status rs = menu::Get(now);
                 const bool early = rs.page == mp::menu::P_RES_SCORE ||
                                    rs.page == mp::menu::P_RES_VP;
+                /* a click opens it on every results page: the pointer
+                 * doesn't reach the game's Retry / Return menu */
                 if ((s_resPanel == 1 && (e & nn::hid::A)) ||
                     (s_resPanel == 3 && (e & nn::hid::Y) &&
-                     (kResReopenOnMenu || early))) {
+                     (kResReopenOnMenu || early)) ||
+                    (click && (s_resPanel == 1 || s_resPanel == 3))) {
                     s_resPanel = 2; s_resPanelAt = (int64_t)now;
                     ApplyBlocks();
                 }
@@ -1473,40 +1505,40 @@ void Pump() {
 
     /* the A passed on the results menu produced no dest (driver or user):
      * resync the model to MENU on Return so input isn't swallowed forever */
+    auto stopReturn = [&]() {
+        s_autoReturn = false;
+        input::CancelTaps();
+        if (s_resPanel == 2) s_resPanel = 3;
+        PushBanner("Still in results - choose Return to Song List");
+        ApplyBlocks();
+    };
     if (s_resultsShownAt > 0) {
         menu::Status ms = menu::Get(now);
         if (ms.page == mp::menu::P_RES_EXIT && ms.pageFrames > 240) {
             DbgMenu(ms.page, ms.cursor, "exit_timeout");
             menu::ExitFallback(now);
+            if (s_autoReturn) stopReturn();
         }
     }
 
     /* results auto-return driver: owns the results menu once the round
      * is over; walks SCORE -> VP -> MENU -> Return to Song List */
     if (s_autoReturn && s_resultsShownAt > 0) {
-        if (!s_retBannered) {
-            s_retBannered = true;
+        if (!s_driveStarted) {
+            s_driveStarted = now;
             PushBanner("Round over - returning to the song list");
         }
         menu::Status ms = menu::Get(now);
-        if (ms.ready && now - s_driveLastTap >= 300) {
+        if (now - s_driveStarted > 60000 || s_driveTries >= 12) {
+            DbgMenu(ms.page, ms.cursor, "drive_give_up");
+            stopReturn();
+        } else if (ms.ready && ms.page != mp::menu::P_RES_EXIT && now - s_driveLastTap >= 300) {
+            ++s_driveTries;
+            s_driveLastTap = now;
             switch (ms.page) {
             case mp::menu::P_RES_SCORE:
-                if (s_scoreTries >= 8) {
-                    DbgMenu(ms.page, ms.cursor, "drive_give_up");
-                    s_autoReturn = false;
-                    PushBanner("Couldn't leave results - press A");
-                    ApplyBlocks();
-                } else {
-                    s_scoreTries++;
-                    DbgMenu(ms.page, ms.cursor, "drive_a");
-                    s_driveLastTap = now;
-                    input::Tap(nn::hid::A, 80, 80, true);
-                }
-                break;
             case mp::menu::P_RES_VP:
                 DbgMenu(ms.page, ms.cursor, "drive_a");
-                s_driveLastTap = now;
                 input::Tap(nn::hid::A, 80, 80, true);
                 break;
             case mp::menu::P_RES_MENU:
@@ -1517,12 +1549,10 @@ void Pump() {
                  * live: drive_down counted -> drive_a hit Retry) */
                 if (ms.cursor == 0) {
                     DbgMenu(ms.page, ms.cursor, "drive_down");
-                    s_driveLastTap = now;
-                    input::DevTapBtn(nn::hid::Down, 80);
+                    input::DevTapBtn(nn::hid::Down);
                 } else {
                     DbgMenu(ms.page, ms.cursor, "drive_a");
-                    s_driveLastTap = now;
-                    input::DevTapBtn(nn::hid::A, 80);
+                    input::DevTapBtn(nn::hid::A);
                 }
                 break;
             default:
@@ -1634,6 +1664,7 @@ void OnPvSelInit() {
         SetPhase(L_RESULTS, "Left the round - waiting for the others");
     }
     s_selActive = true;
+    if (s_autoReturn || s_retryRecStage) input::CancelTaps();
     s_lastSelState = -1;
     s_autoReturn = false;
     s_quitting = false;
@@ -1999,6 +2030,8 @@ void OnPvSelFrame(const void* sel) {
     if (s_phase == L_LAUNCHING) {
         bool inCust2 = CustomizeSelUi::IsInCustomizeScene() ||
                        CustomizeSelUi::IsOpen();
+        const int32_t target = s_folTarget > 0 ? s_folTarget : s_localPv;
+        const bool launchSong = target > 0 && selPv == target && !inCust2;
         if (s_launchStage == 0 && s_folMissing) {
             /* the song isn't on this console: spectate instead of
              * waiting blocked for the server's straggler drop */
@@ -2010,7 +2043,7 @@ void OnPvSelFrame(const void* sel) {
             ClearAllInput();
             PushBanner("You don't have this song - spectating");
         } else if (s_launchStage == 0) {
-            if (state == 8) {
+            if (state == 8 && !inCust2) {
                 /* the start-confirm panel was open when the leader
                  * launched: close it with B (1 s spacing, it can miss
                  * presses while animating) so the normal flow can pick
@@ -2037,12 +2070,11 @@ void OnPvSelFrame(const void* sel) {
                 s_launchBlocking = true;
                 s_launchBTaps = 0;
                 SetBlocks(MASK_ALL_NO_MINUS, true);
-                int32_t target = s_folTarget > 0 ? s_folTarget : s_localPv;
                 /* same_diff: get onto the picker's difficulty first; after
                  * a few failed tries start on ours rather than miss the
                  * round */
                 bool diffOff = offDiff && s_launchDiffTries < 4;
-                if (selPv == target && !diffOff) {
+                if (launchSong && !diffOff) {
                     input::Tap(nn::hid::A, 80, 80, true);
                     s_launchStage = 1;
                     s_launchStageAt = now;
@@ -2058,18 +2090,20 @@ void OnPvSelFrame(const void* sel) {
             /* A#1 sent: wait for the confirm panel (state 8) */
             if (state == 8) { s_launchStage = 2; s_launchStageAt = now; }
             else if (now - s_launchStageAt > 2000) {
-                if (++s_launchTries > 3) s_launchStage = 3, s_launchStageAt = 0;
+                if (state != 6 || !launchSong || busy || ++s_launchTries > 3)
+                    s_launchStage = 3, s_launchStageAt = 0;
                 else { input::Tap(nn::hid::A, 80, 80, true); s_launchStageAt = now; }
             }
         } else if (s_launchStage == 2) {
             /* the panel ignores input while it animates in */
-            if (now - s_launchStageAt >= 700) {
+            if (state == 8 && launchSong && now - s_launchStageAt >= 700) {
                 input::Tap(nn::hid::A, 80, 80, true);
                 s_launchStage = 3; s_launchStageAt = now; s_launchTries = 0;
-            }
+            } else if (state == 10 || now - s_launchStageAt > 4000)
+                s_launchStage = 3, s_launchStageAt = 0;
         } else if (s_launchStage == 3) {
             if (state == 10) { s_launchStage = 4; }
-            else if (state == 8 && s_launchStageAt && now - s_launchStageAt > 1500 &&
+            else if (state == 8 && launchSong && s_launchStageAt && now - s_launchStageAt > 1500 &&
                      s_launchTries < 3) {
                 s_launchTries++;
                 input::Tap(nn::hid::A, 80, 80, true);
@@ -2223,6 +2257,7 @@ void OnPvGameFrame(diva::PVGameData* pv) {
                 else if (now - s_retryStChangeAt >= 500) {
                     s_retryWatch = false;
                     s_retryRecStage = 1;
+                    s_retryRecDeadline = now + 30000;
                     s_retryRecTries = 0;
                     s_retryRecLastTap = 0;
                     s_retryRecRounds = 0;
@@ -2237,6 +2272,11 @@ void OnPvGameFrame(diva::PVGameData* pv) {
 
     /* retry recovery: pause the re-running song and leave through the
      * pause menu's Return to Song List (Up wraps to the bottom item) */
+    if (s_retryRecStage > 0 && now >= s_retryRecDeadline) {
+        s_retryRecStage = 0;
+        input::CancelTaps();
+        PushBanner("Choose Return to Song List from the pause menu");
+    }
     if (s_retryRecStage > 0) {
         menu::Status ms = menu::Get(now);
         switch (s_retryRecStage) {
@@ -2250,7 +2290,7 @@ void OnPvGameFrame(diva::PVGameData* pv) {
                     s_retryRecStage = 0;
                 } else {
                     s_retryRecLastTap = now;
-                    input::Tap(nn::hid::Plus, 60, 100, true);
+                    input::PauseWant(1, 1500);
                 }
             }
             break;
@@ -2258,8 +2298,10 @@ void OnPvGameFrame(diva::PVGameData* pv) {
                                      * cursor: a menu tap can land as
                                      * edge+repeat (seen live: one Up moved
                                      * 0->4->3), so nudge and re-check */
-            if (ms.page == mp::menu::P_PAUSE && ms.ready) {
-                if (ms.cursor == 4) {
+            if (ms.page == mp::menu::P_PAUSE && ms.ready &&
+                input::PauseMenuTaskState() == 3 && input::PauseMenuCursor() >= 0) {
+                int cursor = input::PauseMenuCursor();
+                if (cursor == 4) {
                     s_retryRecStage = 3;
                 } else if (now - s_retryRecLastTap >= 350) {
                     if (++s_retryRecTries > 12) {
@@ -2267,18 +2309,17 @@ void OnPvGameFrame(diva::PVGameData* pv) {
                         s_retryRecStage = 0;
                     } else {
                         DbgMenu(ms.page, ms.cursor, "recovery_nav");
-                        input::DevTapBtn(ms.cursor == 0 ? nn::hid::Up
-                                                       : nn::hid::Down, 60);
+                        input::DevTapBtn(cursor == 0 ? nn::hid::Up : nn::hid::Down);
                         s_retryRecLastTap = now;
                     }
                 }
             }
             break;
         case 3:                     /* cursor on Return + ready -> A */
-            if (ms.page == mp::menu::P_PAUSE && ms.cursor == 4 &&
-                ms.ready) {
+            if (ms.page == mp::menu::P_PAUSE && ms.ready &&
+                input::PauseMenuTaskState() == 3 && input::PauseMenuCursor() == 4) {
                 DbgMenu(ms.page, ms.cursor, "recovery_a");
-                input::DevTapBtn(nn::hid::A, 60);
+                input::DevTapBtn(nn::hid::A);
                 s_retryRecStage = 4;
                 s_retryRecT0 = now;
             } else if (ms.page == mp::menu::P_PAUSE && ms.ready) {
@@ -2314,8 +2355,8 @@ void OnStageResult(bool init) {
         if (s_code[0]) {
             s_resultsShownAt = NowMs();
             menu::BeginResults(Guarded(), s_resultsShownAt);
-            s_retBannered = false;
-            s_scoreTries = 0;
+            s_driveStarted = 0;
+            s_driveTries = 0;
         }
     }
     if (init && s_code[0] && s_playedRound > 0 &&
@@ -2329,6 +2370,7 @@ void OnStageResult(bool init) {
     } else if (!init) {
         if (s_phase == L_RESULTS) s_resultInitAt = 0;
         s_resultsShownAt = 0;
+        if (s_autoReturn) input::CancelTaps();
         s_autoReturn = false;
         menu::End();
         /* guarded rooms: watch for a song clock that keeps running -
@@ -2591,6 +2633,7 @@ void CmdSameDiff(bool on) {
     SendLine(on ? "{\"t\":\"set_opt\",\"key\":\"same_diff\",\"value\":true}"
                 : "{\"t\":\"set_opt\",\"key\":\"same_diff\",\"value\":false}");
 }
+void ResPanelClick() { s_resClick.store(1); }
 void CmdNoFail(bool on) {
     SendLine(on ? "{\"t\":\"set_opt\",\"key\":\"no_fail\",\"value\":true}"
                 : "{\"t\":\"set_opt\",\"key\":\"no_fail\",\"value\":false}");

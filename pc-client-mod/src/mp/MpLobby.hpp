@@ -52,7 +52,10 @@ void DrawBanners();
 void DrawLeaderboard();
 void DrawWaiting();
 void DrawStandings();
-void DrawResultsAvatars();
+/* hudOff = HUD rect origin in real display coords, for the mouse hit-test */
+void DrawResultsAvatars(ImVec2 hudOff);
+/* the pointer clicked the results Details hint / the open panel's Close */
+void ResPanelClick();
 void DrawEmergency();
 /* song-select MP badge (Switch DrawMpBadge port); hudOff = HUD rect origin
  * in real display coords, for the mouse hit-test */
