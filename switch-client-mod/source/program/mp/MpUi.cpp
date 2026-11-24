@@ -1801,7 +1801,8 @@ static void DrawRoom(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     else {
         const char* mode = strcmp(s.pickMode, "owner") == 0 ? "Owner picks"
                          : (strcmp(s.pickMode, "assigned") == 0 ? "Assigned" : "Rotate");
-        const char* sd = s.sameDiff ? "  |  Same difficulty" : "";
+        const char* sd = s.sameDiff ? (s.noFail > 0 ? "  |  Same difficulty  |  No Fail" : "  |  Same difficulty")
+                                    : (s.noFail > 0 ? "  |  No Fail" : "");
         if (strcmp(s.leaderCid, s.myCid) == 0)
             snprintf(foot, sizeof(foot), "You're picking the song  |  %s%s", mode, sd);
         else
@@ -1888,16 +1889,48 @@ static void DrawRoomConfig(const Ui& u, const Snapshot& s, ImVec2 a, ImVec2 b) {
     }
     y += oh + 14 * u.k;
 
-    /* difficulty (focus 4..5) */
-    section("Difficulty", "SAME: a player whose game lacks that chart gets the closest one");
+    /* difficulty (focus 4..5) and No Fail Mode (focus 6..7) share a row:
+     * four narrower cards, each pair under its own title */
+    const float qw = (b.x - a.x - 60 * u.k - 3 * 18 * u.k) / 4.0f;
+    const bool nfRow = s.noFail >= 0;      /* the server has the option */
+    const float x2 = x0 + 2 * (qw + 18 * u.k);
+    u.Text(ImVec2(x0, y), "Difficulty", 1.5f, kText);
+    if (nfRow) u.Text(ImVec2(x2, y), "No Fail Mode", 1.5f, kText);
+    y += 30 * u.k;
+    {
+        char h[96];
+        u.Fit("SAME: the closest chart if a game lacks that one", 2 * qw, 1.1f, h, sizeof(h));
+        u.Text(ImVec2(x0, y), h, 1.1f, kMuted);
+        if (nfRow) {
+            u.Fit("The same for every player, whatever their own setting", 2 * qw, 1.1f, h, sizeof(h));
+            u.Text(ImVec2(x2, y), h, 1.1f, kMuted);
+        }
+    }
+    y += 26 * u.k;
+    auto qcol = [&](int i, ImVec2* qa, ImVec2* qb) {
+        *qa = ImVec2(x0 + i * (qw + 18 * u.k), y);
+        *qb = ImVec2(qa->x + qw, qa->y + oh);
+    };
     struct DOpt { const char* label; const char* desc; } dopts[2] = {
-        { "FREE", "Everyone picks their own difficulty" },
-        { "SAME", "Everyone plays the song picker's difficulty" } };
+        { "FREE", "Everyone picks their own" },
+        { "SAME", "Everyone plays the picker's" } };
     for (int i = 0; i < 2; i++) {
-        col(i, &oa, &ob);
+        qcol(i, &oa, &ob);
         if (OptCard(u, oa, ob, s.sameDiff == (i == 1), dopts[i].label, dopts[i].desc)) {
             sound::PlaySelectSE();
             CmdSameDiff(i == 1);
+        }
+    }
+    if (nfRow) {
+        DOpt nopts[2] = {
+            { "OFF", "A song ends at zero life" },
+            { "ON",  "Songs always play to the end" } };
+        for (int i = 0; i < 2; i++) {
+            qcol(2 + i, &oa, &ob);
+            if (OptCard(u, oa, ob, (s.noFail > 0) == (i == 1), nopts[i].label, nopts[i].desc)) {
+                sound::PlaySelectSE();
+                CmdNoFail(i == 1);
+            }
         }
     }
     y += oh + 14 * u.k;

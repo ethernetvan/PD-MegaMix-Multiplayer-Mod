@@ -496,7 +496,7 @@ enum class MpCmdType : uint8_t {
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
     PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds,
     Glow, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode, CloudUrl,
-    SameDiff
+    SameDiff, NoFail
 };
 struct MpCmd {
     MpCmdType type;
@@ -603,6 +603,11 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
     } else if (strcmp(cmd, "same_diff") == 0) {
         /* {cmd:same_diff, on:bool} - the ROOM CONFIG toggle (owner only) */
         c.type = MpCmdType::SameDiff;
+        int o = mpjson::Find(line, tok, ntok, "on");
+        c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
+    } else if (strcmp(cmd, "no_fail") == 0) {
+        /* {cmd:no_fail, on:bool} - the room's No Fail Mode (owner only) */
+        c.type = MpCmdType::NoFail;
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
     } else if (strcmp(cmd, "cloud_url") == 0) {
@@ -772,6 +777,7 @@ void OnFrame() {
             case MpCmdType::ModuleDump:  moduledb::DbgDump(); break;
             case MpCmdType::RemoteAvatars: lobby::SetRemoteAvatars(c.a != 0); break;
             case MpCmdType::SameDiff: lobby::CmdSameDiff(c.a != 0); break;
+            case MpCmdType::NoFail:   lobby::CmdNoFail(c.a != 0); break;
             case MpCmdType::ServerMode:  SetServerMode((ServerMode)c.a); break;
             case MpCmdType::CloudUrl:    SetCloudUrl(c.str); break;
             default: break;

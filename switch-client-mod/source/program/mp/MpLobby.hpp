@@ -133,6 +133,7 @@ struct Snapshot {
     bool     minusHeld;
     int      minusHeldMs;
     bool     sameDiff;        /* room option: everyone plays the picker's difficulty */
+    int      noFail;          /* room option No Fail Mode: 1 on, 0 off, -1 the server has none */
     float    gaugeTick[3];    /* % of the gauge's BORDER / G / E ticks, < 0 none */
     /* expanded results panel: 0 none, 1 armed (A opens), 2 open, 3 closed
      * (Y reopens); ms since it was opened / closed (-1 never) */
@@ -146,6 +147,10 @@ struct Snapshot {
 void CmdPickMode(const char* mode, const char* cid);
 void CmdKick(const char* cid);       /* owner only */
 void CmdSameDiff(bool on);           /* owner only: room option same_diff */
+void CmdNoFail(bool on);             /* owner only: room option no_fail */
+/* The No Fail Mode a song starting now must run with: 1 on, 0 off, -1 no
+ * room rule (not in a room / old server). Game thread, TaskPvGame init. */
+int RoundNoFail();
 /* Song select: the "doesn't have this song" tag, right edge at rx, top at
  * y (s = 720p scale); returns the height it used, 0 when nobody lacks it. */
 float DrawNoSongTag(ImDrawList* dl, ImFont* font, float rx, float y, float s);

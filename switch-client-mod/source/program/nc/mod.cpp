@@ -26,6 +26,7 @@
 
 #include "../ChartRandomizer.hpp"
 #include "../mp/MpNet.hpp"
+#include "../mp/MpLobby.hpp"
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -64,6 +65,16 @@ HOOK_DEFINE_TRAMPOLINE(TaskPvGameInitHook) {
 		se_mgr.Init();
 
 		macro_state.sensivity = 1.0f - nc::GetSharedData().stick_sensitivity / 100.0f;
+
+		// Multiplayer room rule: every console plays with the same No Fail
+		// Mode. The task keeps its launch data at +0x68, no_fail at +0x182;
+		// the init below (0x1a3bf0) copies it to PVGameData::no_fail.
+		int room_no_fail = mp::lobby::RoundNoFail();
+		if (room_no_fail >= 0) {
+			uint8_t* own = reinterpret_cast<uint8_t*>(a1 + 0x68 + 0x182);
+			WriteLog("[MP] No Fail Mode: room %s (this game had %s)\n", room_no_fail ? "on" : "off", *own ? "on" : "off");
+			*own = static_cast<uint8_t>(room_no_fail);
+		}
 		return Orig(a1);
 	}
 };

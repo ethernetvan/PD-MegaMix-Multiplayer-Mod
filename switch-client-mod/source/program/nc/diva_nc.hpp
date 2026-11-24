@@ -823,7 +823,7 @@ struct PVGameData
 	float clear_border;                          // 0x2D0D0 song+difficulty clear % (70.0 on an Extreme)
 	float clear_border_eff;                      // 0x2D0D4 running border: clear_border x reference score so far / total (= clear_border at the end); the game's pct >= test and the HUD border marker use it
 	uint8_t gap2D310[13];                        // 0x2D0D8
-	uint8_t byte2D31D;                           // 0x2D0E5
+	uint8_t no_fail;                             // 0x2D0E5 No Fail Mode of this song (from TaskPvGame's data +0x182)
 	uint8_t gap2D31E;                            // 0x2D0E6
 	uint8_t byte2D31F;                           // 0x2D0E7
 	int64_t challenge_time_start;                // 0x2D0E8
