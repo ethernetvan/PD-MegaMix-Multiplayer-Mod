@@ -36,9 +36,11 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       actually plays this round, frozen for the board and standings);
       set_opt {key, value} (owner only; key same_diff: bool = every member
       must play the song picker's difficulty when their console has that
-      chart).
+      chart; key no_fail: bool = every console plays with the game's No
+      Fail Mode on (true) or off (false) whatever its own setting, from
+      the next launch on).
 S->C: welcome/error/pong (existing);
-      lobby {code, phase, leader, you, round, sel_pv, same_diff,
+      lobby {code, phase, leader, you, round, sel_pv, same_diff, no_fail,
              members:[{cid,name,connected,role,loaded,module,chara,mh,img,sr,
                        plat,diff,ed,nosong}]}
       (plat: switch|pc|bot; diff/ed: that member's difficulty, -1/0 unknown;
@@ -52,7 +54,12 @@ S->C: welcome/error/pong (existing);
       lobby_error {code: not_found|already_in_lobby|not_in_lobby|not_leader|bad_phase, msg};
       sel {pv, name};
       sel_status {pv, missing:[{cid,name,fb_name|null}], cant:[{cid,name}]};
-      launch {round, pv, name, players:[cid], spectators:[cid]};
+      launch {round, pv, name, players:[cid], spectators:[cid], no_fail};
+      (no_fail: the room option as frozen for this round; consoles force
+      the game's No Fail Mode to it. With it on nobody leaves the song at
+      zero life, so there are no drop_out events; `drop` in the standings
+      then means the song ended with no life left, which the game's own
+      results screen also calls a drop out)
       countdown {round, secs};
       start {round, dropped:[cid]};
       board {round, e:[{cid,name,score,pct,life,rank,connected,border,
@@ -60,7 +67,8 @@ S->C: welcome/error/pong (existing);
       event {kind, cid, name, value};
       (kinds: combo, low_life, drop_out (all life lost, once per round),
       joined, left, disconnected, reconnected, leader, owner,
-      same_diff (the owner switched the room option, value 1/0));
+      same_diff / no_fail (the owner switched that room option, value
+      1/0));
       standings {round, complete:bool, e:[{cid,name,score,pct,max_combo,life,rank,final:bool,
                  border, clear:bool|null, drop:bool, diff, ed, jc:[5], autoplay:bool}]};
       (jc = COOL GOOD SAFE BAD MISS counts of the final, [] until it arrives;
@@ -204,12 +212,16 @@ class Member:
         self.rdiff = None           # (d, e) played this round, None unknown
 
 
+# owner-set room options (set_opt keys = Lobby attributes, all bool)
+ROOM_OPTS = ("same_diff", "no_fail")
+
+
 class Round:
     __slots__ = ("id", "pv", "name", "leader", "players", "spectators",
                  "dropped", "launch_at", "leader_loaded_at", "started",
                  "start_sent", "countdown_at",
                  "first_final_at", "complete_at", "complete_announced",
-                 "leader_back", "ranked")
+                 "leader_back", "ranked", "no_fail")
 
     def __init__(self, rid, pv, name, leader):
         self.id = rid
@@ -229,6 +241,7 @@ class Round:
         self.complete_announced = False
         self.leader_back = False
         self.ranked = False        # session ranking applied
+        self.no_fail = False       # the room option, frozen at launch
 
 
 class Lobby:
@@ -242,6 +255,7 @@ class Lobby:
         self.assigned_cid = None
         self.pending_pick_mode = None   # (mode, cid) applied at round_end
         self.same_diff = False      # owner option: play the picker's difficulty
+        self.no_fail = False        # owner option: No Fail Mode for everyone
         self.group_paused = False
         self.vote = None   # {"kind","agreed":set,"ends_at":float}
         self.sel_pv = None
@@ -346,6 +360,7 @@ class LobbyManager:
                 "owner": lobby.owner_cid, "pick_mode": lobby.pick_mode,
                 "assigned": lobby.assigned_cid,
                 "same_diff": lobby.same_diff,
+                "no_fail": lobby.no_fail,
                 "group_paused": lobby.group_paused,
                 "round": lobby.round.id if lobby.round else 0,
                 "sel_pv": lobby.sel_pv,
@@ -410,7 +425,8 @@ class LobbyManager:
         if r is not None:
             self._send(cid, {"t": "launch", "round": r.id, "pv": r.pv,
                              "name": r.name, "players": r.players,
-                             "spectators": r.spectators})
+                             "spectators": r.spectators,
+                             "no_fail": r.no_fail})
             if r.started and r.start_sent:
                 self._send(cid, {"t": "start", "round": r.id,
                                  "dropped": r.dropped})
@@ -749,16 +765,16 @@ class LobbyManager:
             self._error(cid, "not_owner", "only the owner can set room options")
             return
         key, value = msg.get("key"), msg.get("value")
-        if key != "same_diff" or not isinstance(value, bool):
+        if key not in ROOM_OPTS or not isinstance(value, bool):
             self._error(cid, "bad_opt", "unknown option or value")
             return
-        if lobby.same_diff == value:
+        if getattr(lobby, key) == value:
             return
-        lobby.same_diff = value
-        self.log(f"lobby {lobby.code}: same_diff={value}")
+        setattr(lobby, key, value)
+        self.log(f"lobby {lobby.code}: {key}={value}")
         self._broadcast_lobby(lobby)
         m = self._member(lobby, cid)
-        self._event(lobby, "same_diff", cid, m.name if m else cid,
+        self._event(lobby, key, cid, m.name if m else cid,
                     1 if value else 0)
 
     def _set_diff(self, cid, msg, now):
@@ -885,6 +901,7 @@ class LobbyManager:
         lobby.seq += 1
         r = Round(lobby.seq, msg.get("pv", lobby.sel_pv),
                   msg.get("name", lobby.sel_name), lobby.leader())
+        r.no_fail = lobby.no_fail
         players, spectators = [], []
         for m in lobby.members:
             a = lobby.acks.get(m.cid)
@@ -926,7 +943,8 @@ class LobbyManager:
                  f"players={players} spec={spectators}")
         self._broadcast(lobby, {"t": "launch", "round": r.id, "pv": r.pv,
                                 "name": r.name, "players": players,
-                                "spectators": spectators})
+                                "spectators": spectators,
+                                "no_fail": r.no_fail})
         self._broadcast_lobby(lobby)
 
     def _launch_fail(self, cid, msg, now):
@@ -1027,7 +1045,7 @@ class LobbyManager:
             m.low_life_armed = True
         if _f(life) > 0:
             m.life_seen = True
-        elif m.life_seen:
+        elif m.life_seen and not r.no_fail:
             self._drop_out(lobby, m)
         lobby.board_dirty = True
 
@@ -1085,7 +1103,7 @@ class LobbyManager:
         m.state["score"] = m.final["score"]
         m.state["pct"] = m.final["pct"]
         m.rdiff = _diff_of(msg) or m.rdiff or self._client_diff.get(cid)
-        if m.final["drop"]:
+        if m.final["drop"] and not r.no_fail:
             self._drop_out(lobby, m)
         if r.first_final_at is None and lobby.phase == "PLAYING":
             r.first_final_at = now
@@ -1360,6 +1378,7 @@ class LobbyManager:
                     "round": l.round.id if l.round else 0,
                     "sel_pv": l.sel_pv,
                     "same_diff": l.same_diff,
+                    "no_fail": l.no_fail,
                     "members": [{"cid": m.cid, "name": m.name,
                                  "connected": m.connected, "role": m.role,
                                  "loaded": m.loaded,
@@ -1386,10 +1405,10 @@ class LobbyManager:
             lobby = self.lobbies.get(cmd.get("code"))
             if lobby is None:
                 return {"error": "not_found"}
-            if cmd.get("key") != "same_diff" or \
+            if cmd.get("key") not in ROOM_OPTS or \
                     not isinstance(cmd.get("value"), bool):
                 return {"error": "bad_opt"}
-            self._set_opt(lobby.owner_cid, {"key": "same_diff",
+            self._set_opt(lobby.owner_cid, {"key": cmd["key"],
                                             "value": cmd["value"]}, now)
             return {"ok": True}
         if c == "kick":

@@ -365,6 +365,7 @@ class WebBridge:
              "leader": self.mid(l.leader()) if l.leader() else None,
              "assigned": self.mid(l.assigned_cid) if l.assigned_cid else None,
              "pending_pick_mode": None, "same_diff": l.same_diff,
+             "no_fail": l.no_fail,
              "group_paused": l.group_paused,
              "vote": None,
              "sel": ({"pv": l.sel_pv, "name": l.sel_name}
@@ -791,7 +792,8 @@ class WebBridge:
                           now)
         elif op == "set_opt":
             key, value = msg.get("key"), msg.get("value")
-            if key != "same_diff" or not isinstance(value, bool):
+            if key not in ("same_diff", "no_fail") or \
+                    not isinstance(value, bool):
                 return err("bad_opt")
             entry["key"], entry["on"] = key, value
             lm.on_message(lobby.owner_cid,

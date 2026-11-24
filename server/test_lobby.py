@@ -1245,6 +1245,104 @@ class T7(T6):
             {"cmd": "set_opt", "code": "ZZZZ", "key": "same_diff",
              "value": False}, 102.0))
 
+    def test_no_fail_option(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        self.assertIs(self._lobby("b")["no_fail"], False)
+        # owner only, bool only
+        self.lm.on_message("b", {"t": "set_opt", "key": "no_fail",
+                                 "value": True}, 101.0)
+        self.assertEqual(self.msgs("b", "lobby_error")[0][1]["code"],
+                         "not_owner")
+        self.lm.on_message("a", {"t": "set_opt", "key": "no_fail",
+                                 "value": "on"}, 101.0)
+        self.assertEqual(self.msgs("a", "lobby_error")[0][1]["code"],
+                         "bad_opt")
+        self.assertFalse(lb.no_fail)
+        self.lm.on_message("a", {"t": "set_opt", "key": "no_fail",
+                                 "value": True}, 101.5)
+        out = self.msgs()
+        self.assertTrue(lb.no_fail)
+        self.assertFalse(lb.same_diff)
+        self.assertTrue(all(m["no_fail"] for c, m in out
+                            if m["t"] == "lobby"))
+        ev = [m for c, m in out if m["t"] == "event" and c == "b"]
+        self.assertEqual([(e["kind"], e["value"]) for e in ev],
+                         [("no_fail", 1)])
+        self.assertIs(self.lm.on_admin({"cmd": "lobbies"}, 101.6)
+                      [lb.code]["no_fail"], True)
+        # the admin port can flip it too
+        self.assertEqual(self.lm.on_admin(
+            {"cmd": "set_opt", "code": lb.code, "key": "no_fail",
+             "value": False}, 102.0), {"ok": True})
+        self.assertFalse(lb.no_fail)
+
+    def _launch_ab(self, lb, t=103.0):
+        rid = lb.seq + 1
+        self.lm.on_message(lb.leader(), {"t": "start_req", "pv": 1,
+                                         "name": "s"}, t)
+        for c in "ab":
+            self.lm.on_message(c, {"t": "loaded", "round": rid}, t + 1.0)
+        self.lm.tick(t + 2.0)
+        return rid
+
+    def test_no_fail_frozen_per_round_and_no_drop_out_events(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        self.lm.on_message("a", {"t": "set_opt", "key": "no_fail",
+                                 "value": True}, 101.0)
+        self.msgs()
+        rid = self._launch_ab(lb)
+        launches = self.msgs(t="launch")
+        self.assertEqual({c for c, _ in launches}, {"a", "b"})
+        self.assertTrue(all(m["no_fail"] is True for _, m in launches))
+        # switched off mid-round: this round keeps its rule
+        self.lm.on_message("a", {"t": "set_opt", "key": "no_fail",
+                                 "value": False}, 105.5)
+        self.assertFalse(lb.no_fail)
+        self.assertTrue(lb.round.no_fail)
+        self.msgs()
+        for life in (90, 0):
+            self.lm.on_message("b", {"t": "state", "round": rid, "score": 10,
+                                     "combo": 1, "pct": 5.0, "life": life},
+                               106.0)
+        self.assertEqual([m for _, m in self.msgs(t="event")
+                          if m["kind"] == "drop_out"], [])
+        # the song ended with no life left: the verdict stays, no event
+        self.lm.on_message("b", {"t": "final", "round": rid, "score": 10,
+                                 "pct": 5.0, "max_combo": 1, "life": 0,
+                                 "drop": True}, 107.0)
+        rows, _ = self.lm._standings(lb, 107.5)
+        self.assertEqual([r["drop"] for r in rows if r["cid"] == "b"],
+                         [True])
+        self.assertEqual([m for _, m in self.msgs(t="event")
+                          if m["kind"] == "drop_out"], [])
+        # a rejoin mid-round is told the round's rule, not the room's
+        self.lm.on_disconnect("b", 108.0)
+        self.msgs()
+        self.lm.on_hello("b", "P", "0.1.0", 109.0)
+        self.assertEqual([m["no_fail"] for _, m in self.msgs("b", "launch")],
+                         [True])
+
+    def test_no_fail_off_keeps_drop_outs(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._launch_ab(lb)
+        self.assertTrue(all(m["no_fail"] is False
+                            for _, m in self.msgs(t="launch")))
+        for life in (90, 0):
+            self.lm.on_message("b", {"t": "state", "round": rid, "score": 10,
+                                     "combo": 1, "pct": 5.0, "life": life},
+                               106.0)
+        self.assertEqual(len([m for c, m in self.msgs(t="event")
+                              if m["kind"] == "drop_out" and c == "a"]), 1)
+        self.lm.on_message("b", {"t": "final", "round": rid, "score": 10,
+                                 "pct": 5.0, "max_combo": 1, "life": 0,
+                                 "drop": True}, 107.0)
+        rows, _ = self.lm._standings(lb, 107.5)
+        self.assertEqual([r["drop"] for r in rows if r["cid"] == "b"],
+                         [True])
+
     def test_nosong_flags_everyone_and_clears_on_new_pick(self):
         for c in "abc": self.mk(c)
         lb = self._mk(3)

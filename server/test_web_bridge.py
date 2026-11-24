@@ -443,6 +443,20 @@ class Actions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((feed[-1]["key"], feed[-1]["on"]),
                          ("same_diff", True))
 
+    async def test_set_opt_no_fail(self):
+        c = self.conn()
+        await self.auth(c, name="Alice")
+        self.assertIs(self.web.snapshot()["lobbies"][0]["no_fail"], False)
+        r = await self.action(c, op="set_opt", lobby=self.code,
+                              key="no_fail", value=1)
+        self.assertEqual(r["error"], "bad_opt")
+        r = await self.action(c, op="set_opt", lobby=self.code,
+                              key="no_fail", value=True)
+        self.assertTrue(r["ok"])
+        self.assertTrue(self.lobby.no_fail)
+        self.assertFalse(self.lobby.same_diff)
+        self.assertIs(self.web.snapshot()["lobbies"][0]["no_fail"], True)
+
     async def test_set_leader(self):
         c = self.conn()
         await self.auth(c, name="Alice")

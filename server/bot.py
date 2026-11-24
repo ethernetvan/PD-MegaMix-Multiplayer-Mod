@@ -188,7 +188,8 @@ class Bot:
             self.round = m["round"]
             me_player = self.cid in m.get("players", [])
             print(f"-- launch r{self.round} pv={m['pv']} "
-                  f"players={m['players']} me={'player' if me_player else 'spec'}")
+                  f"players={m['players']} me={'player' if me_player else 'spec'}"
+                  f" no_fail={m.get('no_fail')}")
             if (self.a.behavior == "missing" and me_player and
                     self.leader != self.cid):
                 self.send({"t": "launch_fail", "round": self.round})
@@ -320,7 +321,7 @@ class Bot:
             print("help status name NEW create join CODE leave auto on|off "
                   "ready on|off load fail final pause resume "
                   "mode owner|assigned|rotate [cid] next prev pick X start "
-                  "diff 0..3 [extra] samediff on|off")
+                  "diff 0..3 [extra] samediff on|off nofail on|off")
         elif c == "status":
             print(f"code={self.code} phase={self.phase} "
                   f"leader={self.leader} auto={self.auto} cid={self.cid}")
@@ -360,6 +361,9 @@ class Bot:
             self.send_diff()
         elif c == "samediff" and arg:
             self.send({"t": "set_opt", "key": "same_diff",
+                       "value": arg[0] == "on"})
+        elif c == "nofail" and arg:
+            self.send({"t": "set_opt", "key": "no_fail",
                        "value": arg[0] == "on"})
         elif c == "mode" and arg:
             m = {"t": "set_pick_mode", "mode": arg[0]}
