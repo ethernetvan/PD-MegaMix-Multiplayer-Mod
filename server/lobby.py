@@ -903,6 +903,10 @@ class LobbyManager:
             m.life_seen = False
             m.drop_sent = False
             m.rdiff = None
+            # stale detection starts over: activity left from the previous
+            # round would make a player who hasn't scored yet look stale
+            # the moment someone else's final arrives
+            m.last_activity = None
             m.state = {"score": 0, "combo": 0, "pct": 0.0, "life": 127}
         lobby.round = r
         lobby.phase = "LOADING"

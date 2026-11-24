@@ -1281,3 +1281,27 @@ class T7(T6):
         self.lm.on_message("a", {"t": "sel_ack", "pv": 700, "has": False,
                                  "ok": False, "fb_pv": -1}, 101.2)
         self.assertEqual(self.lm.nosong(lb), ())
+
+    def test_previous_round_activity_is_not_stale(self):
+        for c in "ab": self.mk(c)
+        lb = self._mk(2)
+        rid = self._playing(lb)
+        self._state("a", rid, 120)
+        self._state("b", rid, 120)
+        self._fin("a", rid, 90.0, 20)
+        self._fin("b", rid, 80.0, 10)
+        self.lm.on_message("a", {"t": "back_in_sel", "round": rid}, 105.0)
+        self.assertEqual(lb.phase, "SELECT")
+        # round 2, minutes later: b quits at once, a hasn't scored yet
+        self.lm.on_message(lb.leader(), {"t": "start_req", "pv": 1,
+                                         "name": "s"}, 400.0)
+        rid2 = lb.round.id
+        for c in "ab":
+            self.lm.on_message(c, {"t": "loaded", "round": rid2}, 401.0)
+        self.lm.tick(402.0)
+        self.lm.on_message("b", {"t": "final", "round": rid2, "score": 0,
+                                 "pct": 0.0, "max_combo": 0, "jc": [0] * 5,
+                                 "life": 100, "quit": True}, 402.5)
+        self.assertEqual(lb.phase, "PLAYING")       # a is still playing
+        rows, complete = self.lm._standings(lb, 402.5)
+        self.assertFalse(complete)
