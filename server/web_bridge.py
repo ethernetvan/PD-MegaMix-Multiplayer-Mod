@@ -49,6 +49,20 @@ MIME = {".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
         ".ico": "image/x-icon", ".map": "application/json",
         ".webp": "image/webp", ".txt": "text/plain"}
 
+# on every response: no MIME sniffing, no framing by other sites (the
+# dashboard has kick / hide buttons), and no Referer (the admin link carries
+# ?token= until the page strips it)
+BASE_HEADERS = [("X-Content-Type-Options", "nosniff"),
+                ("X-Frame-Options", "DENY"),
+                ("Referrer-Policy", "no-referrer")]
+# the dashboard: own scripts only, no inline script, images from here
+# (portraits) or data:, WebSockets anywhere (VITE_WS_URL builds)
+HTML_CSP = ("default-src 'self'; script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "font-src 'self' data:; connect-src 'self' ws: wss:; "
+            "object-src 'none'; base-uri 'none'; form-action 'none'; "
+            "frame-ancestors 'none'")
+
 STATUS = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
           405: "Method Not Allowed", 431: "Request Header Fields Too Large",
           503: "Service Unavailable"}
@@ -215,6 +229,10 @@ class WsLineWriter:
         self._peer = peer
         self._closed = False
 
+    @property
+    def transport(self):
+        return self._w.transport
+
     def write(self, data):
         if not self._closed:
             self._w.write(encode_frame(1, bytes(data)))
@@ -286,6 +304,12 @@ class WebBridge:
         self._httpd = None
         self._task = None
         self.public_url = None             # e.g. https://mikumod.evanthomas.dev
+        # "type the owner's name" login. Names are public (/api/state), so
+        # this is LAN-level trust only: mp_server turns it off in cloud mode.
+        self.name_login = True
+        # print the admin token at startup (only when it was generated: a
+        # token the operator chose is theirs to keep out of the logs)
+        self.announce_token = True
 
     async def start(self):
         try:
@@ -299,8 +323,14 @@ class WebBridge:
         self._task = asyncio.create_task(self._push_loop())
         url = self.public_url or f"http://{lan_ip()}:{self.port}"
         log(f"web UI {url}/ (bind {self.host}:{self.port})")
-        log(f"admin token: {self.token} "
-            f"(open {url}/?token={self.token} to manage any lobby)")
+        if self.announce_token:
+            log(f"admin token: {self.token} "
+                f"(open {url}/?token={self.token} to manage any lobby)")
+        else:
+            log(f"admin token: set by --web-token / MP_WEB_TOKEN, not shown "
+                f"(open {url}/?token=<token> to manage any lobby)")
+        if not self.name_login:
+            log("web owner login by name: off (admin token only)")
 
     # ------------------------------------------------- ids
     def mid(self, cid):
@@ -563,6 +593,7 @@ class WebBridge:
             snap["you"] = {"name": None, "admin": False, "owns": []}
             await self._respond(writer, 200, json.dumps(snap).encode(),
                                 "application/json",
+                                [("Cache-Control", "no-store")],
                                 head_only=method == "HEAD")
             return
         await self._static(writer, path, method == "HEAD")
@@ -584,6 +615,10 @@ class WebBridge:
         h = [f"HTTP/1.1 {status} {STATUS.get(status, '?')}",
              f"Content-Type: {ctype}",
              f"Content-Length: {len(body)}", "Connection: close"]
+        names = {k.lower() for k, _ in extra}
+        h += [f"{k}: {v}" for k, v in BASE_HEADERS if k.lower() not in names]
+        if ctype == "text/html" and "content-security-policy" not in names:
+            h.append(f"Content-Security-Policy: {HTML_CSP}")
         h += [f"{k}: {v}" for k, v in extra]
         writer.write(("\r\n".join(h) + "\r\n\r\n").encode()
                      + (b"" if head_only else body))
@@ -603,7 +638,13 @@ class WebBridge:
             await self._respond(writer, 503, NOT_BUILT, "text/html")
             return
         rel = urllib.parse.unquote(path)
-        p = os.path.realpath(os.path.join(root, rel.lstrip("/")))
+        parts = [s for s in rel.split("/") if s not in ("", ".")]
+        if any(s == ".." or s.endswith((".", " ")) or
+               any(ch in s for ch in '\\:*?"<>|') or
+               any(ord(ch) < 32 for ch in s) for s in parts):
+            await self._respond(writer, 404, b"not found", "text/plain")
+            return
+        p = os.path.realpath(os.path.join(root, *parts))
         if p != root and not p.startswith(root + os.sep):
             await self._respond(writer, 404, b"not found", "text/plain")
             return
@@ -675,7 +716,7 @@ class WebBridge:
         self.conns.add(conn)
         try:
             await conn.send_json({
-                "t": "hello",
+                "t": "hello", "name_login": self.name_login,
                 "feed": {c: list(d) for c, d in self.feeds.items()}})
             await self._push_one(conn, force=True)
             while conn.alive:
@@ -743,8 +784,9 @@ class WebBridge:
         else:
             conn.admin = False
         name = msg.get("name")
-        conn.name = (name.strip()
-                     if isinstance(name, str) and name.strip() else None)
+        conn.name = (name.strip()[:32]
+                     if self.name_login and isinstance(name, str)
+                     and name.strip() else None)
         await self._push_one(conn, force=True)
         return {"t": "reply", "id": msg.get("id"), "ok": True,
                 "you": self.you_for(conn)}

@@ -28,6 +28,10 @@ C->S: hello / ping (existing); set_name {name}; lobby_create {}; lobby_join {cod
       autoplay {on, pct, mode} (AutoPlay on/off, hit-rate 0..100, bot mode);
       avatar_img {module,w,h,rgba} (base64 portrait upload; handled by
       mp_server, not the engine);
+      hello may carry key: a 16..64 character secret ([0-9A-Za-z_-]) that
+      ties the cid to that console - mp_server refuses any other hello for
+      the cid with error cid_in_use (the cid itself is public: every lobby
+      member sees it); a bad cid/key is refused with error bad_hello;
       hello may carry plat: "switch"|"pc" (which version of the mod; when
       absent it is derived from mod/game, see platform_of);
       diff {d, e} (the console's song-select difficulty: d 0..3 = EASY
@@ -80,9 +84,18 @@ Every public method appends (cid, msg_dict) to self.outbox; the caller drains
 it and sends. `now` is always a float-seconds argument (testable clock).
 """
 
+import math
 import random
 
 CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+# everything a client sends is clamped to these before it is stored or relayed
+MAX_NAME = 32            # display names (consoles keep 39 bytes)
+MAX_SONG = 96            # song titles
+MAX_REASON = 24          # ready / not-ready reason keys
+MAX_PV = 9999999
+MAX_SCORE = 2000000000
+MAX_LOBBIES = 2000       # of 24^4 codes; _new_code must always find a free one
+MAX_SESSION_KEPT = 64    # leavers' session stats remembered per lobby
 SELECT_DC_REMOVED_S = 60.0
 SELECT_LEADER_HANDOFF_S = 10.0
 LEADER_LOADED_START_S = 30.0
@@ -165,10 +178,35 @@ def _jc(v):
 
 
 def _f(v, default=0.0):
-    """number from a client message (bools and junk -> default)"""
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
+    """number from a client message (bools, NaN/inf and junk -> default)"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) \
+            or not math.isfinite(v):
         return default
     return float(v)
+
+
+def _num(v, lo, hi, default=0.0):
+    """finite float from a client message, clamped to lo..hi"""
+    return min(hi, max(lo, _f(v, default)))
+
+
+def _int(v, lo, hi, default=0):
+    """int from a client message, clamped to lo..hi (junk -> default)"""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) \
+            or not math.isfinite(v):
+        return default
+    return int(min(hi, max(lo, v)))
+
+
+def _text(v, limit, default=""):
+    """display text from a client message: a str with control characters
+    removed, trimmed and capped (anything else -> default)"""
+    if not isinstance(v, str):
+        return default
+    v = "".join(ch for ch in v[:limit * 4]
+                if ch >= " " and not "\x7f" <= ch <= "\x9f"
+                and ch not in "\u2028\u2029")
+    return v.strip()[:limit] or default
 
 
 class Member:
@@ -292,6 +330,9 @@ class LobbyManager:
         self.outbox = []            # (cid, msg)
         self.log = log or (lambda s: None)
         self.max_members = 8        # real consoles cap at 8; raise for demos
+        self.max_lobbies = MAX_LOBBIES
+        # called with a cid once nothing about it is kept here any more
+        self.on_forget = lambda cid: None
         self._rng = random.Random()
         self._client_names = {}     # cid -> display name (all clients)
         self._client_modules = {}   # cid -> avatar module id (all clients)
@@ -401,9 +442,10 @@ class LobbyManager:
 
     # ------------------------------------------------- connection events
     def on_hello(self, cid, name, mod, now, plat=None, game=None):
+        name = _text(name, MAX_NAME, str(cid)[:8])
         self._client_names[cid] = name
         self._client_plat[cid] = platform_of(mod, game, plat)
-        if mod and mod.startswith("bot"):
+        if isinstance(mod, str) and mod.startswith("bot"):
             self._bots.add(cid)
         else:
             self._bots.discard(cid)
@@ -535,6 +577,7 @@ class LobbyManager:
             self._broadcast_lobby(lobby)
 
     def _set_name(self, cid, name, now):
+        name = _text(name, MAX_NAME)
         if name:
             self._client_names[cid] = name
         lobby = self._lobby_of(cid)
@@ -550,6 +593,9 @@ class LobbyManager:
         if self._lobby_of(cid) is not None:
             self._error(cid, "already_in_lobby", "already in a lobby")
             return
+        if len(self.lobbies) >= self.max_lobbies:
+            self._error(cid, "server_full", "too many rooms on this server")
+            return
         lobby = Lobby(self._new_code())
         lobby.leader_cid = cid
         lobby.owner_cid = cid
@@ -560,13 +606,25 @@ class LobbyManager:
         self._send(cid, self._lobby_msg(lobby, cid))
 
     def _name_of(self, cid):
-        return self._client_names.get(cid, cid[:8])
+        return self._client_names.get(cid, str(cid)[:8])
+
+    def forget(self, cid):
+        """Drop everything remembered about a client that is gone for good:
+        disconnected and in no lobby. Without this every cid ever seen
+        stays in memory for the life of the process."""
+        if cid in self.by_cid:
+            return
+        for d in (self._client_names, self._client_modules,
+                  self._client_avatar, self._client_plat, self._client_diff):
+            d.pop(cid, None)
+        self._bots.discard(cid)
+        self.on_forget(cid)
 
     def _join(self, cid, code, now):
         if self._lobby_of(cid) is not None:
             self._error(cid, "already_in_lobby", "already in a lobby")
             return
-        lobby = self.lobbies.get(code)
+        lobby = self.lobbies.get(code) if isinstance(code, str) else None
         if lobby is None:
             self._error(cid, "not_found", "no such lobby")
             return
@@ -619,9 +677,14 @@ class LobbyManager:
             return
         was_leader = lobby.leader() == cid
         m = lobby.members.pop(idx)
+        lobby.session_kept.pop(cid, None)
         lobby.session_kept[cid] = (m.wins, m.placement_score, list(m.places))
+        while len(lobby.session_kept) > MAX_SESSION_KEPT:
+            lobby.session_kept.pop(next(iter(lobby.session_kept)))
         self.by_cid.pop(cid, None)
         self._send(cid, {"t": "lobby_left", "reason": reason})
+        if not m.connected:
+            self.forget(cid)
         if not lobby.members:
             del self.lobbies[lobby.code]
             self.log(f"lobby {lobby.code} closed (empty)")
@@ -654,8 +717,12 @@ class LobbyManager:
         if lobby.phase != "SELECT":
             self._error(cid, "bad_phase", "not in SELECT phase")
             return
-        lobby.sel_pv = msg.get("pv")
-        lobby.sel_name = msg.get("name")
+        pv = _int(msg.get("pv"), -2, MAX_PV, None)
+        if pv is None:
+            self._error(cid, "bad_request", "sel needs a numeric pv")
+            return
+        lobby.sel_pv = pv
+        lobby.sel_name = _text(msg.get("name"), MAX_SONG)
         lobby.acks = {}
         lobby._sel_status_sent = None
         self.log(f"lobby {lobby.code}: sel pv={lobby.sel_pv} '{lobby.sel_name}'")
@@ -672,7 +739,8 @@ class LobbyManager:
             return
         lobby.acks[cid] = {
             "has": bool(msg.get("has")), "ok": bool(msg.get("ok")),
-            "fb_pv": msg.get("fb_pv", -1), "fb_name": msg.get("fb_name"),
+            "fb_pv": _int(msg.get("fb_pv"), -1, MAX_PV, -1),
+            "fb_name": _text(msg.get("fb_name"), MAX_SONG, None),
         }
         # aggregate -> sel_status to leader when changed
         missing, cant = [], []
@@ -881,8 +949,8 @@ class LobbyManager:
         if m is None:
             return
         m.ready = bool(msg.get("ready"))
-        m.ready_reason = msg.get("reason", "") or ""
-        m.ready_pv = msg.get("pv", -1)
+        m.ready_reason = _text(msg.get("reason"), MAX_REASON)
+        m.ready_pv = _int(msg.get("pv"), -2, MAX_PV, -1)
         if lobby.phase == "SELECT" and lobby.sel_pv is not None:
             self._send_sel_status(lobby)
 
@@ -899,8 +967,9 @@ class LobbyManager:
             self._error(cid, "bad_phase", "not in SELECT phase")
             return
         lobby.seq += 1
-        r = Round(lobby.seq, msg.get("pv", lobby.sel_pv),
-                  msg.get("name", lobby.sel_name), lobby.leader())
+        r = Round(lobby.seq, _int(msg.get("pv"), -2, MAX_PV, lobby.sel_pv),
+                  _text(msg.get("name"), MAX_SONG, lobby.sel_name),
+                  lobby.leader())
         r.no_fail = lobby.no_fail
         players, spectators = [], []
         for m in lobby.members:
@@ -1021,14 +1090,15 @@ class LobbyManager:
         m = self._member(lobby, cid)
         if m is None or m.final is not None:
             return                       # finished players send no more state
-        score = msg.get("score", 0)
-        combo = msg.get("combo", 0)
-        pct = msg.get("pct", 0.0)
-        life = msg.get("life", 0)
+        score = _int(msg.get("score"), 0, MAX_SCORE)
+        combo = _int(msg.get("combo"), 0, 99999)
+        pct = _num(msg.get("pct"), 0.0, 200.0)
+        life = _int(msg.get("life"), 0, 255)
         m.last_activity = now
         prev_bucket = m.prev_combo_bucket
         prev_life = m.state.get("life", 0)
-        border = _f(msg.get("border"), m.state.get("border", 0.0))
+        border = _num(msg.get("border"), 0.0, 200.0,
+                      m.state.get("border", 0.0))
         m.state = {"score": score, "combo": combo, "pct": pct, "life": life,
                    "border": border}
         # a combo break re-arms the buckets: 50/100/... fire again
@@ -1090,11 +1160,13 @@ class LobbyManager:
         if m is None:
             return
         clear = msg.get("clear")
-        m.final = {"score": msg.get("score", 0), "pct": msg.get("pct", 0.0),
-                   "max_combo": msg.get("max_combo", 0),
-                   "jc": _jc(msg.get("jc")), "life": msg.get("life", 0),
-                   "border": _f(msg.get("border"),
-                                m.state.get("border", 0.0)),
+        m.final = {"score": _int(msg.get("score"), 0, MAX_SCORE),
+                   "pct": _num(msg.get("pct"), 0.0, 200.0),
+                   "max_combo": _int(msg.get("max_combo"), 0, 99999),
+                   "jc": _jc(msg.get("jc")),
+                   "life": _int(msg.get("life"), 0, 255),
+                   "border": _num(msg.get("border"), 0.0, 200.0,
+                                  m.state.get("border", 0.0)),
                    # the console's verdict; None = an old client sent none
                    "clear": clear if isinstance(clear, bool) else None,
                    "drop": msg.get("drop") is True,
@@ -1276,7 +1348,10 @@ class LobbyManager:
     # ------------------------------------------------- tick
     def tick(self, now):
         for lobby in list(self.lobbies.values()):
-            self._tick_lobby(lobby, now)
+            try:
+                self._tick_lobby(lobby, now)
+            except Exception as e:      # keep the other lobbies running
+                self.log(f"lobby {lobby.code}: tick error {e!r}")
 
     def _tick_lobby(self, lobby, now):
         r = lobby.round

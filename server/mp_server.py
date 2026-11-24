@@ -17,8 +17,11 @@ Transports (same handler, same lobby state):
 import argparse
 import asyncio
 import base64
+import hashlib
+import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import sys
@@ -36,6 +39,39 @@ sys.stdout.reconfigure(errors="replace")
 PROTO = 1
 CONSOLE_IDLE_S = 15.0   # drop a pinging console after this long without a line
 MOD_VERSION_EXPECTED = None  # set via --mod-version-expected
+# a client that stops reading is dropped once this much is queued for it
+# (one portrait reply is ~50 KiB, a lobby message ~2 KiB)
+MAX_CLIENT_BACKLOG = 1 << 20
+# hello ids: `cid` is public (every lobby member sees it), `key` is the
+# secret that proves a hello really comes from the console that owns the cid
+CLIENT_CID = re.compile(r"[0-9A-Za-z_.:@+-]{1,24}")
+CLIENT_KEY = re.compile(r"[0-9A-Za-z_-]{16,64}")
+# a cid stays tied to its key this long after the server last saw it (longer
+# than the 120 s in which a returning owner gets the room back)
+KEY_KEPT_S = 180.0
+MAX_KEYS = 20000
+
+
+def _no_constants(name):
+    raise ValueError(f"{name} is not JSON")
+
+
+def parse_msg(line):
+    """One protocol line -> dict, or None. NaN / Infinity are refused: they
+    are not JSON, and one stored in a lobby would come back out of
+    json.dumps as text no browser or console can parse."""
+    try:
+        msg = json.loads(line, parse_constant=_no_constants)
+    except Exception:
+        return None
+    return msg if isinstance(msg, dict) else None
+
+
+def clean(v, limit=80):
+    """Client-supplied text for a log line: one line, printable, capped."""
+    s = v if isinstance(v, str) else repr(v)
+    return "".join(ch if " " <= ch < "\x7f" or ch > "\xa0" else "?"
+                   for ch in s[:limit])
 
 
 def ts():
@@ -103,6 +139,66 @@ class Server:
         self.lobby = LobbyManager(log=lambda m: log(f"LOBBY {m}"),
                                   countdown=countdown)
         self.lobby.avatar_img_of = self.console_img
+        self.lobby.on_forget = self._forget
+        # cid -> [digest of the key its console proved itself with, time it
+        # was released (None while connected or in a lobby)]. A cid is
+        # public: without this, anyone who shared a room with a console
+        # could say hello as it and take its seat.
+        self._cid_keys = {}
+        self._key_salt = secrets.token_bytes(16)
+
+    def _key_digest(self, key):
+        return hmac.new(self._key_salt, key.encode(), hashlib.sha256).digest()
+
+    def claim_cid(self, cid, key, now):
+        """May a hello with this key (None: an older client) use `cid`?
+        The first key seen for a cid owns it until KEY_KEPT_S after the
+        server stops tracking that cid."""
+        ent = self._cid_keys.get(cid)
+        if ent is not None and ent[1] is not None and \
+                now - ent[1] >= KEY_KEPT_S:
+            del self._cid_keys[cid]
+            ent = None
+        if ent is None:
+            if key is not None:
+                if len(self._cid_keys) >= MAX_KEYS:
+                    for c in [c for c, e in self._cid_keys.items()
+                              if e[1] is not None]:
+                        del self._cid_keys[c]
+                if len(self._cid_keys) < MAX_KEYS:
+                    self._cid_keys[cid] = [self._key_digest(key), None]
+            return True
+        if key is None or not hmac.compare_digest(ent[0],
+                                                  self._key_digest(key)):
+            return False
+        ent[1] = None
+        return True
+
+    def _forget(self, cid):
+        """`cid` is gone for good (disconnected, in no lobby)."""
+        if cid in self.clients:
+            return
+        self.known_cids.discard(cid)
+        self.client_img.pop(cid, None)
+        ent = self._cid_keys.get(cid)
+        if ent is not None and ent[1] is None:
+            ent[1] = time.time()
+
+    def send(self, client, msg):
+        """Queue one message for a client without ever waiting on it. A
+        client that doesn't read (stalled, or stalling on purpose) is cut
+        off instead of holding up the ticker and everyone else's messages."""
+        w = client.writer
+        try:
+            w.write((json.dumps(msg) + "\n").encode())
+            tr = getattr(w, "transport", None)
+            if tr is not None and \
+                    tr.get_write_buffer_size() > MAX_CLIENT_BACKLOG:
+                log(f"SLOW {client.cid} '{client.name}': not reading "
+                    f"(> {MAX_CLIENT_BACKLOG >> 10} KiB queued), dropping")
+                tr.abort()
+        except Exception:
+            pass
 
     # ------------------------------------------------- portraits
     def web_img(self, cid):
@@ -190,12 +286,8 @@ class Server:
             log(f"CONN {addr[0]}:{addr[1]} no hello within 5s, closing")
             writer.close()
             return
-        try:
-            hello = json.loads(line)
-        except Exception:
-            writer.close()
-            return
-        if hello.get("t") != "hello":
+        hello = parse_msg(line)
+        if hello is None or hello.get("t") != "hello":
             writer.close()
             return
         if hello.get("proto") != PROTO:
@@ -206,9 +298,32 @@ class Server:
             log(f"CONN {addr[0]}:{addr[1]} proto mismatch -> rejected")
             return
 
-        client.cid = hello.get("cid", "?")
-        client.name = hello.get("name", "?")
-        client.mod = hello.get("mod", "?")
+        # identity: `cid` names the console to everyone, `key` (newer
+        # clients) is a secret only that console knows. The first key seen
+        # for a cid owns it, so the cid the other members see can't be
+        # replayed to take over its seat.
+        key, cid = hello.get("key"), hello.get("cid")
+        refuse = None
+        if not (isinstance(cid, str) and CLIENT_CID.fullmatch(cid)) or \
+                not (key is None or (isinstance(key, str)
+                                     and CLIENT_KEY.fullmatch(key))):
+            refuse = ("bad_hello", "bad client id")
+        elif not self.claim_cid(cid, key, time.time()):
+            refuse = ("cid_in_use", "client id belongs to another console")
+        if refuse:
+            writer.write((json.dumps({"t": "error", "code": refuse[0],
+                                      "msg": refuse[1]}) + "\n").encode())
+            await writer.drain()
+            writer.close()
+            log(f"CONN {addr[0]}:{addr[1]} {refuse[0]} "
+                f"cid={clean(cid, 24)} -> rejected")
+            return
+        client.cid = cid
+        name = hello.get("name")
+        client.name = (clean(name, 32).strip() if isinstance(name, str)
+                       else "") or "?"
+        mod = hello.get("mod")
+        client.mod = (clean(mod, 48) if isinstance(mod, str) else "") or "?"
         client.plat = platform_of(client.mod, hello.get("game"),
                                   hello.get("plat"))
 
@@ -241,7 +356,7 @@ class Server:
         if rejoin:
             log(f"REJOINED {client.cid} '{client.name}' from {addr[0]}:{addr[1]}")
         else:
-            log(f"HELLO {client.cid} '{client.name}' mod={client.mod} game={hello.get('game')} from {addr[0]}:{addr[1]}")
+            log(f"HELLO {client.cid} '{client.name}' mod={client.mod} game={clean(hello.get('game'), 24)} from {addr[0]}:{addr[1]}")
         if warn:
             log(f"  warn sent: {warn}")
         self.table()
@@ -271,9 +386,8 @@ class Server:
                 line = line.strip()
                 if not line:
                     continue
-                try:
-                    msg = json.loads(line)
-                except Exception:
+                msg = parse_msg(line)
+                if msg is None:
                     log(f"  bad json from '{client.name}': {line[:80]!r}")
                     continue
                 t = msg.get("t")
@@ -299,11 +413,17 @@ class Server:
                            "pause_req", "resume_req", "avatar", "scene",
                            "set_opt", "diff"):
                     if t == "set_name":
-                        nm = str(msg.get("name", "")).strip()[:32]
+                        nm = msg.get("name")
+                        nm = clean(nm, 32).strip() if isinstance(nm, str) else ""
                         if nm and nm != client.name:
                             log(f"RENAME {client.cid} '{client.name}' -> '{nm}'")
                             client.name = nm
-                    self.lobby.on_message(client.cid, msg, time.time())
+                    try:
+                        self.lobby.on_message(client.cid, msg, time.time())
+                    except Exception as e:
+                        # a message the engine chokes on costs its sender
+                        # that message, never the connection or the room
+                        log(f"  '{client.name}' {clean(t, 16)}: {e!r}")
                     await self.drain_outbox()
                 elif t == "avatar_img":
                     ok, info = self.accept_upload(client.cid, msg,
@@ -319,21 +439,26 @@ class Server:
                     writer.write((json.dumps(reply) + "\n").encode())
                     await writer.drain()
                 elif t == "dbg_pvs":
-                    log(f"PVS '{client.name}' i={msg.get('i')} n={msg.get('n')} "
-                        f"ids={msg.get('ids')} names={msg.get('names')}")
+                    log(f"PVS '{client.name}' i={clean(msg.get('i'), 12)} "
+                        f"n={clean(msg.get('n'), 12)} "
+                        f"ids={clean(msg.get('ids'), 200)} "
+                        f"names={clean(msg.get('names'), 520)}")
                 elif t == "dbg_jump":
-                    log(f"JUMP '{client.name}' {msg}")
+                    log(f"JUMP '{client.name}' {clean(msg, 300)}")
                 elif t == "dbg_autopause":
-                    log(f"AUTOPAUSE '{client.name}' {msg}")
+                    log(f"AUTOPAUSE '{client.name}' {clean(msg, 300)}")
                 else:
-                    log(f"MSG '{client.name}' {line[:520].decode(errors='replace')}")
-        except (ConnectionResetError, BrokenPipeError):
-            pass
+                    log(f"MSG '{client.name}' "
+                        f"{clean(line[:520].decode(errors='replace'), 520)}")
+        except (ConnectionError, asyncio.IncompleteReadError, ValueError,
+                OSError):
+            pass        # reset, or a line longer than the stream limit
         finally:
             if self.clients.get(client.cid) is client:
                 self.lobby.on_disconnect(client.cid, time.time())
                 await self.drain_outbox()
                 del self.clients[client.cid]
+                self.lobby.forget(client.cid)
             log(f"DROPPED {client.cid} '{client.name}'")
             self._avatar_gate.forget(client.cid)
             self._relay_gate.forget(client.cid)
@@ -378,12 +503,8 @@ class Server:
                            else [] if cid else list(self.clients.values()))
                 n = 0
                 for c in targets:
-                    try:
-                        c.writer.write((json.dumps(msg) + "\n").encode())
-                        await c.writer.drain()
-                        n += 1
-                    except Exception:
-                        pass
+                    self.send(c, msg)
+                    n += 1
                 log(f"ADMIN {msg.get('cmd')}: forwarded to {n} client(s)")
                 writer.write(f"ok {n} clients\n".encode())
                 await writer.drain()
@@ -396,23 +517,32 @@ class Server:
             pass
 
     async def drain_outbox(self):
+        """Hand the engine's pending messages to their sockets. Nothing in
+        here waits: the batch is taken in one go (two callers can't send or
+        clear each other's messages) and a recipient's full socket is that
+        recipient's problem (see send)."""
+        out = self.lobby.outbox
+        if not out:
+            return
+        self.lobby.outbox = []
         if self.web:
-            self.web.observe(self.lobby.outbox)
-        for cid, m in self.lobby.outbox:
+            self.web.observe(out)
+        for cid, m in out:
             c = self.clients.get(cid)
             if c is not None:
-                try:
-                    c.writer.write((json.dumps(m) + "\n").encode())
-                    await c.writer.drain()
-                except Exception:
-                    pass
-        self.lobby.outbox.clear()
+                self.send(c, m)
 
     async def ticker(self):
+        last_err = 0.0
         while True:
             await asyncio.sleep(0.1)
-            self.lobby.tick(time.time())
-            await self.drain_outbox()
+            try:
+                self.lobby.tick(time.time())
+                await self.drain_outbox()
+            except Exception as e:      # the timers must outlive any bug
+                if time.time() - last_err > 5:
+                    last_err = time.time()
+                    log(f"ticker error: {e!r}")
 
     async def run(self):
         loop = asyncio.get_running_loop()
@@ -465,11 +595,10 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         self.transport = transport
 
     def datagram_received(self, data, addr):
-        try:
-            msg = json.loads(data.decode(errors="replace").strip())
-        except Exception:
+        if len(data) > 512:
             return
-        if msg.get("t") != "discover":
+        msg = parse_msg(data.decode(errors="replace").strip())
+        if msg is None or msg.get("t") != "discover":
             return
         reply = {"t": "server", "proto": PROTO, "port": self.server.port,
                  "name": getattr(self.server, "name", None)
@@ -477,6 +606,8 @@ class DiscoveryProtocol(asyncio.DatagramProtocol):
         self.transport.sendto((json.dumps(reply) + "\n").encode(), addr)
         # a searching console probes several addresses per round
         now = time.time()
+        if len(self._logged) > 1024:        # spoofed sources: don't grow
+            self._logged.clear()
         if now - self._logged.get(addr[0], 0) > 30:
             self._logged[addr[0]] = now
             log(f"DISCOVER from {addr[0]}:{addr[1]} -> replied")
@@ -504,6 +635,13 @@ def main():
     ap.add_argument("--web-token", default=os.environ.get("MP_WEB_TOKEN"),
                     help="admin token (default $MP_WEB_TOKEN, else random "
                          "each start)")
+    ap.add_argument("--owner-name-login", choices=("auto", "on", "off"),
+                    default=(os.environ.get("MP_OWNER_NAME_LOGIN") or "auto"),
+                    help="web login by typing the lobby owner's in-game name "
+                         "(anyone can read that name, so it only suits a "
+                         "trusted LAN). auto = on locally, off with --cloud; "
+                         "the admin token always works (also "
+                         "$MP_OWNER_NAME_LOGIN)")
     ap.add_argument("--server-name", default=os.environ.get("MP_SERVER_NAME"),
                     help="name shown in the web UI (default: host name)")
     ap.add_argument("--public-url",
@@ -532,8 +670,17 @@ def main():
     srv.avatar_relay = not args.no_avatar_relay
     if args.web_port:
         srv.web = WebBridge(srv, args.web_host, args.web_port,
-                            args.web_token or secrets.token_urlsafe(9))
+                            args.web_token or secrets.token_urlsafe(16))
+        srv.web.announce_token = not args.web_token
+        if args.owner_name_login not in ("auto", "on", "off"):
+            ap.error("--owner-name-login must be auto, on or off")
+        srv.web.name_login = (args.owner_name_login == "on" or
+                              (args.owner_name_login == "auto"
+                               and not args.cloud))
         srv.web.public_url = (args.public_url or "").rstrip("/") or None
+        if args.web_token and len(args.web_token) < 12:
+            log("WARNING: the admin token is shorter than 12 characters - "
+                "anyone who can reach the web port can guess it")
     try:
         asyncio.run(srv.run())
     except KeyboardInterrupt:
