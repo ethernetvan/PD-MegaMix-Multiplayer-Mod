@@ -517,6 +517,41 @@ Found by reading every network-facing path (server, web bridge, both clients); e
   private Ryujinx on root `ryu_multi/ryu4`, not in ryu_multi's state file), `wcap.py` (PrintWindow capture, works
   for both games while other windows cover them), `mon.py` (reads the PC's TaskPvGame data and PVGameData).
 
+## Round 19: connection limits, request budgets, room web key (2026-11-24)
+- **Console connections (`server/ratelimit.py` `ConnGate`, wired in `Server.handle`):** per address at most
+  8 open and 20 new per minute; 10 failed hellos (nothing sent, not the protocol, `bad_hello`, `cid_in_use`)
+  in a minute and the address waits out the minute; 500 open on the whole server. A refused connection is
+  told why (`error` `rate_limited` / `server_full`). Only accepted connections count, so a console that keeps
+  retrying isn't locked out longer. Flags: `--conn-per-ip`, `--new-conn-per-min`, `--failed-hello-per-min`,
+  `--max-consoles` (0 = no limit). This machine (loopback) is never limited per address: bots, `ryu_multi`,
+  the test tools.
+- **Online server:** Render sees every console that comes through the Worker as one address, so per-address
+  limits there only apply to an address the Worker vouches for: it sends `X-Console-IP` + `X-Console-Auth`
+  when it has the secret `PROXY_SECRET` (`npx wrangler secret put PROXY_SECRET`), and the server believes
+  them when `MP_PROXY_SECRET` (Render env, `--proxy-secret`) is the same value. Until both are set, online
+  consoles only fall under the 500 total. Connections that reach `onrender.com/switch` directly are never
+  counted per address either.
+- **Request budgets (`lobby.py`):** `lobby_create` 3 / min and `lobby_join` attempts 10 / min per client
+  (`lobby_error rate_limited`; the consoles show "Too many tries - wait a minute" on the join screen and a
+  banner otherwise). `set_name`, `avatar`, `diff`, `ready`, `autoplay` are always applied, but each client
+  can make the server resend the lobby (or `sel_status`) only 2 times a second per kind; anything beyond
+  that rides on one deferred resend when the budget frees up (`Lobby.deferred`, flushed in `tick`), so the
+  final state always arrives. Budgets survive a reconnect.
+- **Room web key:** the owner's console sends `web_key {}` and gets `web_key {code, key, url}` - a 10-character
+  key (`ABCDE-FGHJK`, 50 bits, made by the server on first request) that only that console is ever sent.
+  On the dashboard, Login -> Room key gives host controls for that room (kick, song picker, room options,
+  hide portrait) - the same rights the owner-name login gave, which stays off online. A new owner gets a new
+  key and the old one stops working at once (also for browsers already signed in). Five wrong keys close the
+  browser's connection. Switch: ROOM CONFIG -> Web Key. PC: Room page -> Show Web Key (owner only). The
+  server admin token is unchanged.
+- **Verified:** 234 server tests (`test_limits.py` is new), web typecheck / 48 tests / build, both clients
+  build. Ryujinx: Web Key screen shows the key and the dashboard address; a browser-side WebSocket login
+  with a wrong key is refused, with the key (typed lower-case with a space) it owns the room and its
+  `set_opt` switched the console's ROOM CONFIG to SAME; 4 quick room creations -> the 4th refused with the
+  banner; from the LAN address the 9th open connection and the 21st in a minute were refused while
+  127.0.0.1 kept working. NOT verified: the dashboard's Login dialog in a browser, the PC panel row, the
+  Worker + `MP_PROXY_SECRET` path on the real deployment (Worker logic tested with a stubbed fetch).
+
 ## Known quirks
 - Different routed subnets (PC 10.169.x, Switch 10.167.x): found automatically once the console has connected to the PC on that network before (remembered servers) or `server_ip` is within the PC's /22; otherwise set `server_ip` once.
 - Commit `8e4dc28`'s message also lists lobby fixes that actually landed in `35c196e`.
