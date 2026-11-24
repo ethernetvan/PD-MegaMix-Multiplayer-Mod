@@ -1,260 +1,329 @@
-# exlaunch
-A framework for injecting C/C++ code into Nintendo Switch applications/applet/sysmodules.
-Forked specifically for Hatsune Miku Project Diva Megamix! 
-This project is an extension of the fork of exlaunch made for Hatsune Miku: Project Diva Megamix by the lovely [lsmsmx](https://github.com/lsmsmx)!
+# Project DIVA Mega Mix Multiplayer Mod
 
 > [!NOTE]
-> This project is a work in progress. You may encounter bugs!
+> Work in progress. Open bugs and unverified areas are listed in
+> [Contributing & Troubleshooting](#contributing--troubleshooting).
 
--------------------------------------------------------------------------------------------------------------------------
+## Overview
 
-# Multiplayer Architecture
+This project lets people play *Hatsune Miku: Project DIVA Mega Mix* together. Players join a
+room; the room's leader picks a song, every other game mirrors the pick, all games launch
+together and wait until everyone has loaded, then play with a live leaderboard, see the final
+standings and return to song select.
 
-Our current focus is **local multiplayer**, connecting modded Switch consoles to a local PC. While we plan to eventually migrate our Python backend to Go for broader online play, our immediate priority is finalizing the client UI and interactions.
+It is for players on a modded Nintendo Switch, on the Ryujinx emulator or on the Steam release
+(Mega Mix+), and for whoever hosts the room server on a PC or online. A browser dashboard lets
+anyone on the network spectate and lets a room's host manage it.
 
-### How It Works
-* **Connection:** A local web server listens on port `8080`.
-* **Events:** The Switch sends initial payloads on game boot and song launch.
-* **Live Telemetry:** The Switch streams real-time gameplay updates, including changes to streaks, scores, and key presses/misses.
+Key architectural choices:
 
-### Local Setup
-To test the current implementation:
-1. Ensure your Switch and PC are connected to the **same local network**.
-2. Start the backend server on your PC by running:
-   ```bash
-   python prototype_server.py
-   ```
+- **In-process game mods, server-side rooms.** Each client is a mod loaded into the game. All
+  lobby and round logic lives in one pure, unit-tested Python module (`server/lobby.py`).
+- **One protocol, two transports.** Clients speak newline-delimited JSON (protocol v1, specified
+  in the `server/lobby.py` docstring) over raw TCP with UDP discovery on a LAN, or over a
+  WebSocket on `/switch` when the server is online behind a single port.
+- **No server dependencies.** The server uses the Python standard library only. Rooms live in
+  memory; there is no database.
+- **No TLS on the Switch.** Consoles connect with plain-HTTP WebSocket; a Cloudflare Worker
+  forwards `/switch` to the HTTPS-only host.
+- **Exact game builds.** Hook offsets are hard-coded. No runtime version check was found in
+  either client, so use the builds below.
 
+| Client | Game build the offsets target |
+| --- | --- |
+| Switch / Ryujinx | Mega Mix (EN), title ID `01001CC00FA1A000`, update 1.0.6 (v393216), main build ID `179265bd41f7781dac979e77702011241b442ba1` |
+| PC | Mega Mix+ 1.03 (Steam build 11004484), loaded by DivaModLoader |
 
-## Multiplayer server: local PC vs. online (Render)
+The Switch client is a fork of [lsmsmx's MikuMikuSwitchPlugin](https://github.com/lsmsmx/MikuMikuSwitchPlugin)
+(exlaunch). Its non-multiplayer features (mod loader, New Classics, debug mode, freecam,
+overlays) are documented in [`switch-client-mod/README.md`](switch-client-mod/README.md).
 
-One codebase (`server/` + `web/`) runs both ways. Consoles pick the server on the
-multiplayer overlay: **Options -> Server -> OFF / LOCAL / ONLINE** (saved as
-`[multiplayer] server_mode = "off" | "local" | "cloud"` in `sdmc:/MikuMikuSwitchPlugin/config.toml`;
-also `python server/admin.py server_mode off|local|cloud`). OFF never touches the network.
-The pencil on the ONLINE card edits the online server address (`cloud_url`, default
-`mikumod.evanthomas.dev`; `host[:port][/path]`, optional `ws://`/`http://`, empty = default;
-also `admin.py cloud_url ADDRESS`).
+## Architecture & Directory Layout
 
-### Local PC / LAN (default, unchanged)
+```mermaid
+flowchart LR
+    subgraph Clients
+        SW["Switch / Ryujinx<br/>switch-client-mod (subsdk9)"]
+        PC["Mega Mix+ on Steam<br/>pc-client-mod (MegaMixMP.dll)"]
+        BOT["Test clients<br/>bot.py, sim.py, fake_client.py"]
+    end
+
+    subgraph Server["server/mp_server.py (one Python process)"]
+        NET["Game transport<br/>TCP 7777, UDP 7778 discovery"]
+        WEB["web_bridge.py<br/>HTTP + WebSocket 8080"]
+        ENG["lobby.py<br/>lobby and round engine"]
+        AVA["avatars.py<br/>portrait uploads"]
+        ADM["Admin port<br/>127.0.0.1:7790"]
+    end
+
+    SW -- "LAN: NDJSON over TCP" --> NET
+    PC -- "LAN: NDJSON over TCP" --> NET
+    BOT --> NET
+    SW -. "Online: ws on port 80, /switch" .-> CF["Cloudflare Worker<br/>cloudflare/worker.js"]
+    PC -. "Online: ws on port 80, /switch" .-> CF
+    CF -. "https" .-> WEB
+    NET --> ENG
+    WEB --> ENG
+    NET --> AVA
+    CLI["server/admin.py"] --> ADM
+    UI["Browser dashboard<br/>web/"] -- "/ws, /api/state" --> WEB
+```
+
+| Path | What lives there |
+| --- | --- |
+| `switch-client-mod/` | Switch mod (C++, exlaunch). Builds `deploy/subsdk9` + `deploy/main.npdm`. Multiplayer code is in `source/program/mp/` (`MpNet` networking thread, `MpLobby` phase machine, `MpInput` input injection/blocking, `MpMenu`, `MpUi`/`MpOverlay`, `MpAvatar`, `MpModuleDb`). `source/program/nc/` is New Classics; `source/lib/` is the exlaunch framework. |
+| `pc-client-mod/` | PC port of the multiplayer client (C++23, MSVC), a DivaModLoader mod. `src/mp/` mirrors the Switch files; `src/game/` holds the MM+ hooks and addresses; `src/platform/` the Windows shims; `third_party/` vendored safetyhook, Dear ImGui, toml++ (see `third_party/README.md`). |
+| `server/` | `mp_server.py` (transports, discovery, admin port), `lobby.py` (engine), `web_bridge.py` (HTTP/WebSocket), `avatars.py`, `netcheck.py` (LAN address and Windows Firewall check), `admin.py` (admin/debug CLI), `bot.py` / `sim.py` / `fake_client.py` (test clients), `test_*.py`. |
+| `web/` | Dashboard: React 19 + Vite + TypeScript. Built output `web/dist` is served by the server. |
+| `cloudflare/` | Worker (`worker.js`, `wrangler.toml`) that bridges plain-HTTP `/switch` to the online host. |
+| `render.yaml` | Render Blueprint for the online server. |
+| `tools/` | Maintainer scripts: `mp_room.py` (multi-Ryujinx test room), `record_demo.py`, `package_emu_pack.py`. They contain machine-specific paths. |
+| `docs/` | `MULTIPLAYER_STATUS.md` (design, status, open work), `TESTING.md` (every CLI/admin command and in-game shortcut), `PC_PORT_GUIDE.md`, `KNOWN_BUGS.md`, `ACCOUNTS_DESIGN.md` (design only), `FUTURE_TODO.md`. |
+| `AGENTS.md` | Maintainer notes: build, deploy and test gotchas. |
+
+## Prerequisites & Quick Start
+
+No environment variables are required to run anything locally.
+
+| Component | You need |
+| --- | --- |
+| Server | Python 3.13 (Render pins 3.13.3). No packages to install. |
+| Dashboard | Node.js + npm (Render pins Node 22.15.0). |
+| Switch client | devkitPro with devkitA64 and libnx, `DEVKITPRO` set (the Makefile includes `$(DEVKITPRO)/libnx/switch_rules`), `make`, bash, Python 3.4+. Notes record devkitA64 with GCC 15. A Switch running Atmosphère, or Ryujinx. |
+| PC client | Windows, Visual Studio with the C++ x64 tools, CMake at `C:\Program Files\CMake\bin\cmake.exe` (path hard-coded in `build.ps1`; CMake 3.20+), Ninja (on `PATH` or `%APPDATA%\Python\Python313\Scripts\ninja.exe`), Mega Mix+ with DivaModLoader. |
+
+### 1. Host the server (LAN)
+
 ```bash
-cd web && npm ci && npm run build && cd ..   # once, for the dashboard
+cd web && npm ci && npm run build && cd ..   # once, builds the dashboard
 python server/mp_server.py
 ```
-- Consoles on the same network find the PC by UDP discovery (7778) and connect over
-  TCP 7777 (`server_ip` in config.toml is optional). Windows Firewall must allow Python.
-- Dashboard: `http://<pc-ip>:8080/` (it shows **Local Server** in the header). The same
-  port also accepts consoles over WebSocket on `/switch` (handy to test the online
-  code path locally: ONLINE with the address `<pc-ip>:8080`).
-- Dev UI: `npm --prefix web run dev` talks to the local server on 8080
-  (`VITE_LOCAL_WS_PORT` changes the port, `VITE_WS_URL` forces any WebSocket URL).
 
-### Online: Render free tier at `mikumod.evanthomas.dev`
-`render.yaml` (Blueprint) builds `web/`, installs `server/requirements.txt` (stdlib only)
-and starts `python server/mp_server.py --cloud`. Cloud mode opens a single port (`$PORT`):
+- Opens TCP `7777` (game clients), UDP `7778` (discovery), `127.0.0.1:7790` (admin CLI) and
+  HTTP `8080` (dashboard, plus `/switch` for clients over WebSocket).
+- Dashboard: `http://<pc-ip>:8080/`. The admin token and a `?token=` link are printed at startup.
+- Windows Firewall must allow inbound connections to `python.exe`. The server logs its LAN
+  addresses at startup and warns when it finds no Allow rule.
+- Without `web/dist` the server still runs; the dashboard shows a "Web UI not built yet" page.
 
-| Path | What |
+### 2. Build and install the Switch client
+
+```bash
+cd switch-client-mod
+./exlaunch.sh build      # -> deploy/subsdk9 + deploy/main.npdm
+```
+
+The build fails if any `mp::` symbol is left undefined. Maintainers also run this wider check;
+it must print nothing:
+
+```bash
+/opt/devkitpro/devkitA64/bin/aarch64-none-elf-nm -C switch-client-mod.elf | grep ' U ' | grep -E 'Config::|mp::|FontLoader::|AutoPlay::|Hints::'
+```
+
+Install, pick one:
+
+| Target | How |
 | --- | --- |
-| `/` | live dashboard (`web/dist`, shows **mikumod.evanthomas.dev (Live Remote)**) |
-| `/health` | health check (`200 {"ok":true}`) |
-| `/ws` (or a WebSocket upgrade on `/`) | dashboard WebSocket |
-| `/switch` | consoles: WebSocket carrying the same NDJSON protocol as LAN TCP |
+| Switch, by hand | Copy `deploy/subsdk9` and `deploy/main.npdm` to `sdmc:/atmosphere/contents/01001CC00FA1A000/exefs/`. That folder must contain only these two files. |
+| Switch, over FTP | Set `FTP_IP` / `FTP_PORT` in `config.mk`, then `./exlaunch.sh deploy-ftp`. Needs the `ftputil` Python package and an FTP server on the console. |
+| Switch SD card, mounted | Set `MOUNT_PATH` in `config.mk`, then `./exlaunch.sh deploy-sd` (uses `sudo mount`). |
+| Ryujinx | Set `RYU_PATH` in `config.mk` to the Ryujinx data folder, then `./exlaunch.sh deploy-ryu` (copies to `<RYU_PATH>/mods/contents/01001CC00FA1A000/mods/exefs`). Set `enable_internet_access` to `true` in Ryujinx's `Config.json`, otherwise the game has no sockets. |
 
-No raw TCP/UDP game ports or LAN discovery in cloud mode. Env: `MP_WEB_TOKEN` (admin
-token for `/?token=...`, generated by the Blueprint), `MP_SERVER_NAME`, `MP_PUBLIC_URL`.
+`config.mk` is committed with one developer's `FTP_IP` and `RYU_PATH`; change them first.
 
-The Switch mod has no TLS, so consoles connect with plain-HTTP WebSocket
-`ws://mikumod.evanthomas.dev:80/switch` (DNS via the SDK resolver). Render only serves
-HTTPS and, being behind Cloudflare itself (O2O), 301-redirects every `http://` request
-whatever our zone's SSL mode. A Cloudflare Worker on `/switch` bridges it:
-- DNS: `mikumod` CNAME -> `mikumod.onrender.com`, **Proxied** (orange cloud); the custom
-  domain is added in Render too.
-- Configuration Rule `http.host eq "mikumod.evanthomas.dev"` -> SSL **Strict**.
-  Always Use HTTPS off; no challenges (WAF, I'm Under Attack) on the hostname.
-- Worker `cloudflare/worker.js` on the route `mikumod.evanthomas.dev/switch*`
-  (`cd cloudflare && npx wrangler@4.158.0 deploy`, after `wrangler login`): it re-issues
-  the console's request to `https://mikumod.onrender.com/switch` and pipes the WebSocket
-  through. It must target the onrender.com host: a subrequest to our own hostname
-  answers an empty 404. The dashboard, `/ws` and `/health` don't go through it.
-- Check: a plain-HTTP `GET /switch` with `Upgrade: websocket` on port 80 must answer
-  `101 Switching Protocols` (a `301` means the Worker route isn't active).
+The first boot writes `sdmc:/MikuMikuSwitchPlugin/config.toml`. In song select, press **ZR** once
+to open the multiplayer overlay, then create a room or join one with its four-letter code. With
+the default `server_mode = "local"` the console finds a server on the same network by itself.
 
-Free-tier notes: the service sleeps after 15 min without traffic and takes ~1 min to
-wake; the console waits up to 65 s for the upgrade and shows
-"Connecting to mikumod.evanthomas.dev (waking server, up to 60s)...". Connected consoles
-ping every 2 s, which keeps it awake. Rooms live in memory: a restart/redeploy/sleep
-clears them (consoles reconnect by themselves).
+### 3. Build and install the PC client
 
-Tests: `cd server && python -B -m unittest test_lobby.py test_web_bridge.py test_avatars.py test_netcheck.py`
-and `npm --prefix web test`.
+```powershell
+powershell -File pc-client-mod\build.ps1     # -> pc-client-mod\dist\MegaMixMP\MegaMixMP.dll
+powershell -File pc-client-mod\deploy.ps1    # junction <game>\mods\MegaMixMP -> pc-client-mod\dist\MegaMixMP
+```
 
-# Current Features
-This mod inherits many of the features from the Exlaunch Framework for Project Didva, including the folliwng:
-- Full support of mod_ prefix! Making it easy to install mods as on PC.
-- DEBUG AND FREECAM
-- No Songs limit, saving scores and modules and custom items in external savedata
-- Song ID limit up to 24576 (can be increased)
-- Increased Limit Of Spritesets to be loaded from 4096 to 32768
-- Subsurface Scattering restoration
-- FXAA and forced toon remove in customization menu.
-- No Module, COS limits
-- Aet effects limit increased from 83 to 256
-- Huge full implementation of str_array code injection to make modules to work properly without crashing the game, since simple patches wasn't enough. Custom hairs work too!
-- Increased limit of lyric entries from 150 to 1000 in pv_db
-- Mod_str_array.toml support
-- Challenge time for all difficulties
-- Saturation patch for my friend
-- Scripts for parsing and merging multiple pv_db/toml into one; for easy NC->AC
-- Trash Self Shadow Remove
-- Bone Control through ImGUI
-- Record/Play recorded motions through ImGUI
-- Input Track Overlay through ImGUI
+- `deploy.ps1` hard-codes the default Steam path
+  (`C:\Program Files (x86)\Steam\steamapps\common\Hatsune Miku Project DIVA Mega Mix Plus`).
+  For another location, edit `$game` in the script, or copy the `dist\MegaMixMP` folder
+  (`MegaMixMP.dll` + `config.toml`) to `<game>\mods\MegaMixMP`.
+- `build.ps1 -Dev` adds reverse-engineering/debug tooling (`MP_DEV_TOOLS`); leave it off for normal use.
+- In game, **F8** opens the multiplayer panel and **Esc** closes it. The first run writes
+  `mp_config.toml` next to the DLL.
 
-# Instructions
-- External save file is located in sdmc:/DMLSwitchPort/Save/
-- mod_str_array.toml can be placed in sdmc:/DMLSwitchPort/lang2/ folder. Apparently you can also use game dlc prefixes, idea by Dandy Bleat. But with new mods support, just don't touch the location of already existing mod specific mod_str_array.toml and enjoy names
-- Drop your mods in sdmc:/atmosphere/contents/TitleID/romfs/mods (to be fair, you still have to convert and rename in pv_db usm->mp4)
-- You can manage your priority of mods in sdmc:/DMLSwitchPort/config.toml file
-- Motion dumps in sdmc:/DMLSwitchPort/Dump/*.txt
+### 4. Play
 
+1. Start the server. Start each game and open the multiplayer overlay/panel.
+2. One player creates a room; the others join with the code (up to 8 per room).
+3. The leader picks and starts a song in song select. The other games follow.
 
--------------------------------------------------------------------------------------------------------------------------
+To try it without a second game, add a bot: `python server/bot.py --join CODE --behavior follower`.
 
-# Debug and Freecam
-Introducing fully ported **Debug mode** and **Freecam** mod from PC to Nintendo Switch! Oh, and rendering while paused.
-NOTE: Debug and freecam is totally disabled by default. You should go to global config.toml at sdmc:/DMLSwitchPort/ and change `debug = false` to `debug = true`
+## Configuration, Testing & Deployment
 
-### Here is a list of debug and freecam features:
-- Access _most_ of debug game substates
-- Advanced freecam in Rhythm game, PV modes; In customization menu as well; Pausing will make game render stuff
-- Use mouse to open a real time dw gui for other debug windows by right click (Ctrl + RMC alternative)
-- Full usability with joycons/controller (A LOT of hotkeys, listed below)
-- Physical mouse support
-- Changing game substates two different ways: through Tesla overlay; through txt file (a template where you change desired substate trigger from 0 to 1);
-- Generate **osage play data** in corresponding substate! Move files from `sdmc:/atmosphere/contents/TID/romfs/ram/osage_play_data_tmp/0/` to `osage_play_data` directory (for example create a new mod, or put in any dlc folder)
-- Quickly jump to Main Menu
-- Included removed limits (SWITCH EXCLUSIVE) for stages and modules and a3d (cos limit, three digits truncations; these are specific to debug)
-- Excluding any (ig?) conflicts with game and between each other making it possible to use freecam in debug
+### Client settings
 
+Both clients use the same `[multiplayer]` keys. Switch: `sdmc:/MikuMikuSwitchPlugin/config.toml`
+(Ryujinx: `sdcard/MikuMikuSwitchPlugin/config.toml` in its data folder). PC: `mp_config.toml` in
+the mod folder. Most are also on the in-game Options screen.
 
-### Hotkeys:
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Multiplayer client on/off. |
+| `server_mode` | `"local"` | `"off"` (never touches the network), `"local"` (LAN server) or `"cloud"` (online server). |
+| `cloud_url` | `mikumod.evanthomas.dev` | Online server, `host[:port][/path]`; plain-HTTP WebSocket, default port 80 and path `/switch`. |
+| `server_ip` | `""` | Optional LAN server address, tried before discovery. |
+| `server_port` / `discovery_port` | `7777` / `7778` | Must match the server. |
+| `player_name` | `Player` (PC: Windows user name) | Name shown to others. |
+| `notify_style` | `"avatars"` | Player notifications: `"avatars"`, `"text"` or `"off"`. |
+| `remote_avatars` | `false` | Show portraits uploaded by other players' games. |
+| `debug_status_chip` | `false` | Small connection-state indicator. |
+| `client_id` | generated | Stable identity. Do not edit or share. |
 
-**Freecam**
-- (L + R + Minus) — Enable/Disable Freecam
-- (D-Pad + Up-Down-Left-Right) — Move Forward-Backward-Left-Right
-- (Right stick) — Look in a desired direction judged by stick movement
-- (B/X) — Move Down/Up
-- (L/R) — Zoom Out/In
-- (Hold_Y + L/R) — Rotate (lean) Left/Right
-- (Hold_R3) — Speed boost of any camera movement 
- _note_: you can still use A button to pause without menu and capture beauty
+### Server flags and environment
 
-**Debug Mode**
-- (L + R + Plus) — Enable/Disable Debug Mode
-- (L3) — Toggle Mouse
-- (Left stick) — Mouse control
-- (ZL) — Left Mouse Click
-- (ZR) — Right Mouse Click
-- (Y_Hold) — Mouse movement speed boost
-- (L + R + D-Pad_Up) — Fast travel to Test Mode State
-- (L + R + D-Pad_Down) — Fast travel to Data Test State
-- (L + R + D-Pad_Left) — Fast travel to CS Menu (umm, instant crash tho)
-- (L + R + D-Pad_Right) — Fast travel to Data Menu Switch (very useful to quickly jump to main menu)
-- (ZR_Hold + ZL_Hold)  for 0.5 seconds — Quick switch between in-game debug and imgui window
+| Flag | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `--port`, `--discovery-port`, `--admin-port` | | `7777`, `7778`, `7790` | LAN game, discovery and admin ports. |
+| `--web-port` | `PORT` | `8080` | Dashboard and `/switch`; `0` disables. A busy port only disables the dashboard. |
+| `--web-host` | | `0.0.0.0` | Dashboard bind address. |
+| `--web-token` | `MP_WEB_TOKEN` | random per start | Dashboard admin token. |
+| `--cloud` | `MP_CLOUD=1` | off | Single-port mode: only the web port is opened; no LAN TCP/UDP. |
+| `--server-name` | `MP_SERVER_NAME` | host name | Name shown in the dashboard. |
+| `--public-url` | `MP_PUBLIC_URL`, `RENDER_EXTERNAL_URL` | | Public base URL printed in the log. |
+| `--countdown SECS` | | `3` | Countdown before each round; `0` disables. |
+| `--lobby-max N` | | `8` | Members per room (the game clients support 8). |
+| `--no-avatar-relay` | | off | Uploaded portraits go to the dashboard only. |
+| `--mod-version-expected X` | | | Expected client mod version. |
 
-  
+Dashboard development: `npm --prefix web run dev` proxies `/api` and `/ws` to `MP_WEB_BACKEND`
+(default `http://127.0.0.1:8080`). `VITE_WS_URL` forces a WebSocket URL at build time;
+`VITE_LOCAL_WS_PORT` changes the local server port it connects to.
 
--------------------------------------------------------------------------------------------------------------------------
+Switch build settings are in `switch-client-mod/config.mk` (`PROGRAM_ID`, deploy targets, extra
+compiler flags).
 
+### Tests and checks
 
-### ImGUI API Integration for Bones Control and Animation Recorder Player and Input Tracker Overlay:
+```bash
+cd server && python -B -m unittest test_lobby.py test_web_bridge.py test_avatars.py test_netcheck.py
+```
 
-- ImGui interface can be toggled by the same way as you did with debug (Tesla Overlay Toggle https://github.com/lsmsmx/MMTeslaNS/releases/tag/v2.0 and txt file 0/1 toggle for people on emulators (delete old emu_states.txt!!!)
-- The controls are pretty much the same as in debug, including a mouse movement speed increase by holding Y button
-- Made mostly for posing and making shots
-- To start recording, reset and freeze motion (for example using "MOTION TEST" window and selecting "STEP"), then click "Arm Recording", then get back to in-game debug motion window and start playing anim set, as it starts recording it. By using the Range, you can record specific part of body, but it sometimes doesn't work the way you think it does, for example its possible to record face motions and fingers motions without issue, but some recordings may curse the model if they're used outside of specific motion (perhaps due to being tied to coords in world). But its not hard to pose body on your own except of face.
-- You can load as many recorded anims as you want at the same time but it may break the physics lol so use it with caution. Click "Open Ultimate Motion Player" to select and play motion you recorded (you can rename motions txt files), you can delete the slot or add new one, and of course you can use slider to go between frames.  Don't forget to check and uncheck the check mark.
-- Motion Control tab offers you a variety of stuff but mostly it's: select a current bone use sliders to rotate and move, there are no specific ways to tell what each index does, it's basically hooking bone matrix update func, but at least i had enough courage to include some useful information about bones. 
-- Toggling Input Overlay will open a new imgui window that is tied to centered bottom of screen, no user interaction, slight transparency. Tracks all your inputs. Useful for people who records videos. Will look like Nintendo Switch Grip for Joycons (yk where in vids of diva gameplay there is ds4 overlay, so it's same but for switch, wont disturb you from gameplay due to small size)
-- Mouth Focus Switch by holding ZR + ZL buttons for 0.5 seconds for quick switch between in-game debug and imgui window
+```bash
+npm --prefix web run typecheck
+npm --prefix web test
+```
 
--------------------------------------------------------------------------------------------------------------------------
+- `-B` matters: three `server/__pycache__/*.pyc` files are tracked and would otherwise change.
+- There is no linter configuration and no CI workflow in the repository.
+- The game clients have no automated tests. Test them against a running server with the bots and
+  the admin CLI:
 
-### Other info:
-- There will be file created with all debug states for users who can't use Tesla overlays: sdmc:/DMLSwitchPort/emu_states.txt that will contain such format:
-`Format: StID SubID Trigger # Name`
- `3 11 0 # 11: DT_STG`
-so `3` is StateID
-     `11` is SubStateID
-     `0` is Trigger
-     `# 11: DT_STG` is # Name
-Set 'Trigger' to 1 and save to jump. Once you save you will be redirected to the substate you chose. 1 will be set back to 0 after jump.
-- For ImGUI there will be:
-  `Change 0 to 1 to enable, 1 to 0 to disable."
-  ImGUI_Debug_Window = 0
-  InputOverlay = 0`
-- Bone Control is a part of DivaImGUI
-- You can totally disable debug and freecam by having `debug = false` in global config file. This way, none of hotkeys and state selectors can be used.
-- Debug may crash randomly when you select something. From my experience, the same random crashes happen in MM+
-- Aet_DT is known to crash, even tho it works fine in MM+. It seems to fail at `strlen and cmp` or something. No solution was found, even after disabling half of plugin features and all mods even LayerFS ones.
-- Saving light_param or any other config makes game crash. Tried few times to do something in FsHooks, no luck.
-- Aet with high IDs are making game to work horribly unstable. It allocates memory for every id entry, so half of game crash with just couple of high ids. There is actually fix for it that i may port. 
-- There seem to be some other limitations, me with tons of mods, using high demanding modules, i can't load all 6 of them at the same time, game crash when i load 3 of them, however for a person without mods at all except of modules one, it crashes when he loads 6th performer in customization menu. Well, not surpising, Switch has to use 3.1 GB for RAM and VRAM... So make sure to not overload the ame with mods.
+```bash
+python server/sim.py --bots 6                    # canned multi-bot round
+python server/bot.py --name Lead --create --behavior leader --sels 48,254,270 --start-after 15 --song-secs 200
+python server/admin.py lobbies                   # rooms and client ids
+python server/admin.py --cid <cid> tap A         # press a button on one client
+```
 
+`admin.py` commands without `--cid` go to every connected client. The full command list is in
+[`docs/TESTING.md`](docs/TESTING.md). When another server is already running, use spare ports:
+`--port 17777 --discovery-port 17778 --admin-port 17790 --web-port 18080`.
 
-**Tesla overlay** by me:
-https://github.com/lsmsmx/MMDebugSwitcherNS/releases/tag/v2.0
+### Online deployment (Render + Cloudflare)
 
-# TODO
-- Restore FT shadow (something i probably never will be able to do :< guess it's okay)
-- Fixing some hairs don't appear as separate entry
-- Proper pv_parser to not make game iterate every possible pv_id (i keep failing to make it not crash the game)
-- Fixing issue where pv_db info about singers doesn't apply and it always sets to default miku (prob have to rewrite saving logic, but the issue itself isn't that big of a deal, so not going to fix soon)
+`render.yaml` defines one free-plan web service: it builds `web/`, runs
+`python -B -u server/mp_server.py --cloud` and health-checks `/health`. It sets `MP_CLOUD`,
+`MP_SERVER_NAME`, `MP_PUBLIC_URL`, a generated `MP_WEB_TOKEN`, and `autoDeploy: true`.
 
-# TitleID to be used
-const char *possible_tids[] = {
+| Path on the single port | What |
+| --- | --- |
+| `/` | Dashboard |
+| `/health`, `/api/health` | Health check, `{"ok":true}` |
+| `/api/state` | JSON snapshot of clients and rooms |
+| `/ws` (or a WebSocket upgrade on `/`) | Dashboard WebSocket |
+| `/switch` | Game clients: WebSocket carrying the same NDJSON protocol |
 
-       - "0100F3100DA46000", // JP (Mega39s)
-       - "01001CC00FA1A000", // EN (MegaMix)
-       - "0100BE300FF62000"  // KR (Mega39s)
-};    
+Render serves HTTPS only and redirects plain HTTP, which a console cannot follow. The Worker in
+`cloudflare/` is routed on `mikumod.evanthomas.dev/switch*` and re-issues each request to
+`https://mikumod.onrender.com`:
 
-# Credit
-- lsmsmx: This would not have been possible without their hard work at all!
-- Atmosphère: A great reference and guide.
-- oss-rtld: Included for (pending) interop with rtld in applications (License [here](https://github.com/shadowninja108/exlaunch/blob/main/source/lib/reloc/rtld/LICENSE.txt)).
-- DML https://github.com/blueskythlikesclouds/DivaModLoader/tree/master/Source/DivaModLoader
-- All that debug stuff is inspired by original deck window from MM+ Debug mod by `nastys`
-- Freecam code by vixen https://github.com/vixen256/camera
-- Challenge Time by vixen https://github.com/vixen256/challenge
-- Render while paused by mokk244
-- Big thanks to https://github.com/Retinalogic/imgui-nvn [subsdk8 by him]
-- Bone Control is a part of DivaImGUI i ported by lybxlpsv https://github.com/lybxlpsv/divaimgui thx to him<3
-- Thanks stewie3.1 with figuring out the id patch
+```bash
+cd cloudflare && npx wrangler login && npx wrangler@4.158.0 deploy
+```
 
-# Motion ImGUI bones info
-- 0-3 looks like rotation of body slightly and mostly pelvis,  moving forward and backward 
-- 3-6 neck and head rotation (4th best)
-- 6-91 a lot of face stuff, don't recommend touching any of it, just use facemot
-- 92-97 left shoulder 
-- 96-98 left wrist
-- 98-101 left hand index finger
-- 102-105 left hand smallest finger 
-- 105-109 left hand 4th finter
-- 109-113 left hand middle finger 
-- 113-117 left hand thumb 
-- 124-129 right shoulder
-- 128-130 right wrist
-- 130-133 right hand index finger 
-- 134-137 right hand smallest finger
-- 137-140 right hand 4th finger
-- 141-145 right hand middle finger
-- 144-148 right hand thumb 
-- 155-157 left arm 
-- 157-159 right arm 
-- 160-162 waist rotation
-- 162-164 left leg 
-- 164-166 left foot
-- 166-168 right leg
-- 168-170 right foot
-- 178-181 xyz dimensions 
+Maintainer notes (`AGENTS.md`) add: the hostname is a proxied CNAME to `mikumod.onrender.com`,
+SSL mode Strict for that host, "Always Use HTTPS" off. To check, send a plain-HTTP
+`GET /switch` with `Upgrade: websocket` to port 80: `101` is correct, `301` means the Worker
+route is not active.
+
+To host your own online server, change the domain in `render.yaml`, the route in
+`cloudflare/wrangler.toml` and `ORIGIN` in `cloudflare/worker.js`, then point clients at it with
+`cloud_url`.
+
+## Contributing & Troubleshooting
+
+### Before you send a change
+
+1. Read `AGENTS.md` and `docs/MULTIPLAYER_STATUS.md`.
+2. Run the server and web checks above. Rebuild whichever client you touched; keep the PC build
+   at zero warnings.
+3. Follow the conventions the notes record:
+   - Switch: every source file name must be unique across the tree (flat object directory; new
+     multiplayer files are prefixed `Mp`). `thread_local` is unusable.
+   - PC: sources use CRLF line endings; msys `sed -i` converts whole files to LF. Every hook
+     detour must use the game function's real return type and return the original's value. No
+     blocking I/O on a game thread.
+   - Web: add dependencies with exact version pins.
+   - Never commit game binaries or dumps.
+
+### Common problems
+
+| Symptom | Cause / fix |
+| --- | --- |
+| Switch game crashes at boot | The `exefs` folder holds something other than `main.npdm` + `subsdk9` (a stale `subsdk8` from older versions crashes), the game is not update 1.0.6, or the build has undefined symbols (run the `nm` check). Crash reports: `sdmc:/atmosphere/crash_reports/`. |
+| Client never finds the LAN server | Same network? Windows Firewall rule for `python.exe`? Otherwise set `server_ip`. Check `server_mode` is not `"off"`. |
+| Ryujinx never connects | `enable_internet_access` is `false` in Ryujinx's `Config.json`. |
+| Dashboard says "Web UI not built yet" | Run `cd web && npm ci && npm run build`. |
+| Online: client keeps retrying | The free Render service sleeps after 15 minutes idle and takes about a minute to wake; clients wait up to 65 s. A `301` in the client log means the Cloudflare Worker route is inactive. Rooms are lost when the server restarts or sleeps. |
+| Buttons stuck or blocked in a room | Emergency exit: hold **Minus** 3 s (Switch), or **F9** / controller Back 3 s (PC). |
+| Need logs | Switch: `sdmc:/hook_log.txt` (on Ryujinx it is written unflushed and can lag by minutes; over FTP it cannot be read while the game runs). PC: `mp_log.txt` in the mod folder. Server: stdout. |
+| `build.ps1` cannot find CMake | It only looks in `C:\Program Files\CMake\bin`. |
+| Dashboard host controls | Typing the room owner's in-game name unlocks them. This is an interim login and not secure; real accounts exist only as a design (`docs/ACCOUNTS_DESIGN.md`). |
+
+### Known open issues
+
+- PC: after a room round the results screen does not always return to song select by itself
+  (`pc-client-mod/HANDOFF.md`).
+- Ryujinx: occasional freeze at boot or in the attract movie (`docs/MULTIPLAYER_STATUS.md`).
+
+### Items where repository evidence is missing or ambiguous
+
+- `[NEEDS VERIFICATION]` Toolchain versions. Nothing pins the devkitPro packages, the Visual
+  Studio version or the minimum DivaModLoader version (notes mention devkitA64 GCC 15 and
+  DivaModLoader v0.0.16 as what was used).
+- `[NEEDS VERIFICATION]` Installing the PC mod by copying the folder. Only the junction made by
+  `deploy.ps1` is scripted.
+- `[NEEDS VERIFICATION]` JP and KR releases. `Config.cpp` and `FsHooks.cpp` list their title IDs
+  (`0100F3100DA46000`, `0100BE300FF62000`), but every documented offset and `PROGRAM_ID` target
+  the EN 1.0.6 build only.
+- `[NEEDS VERIFICATION]` Which branch Render deploys. `render.yaml` names none, and the hosting
+  settings for Render and Cloudflare Workers Builds are not in the repository.
+- `[NEEDS VERIFICATION]` License of everything outside `switch-client-mod/` (GPL-2.0, see its
+  `LICENSE`). There is no root license file.
+- `[NEEDS VERIFICATION]` `./exlaunch.sh make-npdm-json`: the script it calls
+  (`misc/scripts/make-npdm-json.py`) is empty, and `config.mk` names `qlaunch.json` while the
+  build generates `main.npdm` from `config.json`.
+- `[NEEDS VERIFICATION]` `--mod-version-expected`: the flag exists, but its effect on clients
+  with another version is not documented.
+- `[NEEDS VERIFICATION]` `tools/` and parts of `docs/TESTING.md` depend on a sibling `mm-re`
+  directory and on fixed local paths that are not in the repository. `tools/record_demo.py`'s
+  full tour has not completed a run. `docs/MULTIPLAYER_STATUS.md` refers to
+  `docs/NEXT_SESSION_TODO.md`, which is not in the repository.
+
+## Credits
+
+- [lsmsmx](https://github.com/lsmsmx): the Mega Mix exlaunch fork this project builds on.
+- New Classics by mrcloverthecoder (https://github.com/mrcloverthecoder/nc), also the source of
+  the PC addresses and structures.
+- Full credits for the inherited Switch features: [`switch-client-mod/README.md`](switch-client-mod/README.md).
+  Vendored PC libraries and their licenses: [`pc-client-mod/third_party/README.md`](pc-client-mod/third_party/README.md).
