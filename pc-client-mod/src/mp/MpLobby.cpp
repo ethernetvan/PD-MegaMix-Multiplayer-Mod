@@ -93,6 +93,17 @@ static int     s_diffSyncTries = 0;
 static int32_t s_diffSyncSig = -1;
 static int64_t s_diffSyncAt = 0;
 static int     s_launchDiffTries = 0;
+/* expanded results panel (A on the results screen while in a room):
+ * 0 not on results, 1 armed (the next A opens it instead of reaching the
+ * game), 2 open (everything but Minus is ours), 3 closed again (A goes
+ * to the game, Y reopens) */
+static int     s_resPanel = 0;
+static int     s_resPage = 0;
+static int64_t s_resPanelAt = 0;     /* ms of the last open/close, 0 none */
+static const int  kResPerPage = 8;      /* players per page */
+/* the game's Retry / Return menu can't be shielded from the keyboard on
+ * every platform: where it can't, the panel only reopens before it */
+static const bool kResReopenOnMenu = false;
 static int32_t s_slPvs[24];
 static int   s_slN = 0;
 static bool  s_slPending = false;
@@ -175,7 +186,10 @@ static BoardRow s_board[8];
 static int  s_boardCount = 0;
 struct StandingRow { char cid[20]; char name[40]; int32_t score; float pct;
                      int32_t max_combo; int32_t life; int rank; bool final;
-                     bool connected; int32_t diff, ed; };
+                     bool connected; int32_t diff, ed;
+                     int32_t jc[5]; bool hasJc; float border;
+                     int8_t clear;      /* console verdict: 1 / 0, -1 unknown */
+                     bool drop, autoplay; };
 static StandingRow s_standings[8];
 static int  s_standingCount = 0;
 
@@ -544,6 +558,7 @@ static void ResetLobbyState() {
     s_playedRound = 0; s_finalSentRound = 0;
     s_finalLine[0] = 0; s_finalLineRound = 0;
     s_sameDiff = false;
+    s_resPanel = 0; s_resPage = 0; s_resPanelAt = 0;
     s_folWantD = -1; s_folWantE = 0;
     s_folDiffBanner[0] = s_folDiffBanner[1] = s_folDiffBanner[2] = -1;
     s_diffSyncTries = 0; s_diffSyncSig = -1;
@@ -751,6 +766,29 @@ static void HandleStandings(const char* line, jsmntok_t* tok, int ntok) {
         if ((j = mpjson::Find(line, tok + i, end - i, "ed")) >= 0 &&
             mpjson::ToInt(line, tok[i + j], &v))
             r.ed = (r.diff == 3 && v == 1) ? 1 : 0;
+        if ((j = mpjson::Find(line, tok + i, end - i, "jc")) >= 0 &&
+            tok[i + j].type == JSMN_ARRAY && tok[i + j].size >= 5) {
+            int a = i + j + 1;
+            for (int q = 0; q < 5 && a < end; q++, a += mpjson::Skip(tok, a, ntok)) {
+                int jv = 0;
+                if (mpjson::ToInt(line, tok[a], &jv) && jv > 0) r.jc[q] = jv;
+            }
+            r.hasJc = true;
+        }
+        if ((j = mpjson::Find(line, tok + i, end - i, "border")) >= 0) {
+            char pb[24] = "";
+            mpjson::Copy(line, tok[i + j], pb, sizeof(pb));
+            r.border = (float)strtod(pb, nullptr);
+        }
+        r.clear = -1;
+        if ((j = mpjson::Find(line, tok + i, end - i, "clear")) >= 0) {
+            char c0 = line[tok[i + j].start];
+            r.clear = c0 == 't' ? 1 : (c0 == 'f' ? 0 : -1);
+        }
+        if ((j = mpjson::Find(line, tok + i, end - i, "drop")) >= 0)
+            r.drop = line[tok[i + j].start] == 't';
+        if ((j = mpjson::Find(line, tok + i, end - i, "autoplay")) >= 0)
+            r.autoplay = line[tok[i + j].start] == 't';
         s_standingCount++;
         i = end;
     }
@@ -1145,6 +1183,12 @@ static void ApplyBlocks() {
     else if (s_resultsShownAt > 0 && s_autoReturn)
         /* the blind driver owns results once the round is over */
         SetBlocks(MASK_ALL_NO_MINUS, false);
+    else if (s_resultsShownAt > 0 && s_resPanel == 2)
+        SetBlocks(MASK_ALL_NO_MINUS, true);      /* our panel is up */
+    else if (s_resultsShownAt > 0 && s_resPanel == 1)
+        SetBlocks(nn::hid::A | nn::hid::Y, false);   /* the next A is ours */
+    else if (s_resultsShownAt > 0 && s_resPanel == 3)
+        SetBlocks(nn::hid::Y, false);
     else if (s_phase == L_PLAYING && Guarded())
         /* real Plus never reaches the game in a guarded room: it becomes
          * a group pause/resume request instead; the pause-menu model
@@ -1294,6 +1338,55 @@ void Pump() {
         if (ev & menu::EV_QUIT) {
             DbgMenu(ms.page, ms.cursor, "quit");
             s_quitting = true;
+        }
+    }
+
+    /* expanded results panel: the first A on the results screen opens it
+     * (the game never sees that press), A/B close it, L/R or Left/Right
+     * flip its pages, Y opens it again. Admin taps count like real
+     * presses; the auto-return driver's own taps don't. */
+    {
+        const bool can = s_resultsShownAt > 0 && s_code[0] &&
+                         s_standingCount > 0;
+        if (!can) {
+            s_resPanel = 0; s_resPage = 0; s_resPanelAt = 0;
+        } else if (s_autoReturn) {
+            /* the driver is leaving: an open panel stays until the screen goes */
+            if (s_resPanel == 1) { s_resPanel = 3; s_resPanelAt = 0; }
+        } else {
+            if (s_resPanel == 0) {
+                s_resPanel = 1; s_resPanelAt = 0; s_resPage = 0;
+                input::NavClear();
+                ApplyBlocks();
+            }
+            const uint64_t e = input::NavConsume(
+                nn::hid::A | nn::hid::B | nn::hid::Y | nn::hid::L |
+                nn::hid::R | nn::hid::Left | nn::hid::Right);
+            const int pages = (s_standingCount + kResPerPage - 1) / kResPerPage;
+            if (s_resPage >= pages) s_resPage = pages - 1;
+            if (s_resPanel == 2) {
+                if (e & (nn::hid::A | nn::hid::B)) {
+                    s_resPanel = 3; s_resPanelAt = (int64_t)now;
+                    /* the closing press is still down: keep it from the
+                     * game until it is released */
+                    s_relGuard |= input::NavHeld() & (nn::hid::A | nn::hid::B);
+                    ApplyBlocks();
+                } else if (pages > 1 && (e & (nn::hid::R | nn::hid::Right))) {
+                    s_resPage = (s_resPage + 1) % pages;
+                } else if (pages > 1 && (e & (nn::hid::L | nn::hid::Left))) {
+                    s_resPage = (s_resPage + pages - 1) % pages;
+                }
+            } else {
+                const menu::Status rs = menu::Get(now);
+                const bool early = rs.page == mp::menu::P_RES_SCORE ||
+                                   rs.page == mp::menu::P_RES_VP;
+                if ((s_resPanel == 1 && (e & nn::hid::A)) ||
+                    (s_resPanel == 3 && (e & nn::hid::Y) &&
+                     (kResReopenOnMenu || early))) {
+                    s_resPanel = 2; s_resPanelAt = (int64_t)now;
+                    ApplyBlocks();
+                }
+            }
         }
     }
 
@@ -2223,6 +2316,13 @@ void GetSnapshot(Snapshot* out) {
         d.autoplay = s_members[i].autoplay;
     }
     out->sameDiff = s_sameDiff;
+    out->resPanel = s_resPanel; out->resPage = s_resPage;
+    out->resPerPage = kResPerPage;
+    out->resPanelMs = s_resPanelAt > 0
+        ? (int32_t)((int64_t)NowMs() - s_resPanelAt) : -1;
+    {   menu::Status rs = menu::Get(NowMs());
+        out->resCanReopen = kResReopenOnMenu ||
+            rs.page == mp::menu::P_RES_SCORE || rs.page == mp::menu::P_RES_VP; }
     out->myDiff = s_myD; out->myEd = s_myE;
     int lc = 0, pc = 0;
     for (int i = 0; i < s_memberCount; i++)
@@ -2260,12 +2360,15 @@ void GetSnapshot(Snapshot* out) {
         d.life = r.life; d.rank = r.rank; d.final = r.final;
         d.connected = r.connected;
         d.diff = r.diff; d.ed = r.ed;
+        for (int q = 0; q < 5; q++) d.jc[q] = r.jc[q];
+        d.hasJc = r.hasJc; d.border = r.border; d.clear = r.clear;
+        d.drop = r.drop; d.autoplay = r.autoplay; d.plat = PLAT_UNKNOWN;
         d.me = r.cid[0] ? (strcmp(r.cid, s_myCid) == 0)
                         : (strstr(r.name, s_myName) != nullptr && s_myName[0]);
         d.av = avatar::Ref{};
         for (int q = 0; q < s_memberCount; q++)
             if (r.cid[0] && strcmp(s_members[q].cid, r.cid) == 0) {
-                d.av = s_members[q].av; break; }
+                d.av = s_members[q].av; d.plat = s_members[q].plat; break; }
     }
     out->resultsAgeMs = s_resultsShownAt > 0
         ? (int32_t)(NowMs() - s_resultsShownAt) : -1;
