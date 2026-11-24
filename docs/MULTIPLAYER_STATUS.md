@@ -307,6 +307,12 @@ Commits `815f20b`, `79e244c`, `ce0a059` (on top of `f9f16c6`).
   snapshot; the web results use the console's verdict (old clients: the reported border; no border: no label)
   and the live gauge draws each player's own border tick. Verified: Ryu1 99.40 % vs border 70 → clear, Ryu2
   life 0 → drop (the game showed NOT CLEAR… DROP×OUT too).
+- **Final resent after a reconnect:** a session that dropped right after the results screen opened lost
+  the finals of Ryu1/Ryu2 on the online server (all four shim sessions dropped at once 3 s later; the
+  round then completed through the 30 s stale rule with no clear verdict). The client keeps its last
+  `final` line and resends it on `welcome` while still in RESULTS for that round (`[MP-L] reconnect:
+  resending final`); verified by restarting `cloudshim.py` on the results screen. Online (Render) test
+  2026-11-16, 4 Ryujinx: borders 70/70/50/60, Ryu3 cleared at 67.68 % against 50 %, Ryu4 drop.
 - **Drop-out notification:** the server sends `event {kind: "drop_out"}` once per member and round when a
   player who had life reaches 0 (`state`), or when their `final` has `drop`. Consoles route it like combo /
   low_life (portrait popup tag "DROP OUT", text banner "X dropped out!", or off; hidden on the results

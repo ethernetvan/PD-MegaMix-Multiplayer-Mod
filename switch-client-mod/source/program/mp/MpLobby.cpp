@@ -125,6 +125,10 @@ static int   s_retryRecRounds = 0;
 static char  s_scene[12] = "other";
 static int32_t s_playedRound = 0;        /* round actually played this boot */
 static int32_t s_finalSentRound = 0;
+/* the last final we sent: resent after a reconnect, since a session that
+ * drops right after sending it can lose it (seen on the online server) */
+static char    s_finalLine[320] = "";
+static int32_t s_finalLineRound = 0;
 static bool  s_roundOver = false;        /* round_end seen */
 static bool  s_autoReturn = false;       /* drive results->song-list later */
 static int32_t s_standingsRound = 0;
@@ -410,6 +414,7 @@ static void ResetLobbyState() {
     s_resultInitAt = 0;
     s_resultsShownAt = 0;
     s_playedRound = 0; s_finalSentRound = 0;
+    s_finalLine[0] = 0; s_finalLineRound = 0;
     s_roundOver = false; s_autoReturn = false;
     s_standingsRound = 0;
     s_launchHandledRound = -1;   /* round numbers restart in every room */
@@ -623,6 +628,14 @@ static void ProcessLine(const char* line) {
             SendLine("{\"t\":\"lobby_leave\"}");
         }
         if (s_code[0]) { s_expectLobby = true; s_expectLobbyAt = NowMs() + 3000; }
+        /* still waiting on this round's results: resend our final (the
+         * server ignores it once the round is over, and a repeat only
+         * overwrites the same values) */
+        if (s_code[0] && s_phase == L_RESULTS && s_finalLine[0] &&
+            s_finalLineRound == s_playedRound) {
+            WriteLog("[MP-L] reconnect: resending final r%d\n", s_finalLineRound);
+            SendLine(s_finalLine);
+        }
         if (s_inLobbyDirty()) s_readyDirty = true;
         ReportAutoPlay(AutoPlay::g_enabled);
         ReportScene();
@@ -1236,6 +1249,9 @@ static void SendFinal(const PVGameData* pv, bool quit) {
         clear ? "true" : "false", drop ? "true" : "false",
         quit ? "true" : "false");
     SendLine(m);
+    strncpy(s_finalLine, m, sizeof(s_finalLine) - 1);
+    s_finalLine[sizeof(s_finalLine) - 1] = 0;
+    s_finalLineRound = s_playedRound;
     WriteLog("[MP-L] final r%d pct=%.2f border=%.2f/%.2f life=%d clear=%d "
              "drop=%d quit=%d\n", s_playedRound, (double)pv->percentage,
              (double)pv->clear_border, (double)pv->clear_border_eff,
