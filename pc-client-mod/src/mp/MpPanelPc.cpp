@@ -1,7 +1,7 @@
-// PC panel for the MP lobby — desktop-style ImGui window restyled after
-// Project DIVA Mega Mix's own UI (dark navy translucent body, slanted
-// teal-gradient header, pill tabs, hexagon avatars, podium + member cards
-// like the Switch room screen). Two tabs: Lobby and Settings.
+// PC panel for the MP lobby, full screen in the style of the game's own
+// Options screens (blue header tab, light slanted sheet, white hex-ended
+// rows with value pills, help band + title tag, key-cap footer). Two pages:
+// Room and Settings; the players of the room sit right of the sheet.
 // Toggle: F8 or `dbg_cmd overlay open|close`; Esc closes.
 #include "MpLobby.hpp"
 #include "MpAvatar.hpp"
@@ -456,100 +456,12 @@ static float Tag(ImDrawList* dl, ImVec2 p, float h, const char* s,
     return w;
 }
 
-/* ---------------- DIVA widgets ---------------- */
-/* slanted teal button; returns click. id must be unique. */
-enum BtnKind { BT_TEAL, BT_DANGER, BT_DARK, BT_GHOST, BT_YELLOW, BT_GREY };
-static bool DivaBtn(ImVec2 a, ImVec2 b, const char* label, BtnKind kind,
-                    bool enabled = true, float tsc = 0.95f) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float h = b.y - a.y, sk = h * 0.35f;
-    ImGui::SetCursorScreenPos(ImVec2(a.x - sk, a.y));
-    char id[96];
-    snprintf(id, sizeof(id), "##db%s", label);
-    bool pressed = ImGui::InvisibleButton(id, ImVec2(b.x - a.x + sk, h));
-    bool hov = enabled && ImGui::IsItemHovered();
-    bool dn = hov && ImGui::IsMouseDown(0);
-    ImU32 c0, c1, tcol = IM_COL32_WHITE;
-    switch (kind) {
-    case BT_DANGER:
-        c0 = dn ? IM_COL32(168, 30, 62, 255) : hov ? IM_COL32(255, 122, 160, 255) : IM_COL32(240, 82, 122, 255);
-        c1 = dn ? IM_COL32(124, 18, 46, 255) : hov ? IM_COL32(224, 66, 106, 255) : IM_COL32(198, 46, 82, 255);
-        break;
-    case BT_DARK:
-        c0 = dn ? IM_COL32(18, 32, 48, 255) : hov ? IM_COL32(42, 68, 100, 255) : IM_COL32(26, 44, 66, 240);
-        c1 = dn ? IM_COL32(12, 22, 34, 255) : hov ? IM_COL32(28, 46, 70, 255) : IM_COL32(16, 30, 46, 240);
-        break;
-    case BT_GHOST:
-        c0 = dn ? IM_COL32(20, 30, 44, 230) : hov ? IM_COL32(40, 60, 86, 230) : IM_COL32(24, 36, 54, 200);
-        c1 = dn ? IM_COL32(14, 22, 32, 230) : hov ? IM_COL32(28, 42, 62, 230) : IM_COL32(16, 26, 40, 200);
-        break;
-    case BT_YELLOW:
-        c0 = dn ? IM_COL32(196, 146, 0, 255) : hov ? IM_COL32(255, 242, 84, 255) : IM_COL32(255, 228, 10, 255);
-        c1 = dn ? IM_COL32(164, 120, 0, 255) : hov ? IM_COL32(240, 192, 22, 255) : IM_COL32(219, 168, 0, 255);
-        tcol = kCardInk;
-        break;
-    case BT_GREY:
-        c0 = dn ? IM_COL32(122, 130, 142, 255) : hov ? IM_COL32(218, 225, 234, 255) : IM_COL32(196, 204, 214, 235);
-        c1 = dn ? IM_COL32(98, 106, 118, 255) : hov ? IM_COL32(178, 186, 198, 255) : IM_COL32(152, 160, 170, 235);
-        tcol = kCardInk;
-        break;
-    default: /* cyan pill (EASY tab) */
-        c0 = dn ? IM_COL32(0, 116, 158, 255) : hov ? IM_COL32(88, 228, 255, 255) : IM_COL32(28, 200, 240, 255);
-        c1 = dn ? IM_COL32(0, 92, 130, 255) : hov ? IM_COL32(16, 178, 224, 255) : IM_COL32(4, 142, 192, 255);
-    }
-    if (!enabled) {
-        c0 = IM_COL32(140, 148, 158, 200); c1 = IM_COL32(110, 118, 128, 200);
-        tcol = IM_COL32(70, 78, 88, 255);
-    }
-    SlantGrad(dl, a, b, sk, c0, c1);
-    ImU32 ol = !enabled ? IM_COL32(70, 80, 95, 120)
-               : kind == BT_YELLOW || kind == BT_GREY
-                     ? IM_COL32(88, 96, 108, 220)
-               : hov ? kTealHi : kLineTeal;
-    SlantLine(dl, a, b, sk, ol, hov ? 2.0f : 1.2f);
-    TxtC(dl, ImVec2(a.x - sk, a.y), b, label, tsc,
-         enabled ? tcol : IM_COL32(80, 88, 98, 255));
-    return enabled && pressed;
-}
-
-/* styled InputText: dark navy field + teal border (brighter when active);
- * the chrome is drawn first so the widget's own text lands on top */
-static bool DivaInput(ImVec2 a, float w, const char* id, char* buf, int n,
-                      ImGuiInputTextFlags flags = 0,
-                      const char* hint = nullptr) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float h = ImGui::GetFontSize() + S(12);
-    ImVec2 p0(a.x, a.y), p1(a.x + w, a.y + h);
-    dl->AddRectFilled(p0, p1, IM_COL32(8, 16, 30, 235), S(4));
-    ImGui::SetCursorScreenPos(ImVec2(a.x + S(2), a.y + S(1)));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-    ImGui::SetNextItemWidth(w - S(4));
-    bool ret = hint ? ImGui::InputTextWithHint(id, hint, buf, n, flags)
-                    : ImGui::InputText(id, buf, n, flags);
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
-    bool act = ImGui::IsItemActive();
-    dl->AddRect(p0, p1, act ? kTeal : IM_COL32(60, 90, 110, 160), S(4), 0,
-                act ? 1.8f : 1.0f);
-    return ret;
-}
-
-/* section header: small teal bar + label */
-static void SectionHdr(ImDrawList* dl, ImVec2 p, const char* s) {
-    dl->AddRectFilled(p, ImVec2(p.x + S(4), p.y + S(18)), kTeal, S(2));
-    Txt(dl, ImVec2(p.x + S(12), p.y + S(1)), s, 0.95f, kTealHi);
-}
-
 /* ---------------- Lobby tab ---------------- */
 static char s_nameBuf[40] = "";
 static bool s_nameInit = false;
 static char s_codeBuf[8] = "";
 static char s_urlBuf[160] = "";
 static bool s_urlInit = false;
-static char s_kickCid[20] = "";
 static bool s_confirmLeave = false;
 static int  s_tab = 0;          /* 0 lobby, 1 settings */
 
@@ -610,455 +522,568 @@ static float DrawPodium(ImDrawList* dl, const Snapshot& sn, const int* order,
     return bot;
 }
 
-/* one member card: [#] [hex avatar] [name+tags] [status] [trophies]
- * [wins] [Kick] on a light plate (menu_select unselected song bar) */
-static bool MemberRow(ImDrawList* dl, const Snapshot& sn, const MemberInfo& m,
-                      int idx, ImVec2 ra, ImVec2 rb, bool owner, bool assign) {
-    bool you = strcmp(m.cid, sn.myCid) == 0;
+/* ================================================================
+ * Panel in the style of the game's own Options screens: blue header tab,
+ * light slanted body with a blue foot strip, white hex-ended rows that
+ * turn teal when pointed at, grey value pills with arrows, the dark band
+ * with a slanted title tag and the key-cap footer. Colours sampled from
+ * Options > Display Settings (MM+ 1.03).
+ * ============================================================== */
+static const ImU32 gBlue      = IM_COL32(0, 141, 213, 255);    /* header tab / foot strip */
+static const ImU32 gBody0     = IM_COL32(196, 238, 243, 224);  /* light body */
+static const ImU32 gBody1     = IM_COL32(176, 244, 248, 224);
+static const ImU32 gRow0      = IM_COL32(255, 255, 255, 255);  /* white row */
+static const ImU32 gRow1      = IM_COL32(238, 240, 241, 255);
+static const ImU32 gRowShadow = IM_COL32(120, 170, 180, 120);
+static const ImU32 gRowText   = IM_COL32(139, 141, 147, 255);  /* grey label */
+static const ImU32 gInk       = IM_COL32(74, 80, 92, 255);     /* dark text on white */
+static const ImU32 gSel0      = IM_COL32(0, 208, 214, 255);    /* selected teal */
+static const ImU32 gSel1      = IM_COL32(0, 186, 192, 255);
+static const ImU32 gSelEdge   = IM_COL32(180, 252, 252, 255);
+static const ImU32 gSelDark   = IM_COL32(12, 134, 140, 255);
+static const ImU32 gPill      = IM_COL32(165, 165, 165, 255);  /* value pill */
+static const ImU32 gPillSel   = IM_COL32(16, 154, 158, 255);
+static const ImU32 gSlot      = IM_COL32(227, 227, 227, 255);  /* inset slot */
+static const ImU32 gBand      = IM_COL32(0, 142, 161, 205);    /* help band */
+static const ImU32 gTitleTag  = IM_COL32(0, 169, 254, 255);
+static const ImU32 gFooter    = IM_COL32(1, 68, 100, 240);
+static const ImU32 gKeyCap    = IM_COL32(0, 142, 200, 255);
+static const ImU32 gKeyText   = IM_COL32(2, 220, 251, 255);
+static const ImU32 gPinkTag   = IM_COL32(241, 80, 175, 255);
+
+static float s_ox = 0.0f;                 /* left edge of the 16:9 layout */
+static const char* s_help = nullptr;      /* help line of the row under the pointer */
+static inline float X(float v) { return s_ox + v * s_sc; }
+
+static ImFont* BoldF() { return FontLoader::Big() ? FontLoader::Big() : ImGui::GetFont(); }
+/* names can be non-Latin: the bold face only has the Latin ranges */
+static ImFont* FontFor(const char* s) {
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++)
+        if (*p > 126 || *p < 32) return ImGui::GetFont();
+    return BoldF();
+}
+static float TW(ImFont* f, float px, const char* s) {
+    return f->CalcTextSizeA(px, FLT_MAX, 0.0f, s).x;
+}
+static void T(ImDrawList* dl, ImFont* f, float px, ImVec2 p, ImU32 col, const char* s) {
+    dl->AddText(f, px, p, col, s);
+}
+/* white text with the game's dark-teal outline (selected rows, titles) */
+static void TOut(ImDrawList* dl, ImFont* f, float px, ImVec2 p, const char* s,
+                 ImU32 out = gSelDark, ImU32 col = IM_COL32_WHITE) {
+    const float o = px * 0.07f;
+    for (int i = 0; i < 8; i++) {
+        float a = i * 0.785398f;
+        dl->AddText(f, px, ImVec2(p.x + cosf(a) * o, p.y + sinf(a) * o), out, s);
+    }
+    dl->AddText(f, px, ImVec2(p.x, p.y + o * 0.8f), out, s);
+    dl->AddText(f, px, p, col, s);
+}
+/* s trimmed with ".." to fit w (UTF-8 safe) */
+static const char* Fit(ImFont* f, float px, const char* s, float w, char* out, int n) {
+    snprintf(out, n, "%s", s);
+    int len = (int)strlen(out);
+    while (len > 0 && TW(f, px, out) > w) {
+        do { len--; } while (len > 0 && ((unsigned char)out[len] & 0xC0) == 0x80);
+        snprintf(out + len, n - len, "..");
+    }
+    return out;
+}
+static ImU32 Mix(ImU32 a, ImU32 b, float t) {
+    ImU32 o = 0;
+    for (int s = 0; s < 32; s += 8) {
+        float ca = (float)((a >> s) & 0xFF), cb = (float)((b >> s) & 0xFF);
+        o |= (ImU32)(ca + (cb - ca) * t + 0.5f) << s;
+    }
+    return o;
+}
+/* the game's row shape: a bar with pointed ends, vertical gradient */
+static void HexBar(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 top, ImU32 bot, float grow = 0.0f) {
+    a.x -= grow; a.y -= grow; b.x += grow; b.y += grow;
+    const float h = b.y - a.y, e = h * 0.30f, my = (a.y + b.y) * 0.5f;
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+    const ImU32 mid = Mix(top, bot, 0.5f);
+    dl->PrimReserve(12, 6);
+    const ImDrawIdx i0 = (ImDrawIdx)dl->_VtxCurrentIdx;
+    dl->PrimWriteVtx(ImVec2(a.x, my), uv, mid);
+    dl->PrimWriteVtx(ImVec2(a.x + e, a.y), uv, top);
+    dl->PrimWriteVtx(ImVec2(b.x - e, a.y), uv, top);
+    dl->PrimWriteVtx(ImVec2(b.x, my), uv, mid);
+    dl->PrimWriteVtx(ImVec2(b.x - e, b.y), uv, bot);
+    dl->PrimWriteVtx(ImVec2(a.x + e, b.y), uv, bot);
+    for (int i = 1; i < 5; i++) {
+        dl->PrimWriteIdx(i0);
+        dl->PrimWriteIdx((ImDrawIdx)(i0 + i));
+        dl->PrimWriteIdx((ImDrawIdx)(i0 + i + 1));
+    }
+}
+/* a menu row: white with a soft shadow, or the teal selected look */
+static void RowPlate(ImDrawList* dl, ImVec2 a, ImVec2 b, bool sel) {
+    if (sel) {
+        HexBar(dl, a, b, gSelEdge, gSelEdge, S(6));
+        HexBar(dl, a, b, gSelDark, gSelDark, S(2.5f));
+        HexBar(dl, a, b, gSel0, gSel1);
+    } else {
+        HexBar(dl, ImVec2(a.x + S(2), a.y + S(5)), ImVec2(b.x + S(2), b.y + S(5)), gRowShadow, gRowShadow);
+        HexBar(dl, a, b, gRow0, gRow1);
+    }
+}
+static void RowLabel(ImDrawList* dl, ImVec2 a, ImVec2 b, const char* label, bool sel, float px = 0.0f) {
+    if (px <= 0.0f) px = S(38);
+    ImFont* f = BoldF();
+    ImVec2 p(a.x + S(46), (a.y + b.y) * 0.5f - px * 0.5f - S(1));
+    if (sel) TOut(dl, f, px, p, label);
+    else T(dl, f, px, p, gRowText, label);
+}
+static void Tri(ImDrawList* dl, ImVec2 c, float r, bool left, ImU32 col) {
+    const float d = left ? -1.0f : 1.0f;
+    dl->AddTriangleFilled(ImVec2(c.x + d * r, c.y), ImVec2(c.x - d * r * 0.6f, c.y - r * 0.9f),
+                          ImVec2(c.x - d * r * 0.6f, c.y + r * 0.9f), col);
+}
+static const float kRowH = 72.0f;
+
+/* "Label   < value >" row. Returns -1 / +1 when clicked (left / right half
+ * of the value), 0 otherwise. Not enabled = shows the value only. */
+static int OptRow(const char* id, ImVec2 a, float w, const char* label, const char* value,
+                  const char* help, bool enabled = true) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 b(a.x + w, a.y + S(kRowH));
+    ImGui::SetCursorScreenPos(a);
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, S(kRowH)));
+    bool hov = ImGui::IsItemHovered();
+    bool sel = hov && enabled;
+    if (hov && help) s_help = help;
+    RowPlate(dl, a, b, sel);
+    RowLabel(dl, a, b, label, sel);
+    const float pw = w * 0.36f < S(210) ? S(210) : w * 0.36f;
+    ImVec2 pa(b.x - S(64) - pw, a.y + S(15)), pb(b.x - S(64), b.y - S(15));
+    HexBar(dl, pa, pb, sel ? gPillSel : gPill, sel ? gPillSel : gPill);
+    char vb[64];
+    ImFont* vf = FontFor(value);
+    const float vpx = S(29);
+    Fit(vf, vpx, value, pw - S(36), vb, sizeof(vb));
+    T(dl, vf, vpx, ImVec2((pa.x + pb.x - TW(vf, vpx, vb)) * 0.5f, (pa.y + pb.y - vpx) * 0.5f - S(1)),
+      IM_COL32_WHITE, vb);
+    if (enabled) {
+        const ImU32 ac = sel ? IM_COL32_WHITE : IM_COL32(200, 200, 200, 255);
+        const float my = (a.y + b.y) * 0.5f;
+        Tri(dl, ImVec2(pa.x - S(16), my), S(10), true, ac);
+        Tri(dl, ImVec2(pb.x + S(16), my), S(10), false, ac);
+    }
+    if (!clicked || !enabled) return 0;
+    return ImGui::GetIO().MousePos.x < (pa.x + pb.x) * 0.5f && ImGui::GetIO().MousePos.x > pa.x - S(34)
+               ? -1 : 1;
+}
+
+/* small hex-ended button: 0 teal, 1 pink (danger), 2 white */
+static bool MiniBtn(const char* id, ImVec2 a, ImVec2 b, const char* label, int kind,
+                    bool enabled = true, const char* help = nullptr) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::SetCursorScreenPos(a);
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(b.x - a.x, b.y - a.y));
+    bool hov = enabled && ImGui::IsItemHovered();
+    if (hov && help) s_help = help;
+    ImU32 c0, c1, edge, tc = IM_COL32_WHITE, to;
+    if (!enabled) { c0 = IM_COL32(206, 208, 210, 255); c1 = IM_COL32(190, 192, 194, 255);
+                    edge = IM_COL32(170, 172, 174, 255); to = IM_COL32(150, 152, 156, 255); }
+    else if (kind == 1) { c0 = hov ? IM_COL32(255, 120, 200, 255) : IM_COL32(246, 92, 184, 255);
+                          c1 = hov ? IM_COL32(244, 86, 180, 255) : IM_COL32(226, 62, 160, 255);
+                          edge = IM_COL32(255, 200, 232, 255); to = IM_COL32(150, 30, 100, 255); }
+    else if (kind == 2) { c0 = gRow0; c1 = gRow1; edge = hov ? gSel1 : IM_COL32(200, 204, 206, 255);
+                          tc = hov ? gSelDark : gRowText; to = 0; }
+    else { c0 = hov ? IM_COL32(40, 226, 232, 255) : gSel0; c1 = hov ? IM_COL32(8, 204, 210, 255) : gSel1;
+           edge = gSelEdge; to = gSelDark; }
+    HexBar(dl, a, b, edge, edge, S(2.5f));
+    HexBar(dl, a, b, c0, c1);
+    ImFont* f = BoldF();
+    const float px = (b.y - a.y) * 0.62f;
+    ImVec2 p((a.x + b.x - TW(f, px, label)) * 0.5f, (a.y + b.y - px) * 0.5f - S(1));
+    if (to) TOut(dl, f, px, p, label, to, tc);
+    else T(dl, f, px, p, tc, label);
+    return enabled && clicked;
+}
+
+/* "Label  [text field]  [button]" row; returns true on Enter or the button */
+static bool FieldRow(const char* id, ImVec2 a, float w, const char* label, char* buf, int n,
+                     ImGuiInputTextFlags flags, const char* hint, const char* btn,
+                     bool btnEnabled, const char* help, float labelW = 300.0f) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 b(a.x + w, a.y + S(kRowH));
+    const bool over = ImGui::IsMouseHoveringRect(a, b);
+    if (over && help) s_help = help;
+    RowPlate(dl, a, b, false);
+    RowLabel(dl, a, b, label, false);
+    const float bw = btn ? S(160) : 0.0f;
+    ImVec2 fa(a.x + S(46) + S(labelW), a.y + S(13)), fb(b.x - S(40) - (btn ? bw + S(14) : 0.0f), b.y - S(13));
+    dl->AddRectFilled(fa, fb, gSlot, S(8));
+    const float fpx = S(29);
+    ImGui::PushFont(ImGui::GetFont());
+    ImGui::SetWindowFontScale(fpx / ImGui::GetFont()->FontSize);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.26f, 0.29f, 0.34f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, ImVec4(0.62f, 0.64f, 0.67f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, ImVec4(0.0f, 0.76f, 0.78f, 0.45f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(12), (fb.y - fa.y - fpx) * 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::SetCursorScreenPos(fa);
+    ImGui::SetNextItemWidth(fb.x - fa.x);
+    char iid[48];
+    snprintf(iid, sizeof(iid), "##f%s", id);
+    bool ret = hint ? ImGui::InputTextWithHint(iid, hint, buf, n, flags)
+                    : ImGui::InputText(iid, buf, n, flags);
+    const bool act = ImGui::IsItemActive();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(6);
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopFont();
+    dl->AddRect(fa, fb, act ? gSel1 : IM_COL32(196, 200, 202, 255), S(8), 0, act ? S(3) : S(1.5f));
+    if (btn) {
+        char bid[48];
+        snprintf(bid, sizeof(bid), "##b%s", id);
+        if (MiniBtn(bid, ImVec2(b.x - S(40) - bw, a.y + S(13)), ImVec2(b.x - S(40), b.y - S(13)), btn, 0,
+                    btnEnabled, help))
+            ret = true;
+    }
+    return ret;
+}
+
+/* full-width action row (Create Room): white, teal while pointed at */
+static bool ActionRow(const char* id, ImVec2 a, float w, const char* label, const char* help,
+                      bool enabled = true) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 b(a.x + w, a.y + S(kRowH));
+    ImGui::SetCursorScreenPos(a);
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(w, S(kRowH)));
+    bool hov = enabled && ImGui::IsItemHovered();
+    if (hov && help) s_help = help;
+    RowPlate(dl, a, b, hov);
+    RowLabel(dl, a, b, label, hov);
+    return enabled && clicked;
+}
+
+/* [key] label, right-aligned at rx on the footer; returns the new rx */
+static float KeyHint(ImDrawList* dl, float rx, float cy, const char* key, const char* label) {
+    ImFont* f = BoldF();
+    const float px = S(25), kh = S(32);
+    const float lw = TW(f, px, label), kw = TW(f, px * 0.9f, key) + S(22);
+    T(dl, f, px, ImVec2(rx - lw, cy - px * 0.5f - S(1)), gKeyText, label);
+    ImVec2 ka(rx - lw - S(10) - kw, cy - kh * 0.5f), kb(ka.x + kw, cy + kh * 0.5f);
+    dl->AddRectFilled(ka, kb, gKeyCap, S(5));
+    T(dl, f, px * 0.9f, ImVec2(ka.x + S(11), cy - px * 0.45f - S(1)), IM_COL32(170, 236, 255, 255), key);
+    return ka.x - S(26);
+}
+
+/* one player: white hex row with number, portrait, name + platform icon,
+ * status and tags on a second line, trophies, wins and (owner) Kick.
+ * Returns true when the row itself was clicked (assign mode). */
+static bool PlayerRow(ImDrawList* dl, const Snapshot& sn, const MemberInfo& m, int idx,
+                      ImVec2 a, float w, bool owner, bool assign) {
+    const float H = S(68);
+    ImVec2 b(a.x + w, a.y + H);
+    const bool you = strcmp(m.cid, sn.myCid) == 0;
+    const bool canKick = owner && !you;
     bool hov = false, clk = false;
     if (assign) {
-        float rowR = rb.x;
-        if (owner && !you)           /* leave the Kick button clickable */
-            rowR -= S(10) + S(52) + S(26) * 0.35f;
-        ImGui::SetCursorScreenPos(ra);
-        char id[32]; snprintf(id, sizeof(id), "##row%d", idx);
-        ImGui::InvisibleButton(id, ImVec2(rowR - ra.x, rb.y - ra.y));
+        ImGui::SetCursorScreenPos(a);
+        char id[32]; snprintf(id, sizeof(id), "##prow%d", idx);
+        clk = ImGui::InvisibleButton(id, ImVec2(w - (canKick ? S(140) : 0.0f), H));
         hov = ImGui::IsItemHovered();
-        clk = ImGui::IsItemClicked(0);
+        if (hov) s_help = "Make this player the song picker";
     }
-    float sk = S(10);
-    ImU32 cT = !m.connected ? kCardGreyT : you ? kCardYouT
-               : hov ? IM_COL32(255, 255, 255, 248) : kCardT;
-    ImU32 cB = !m.connected ? kCardGreyB : you ? kCardYouB
-               : hov ? IM_COL32(226, 234, 244, 248) : kCardB;
-    SlantGrad(dl, ra, rb, sk, cT, cB);
-    SlantLine(dl, ra, rb, sk, hov ? kCyan : kCardEdge, hov ? 1.8f : 1.2f);
-    float my = (ra.y + rb.y) * 0.5f;
-    const ImU32 ink = kCardInk, dim = kCardDim;
-    /* # */
+    if (hov) RowPlate(dl, a, b, true);
+    else {
+        HexBar(dl, ImVec2(a.x + S(2), a.y + S(5)), ImVec2(b.x + S(2), b.y + S(5)), gRowShadow, gRowShadow);
+        if (you) HexBar(dl, a, b, gSel1, gSel1, S(3));
+        if (m.connected) HexBar(dl, a, b, gRow0, gRow1);
+        else HexBar(dl, a, b, IM_COL32(222, 224, 226, 255), IM_COL32(204, 206, 208, 255));
+    }
+    const float my = (a.y + b.y) * 0.5f;
+    const ImU32 plate = hov ? gSel0 : (m.connected ? gRow0 : IM_COL32(214, 216, 218, 255));
+    ImFont* bf = BoldF();
+    /* number + portrait */
     char num[8]; snprintf(num, sizeof(num), "%d", idx + 1);
-    Txt(dl, ImVec2(ra.x + S(10), my - ImGui::GetFontSize() * 0.5f), num,
-        1.0f, dim);
-    /* hex avatar + status dot */
-    float hr = (rb.y - ra.y) * 0.38f;
-    ImVec2 hc(ra.x + S(42), my);
-    DrawHexAvatar(dl, hc, hr, MemberRef(sn, m), RaceColor(sn, m.cid),
-                  m.connected, false);
-    StatusDot(dl, ImVec2(hc.x + hr * 0.68f, hc.y + hr * 0.68f), S(4.5f),
-              MemberDotCard(m));
-    /* right-side columns, anchored from the right edge:
-     * [status] [trophies 1/2/3] [wins] [kick] */
-    float xr = rb.x - S(10);
-    if (owner && !you) {
-        float bw = S(52), bh = S(26);
-        ImVec2 ka(xr - bw, my - bh * 0.5f), kb(ka.x + bw, ka.y + bh);
-        float sk2 = bh * 0.35f;
-        ImGui::SetCursorScreenPos(ImVec2(ka.x - sk2, ka.y));
-        char kid[32]; snprintf(kid, sizeof(kid), "##kick%d", idx);
-        bool kc = ImGui::InvisibleButton(kid, ImVec2(bw + sk2, bh));
-        bool kh = ImGui::IsItemHovered();
-        SlantGrad(dl, ka, kb, sk2,
-                  kh ? IM_COL32(255, 130, 165, 255) : IM_COL32(238, 84, 122, 255),
-                  kh ? IM_COL32(215, 70, 105, 255) : IM_COL32(196, 42, 78, 255));
-        SlantLine(dl, ka, kb, sk2, IM_COL32(120, 20, 44, 220),
-                  kh ? 2.0f : 1.2f);
-        TxtC(dl, ImVec2(ka.x - sk2, ka.y), kb, "Kick", 0.9f, IM_COL32_WHITE);
-        xr = ka.x - sk2 - S(10);
-        if (kc) {
-            strncpy(s_kickCid, m.cid, sizeof(s_kickCid) - 1);
-            ImGui::OpenPopup("Kick?");
-            PanelSE(2);
+    T(dl, bf, S(24), ImVec2(a.x + S(30), my - S(13)), hov ? IM_COL32_WHITE : gRowText, num);
+    const float hr = S(25);
+    ImVec2 hc(a.x + S(84), my);
+    DrawHexAvatar(dl, hc, hr, MemberRef(sn, m), RaceColor(sn, m.cid), m.connected, false);
+    StatusDot(dl, ImVec2(hc.x + hr * 0.68f, hc.y + hr * 0.68f), S(5), MemberDotCard(m));
+    /* right side: kick, wins, trophies */
+    float xr = b.x - S(30);
+    if (canKick) {
+        static char   s_armCid[20] = "";
+        static double s_armUntil = 0.0;
+        const bool armed = strcmp(s_armCid, m.cid) == 0 && ImGui::GetTime() < s_armUntil;
+        char id[32]; snprintf(id, sizeof(id), "##kick%d", idx);
+        if (MiniBtn(id, ImVec2(xr - S(98), my - S(19)), ImVec2(xr, my + S(19)), armed ? "Sure?" : "Kick", 1,
+                    true, "Remove this player from the room")) {
+            if (armed) { PanelSE(1); CmdKick(m.cid); s_armCid[0] = 0; }
+            else {
+                PanelSE(2);
+                snprintf(s_armCid, sizeof(s_armCid), "%s", m.cid);
+                s_armUntil = ImGui::GetTime() + 3.0;
+            }
         }
+        xr -= S(98) + S(14);
     }
-    /* wins */
-    char wb[16];
-    snprintf(wb, sizeof(wb), "%dW", m.wins);
-    float ww = TxtW(wb, 0.95f);
-    Txt(dl, ImVec2(xr - ww, my - ImGui::GetFontSize() * 0.475f), wb, 0.95f,
-        m.wins > 0 ? IM_COL32(178, 122, 0, 255) : dim);
-    xr -= S(52);
-    /* trophies 1/2/3 with full-size counts */
-    float thh = S(15);
-    float tw = DrawTrophyRow(dl, ImVec2(0, 0), thh, m.places, false, 9.0f,
-                             ink, 1.0f);
-    DrawTrophyRow(dl, ImVec2(xr - tw, my), thh, m.places, true, 9.0f,
-                  ink, 1.0f);
+    char wb[16]; snprintf(wb, sizeof(wb), "%dW", m.wins);
+    const float ww = TW(bf, S(22), wb);
+    T(dl, bf, S(22), ImVec2(xr - ww, my - S(12)),
+      m.wins > 0 ? IM_COL32(214, 150, 0, 255) : (hov ? IM_COL32_WHITE : gRowText), wb);
+    xr -= ww + S(12);
+    const float th = S(16);
+    const float tw = DrawTrophyRow(dl, ImVec2(0, 0), th, m.places, false, 8.0f, gInk, 1.0f);
+    DrawTrophyRow(dl, ImVec2(xr - tw, my), th, m.places, true, 8.0f, hov ? IM_COL32_WHITE : gInk, 1.0f);
     xr -= tw + S(12);
-    /* status, right-aligned inside its column */
-    const char* ms = MemberStatus(m);
-    ImU32 dc = MemberDotCard(m);
-    float sw = TxtW(ms, 1.0f);
-    StatusDot(dl, ImVec2(xr - sw - S(11), my), S(4.5f), dc);
-    Txt(dl, ImVec2(xr - sw, my - ImGui::GetFontSize() * 0.5f), ms, 1.0f, dc);
-    float stLeft = xr - S(140);
-    /* name + tags in the remaining zone, clipped */
-    float nx = hc.x + hr + S(10);
-    dl->PushClipRect(ImVec2(nx - S(4), ra.y), ImVec2(stLeft - S(6), rb.y),
-                     true);
+    /* line 1: name + platform icon */
+    const float nx = a.x + S(122);
     const char* nm = m.name[0] ? m.name : "(unnamed)";
-    Txt(dl, ImVec2(nx, my - ImGui::GetFontSize() * 0.575f), nm, 1.15f,
-        m.connected ? ink : dim);
-    nx += TxtW(nm, 1.15f) + S(6);
-    {   /* Switch or PC version of the mod */
-        const float ih = S(14), iw = IconPlatW(ih, m.plat);
-        if (iw > 0) {
-            IconPlat(dl, ImVec2(nx + iw * 0.5f, my + S(0.5f)), ih, m.plat,
-                     m.connected ? IM_COL32(70, 84, 104, 255) : dim, cB);
-            nx += iw + S(7);
-        }
-    }
-    float th = S(16), tyy = my - th * 0.5f;
+    ImFont* nf = FontFor(nm);
+    const float npx = S(25), ih = S(17), iw = IconPlatW(ih, m.plat);
+    char nb[64];
+    Fit(nf, npx, nm, xr - nx - (iw > 0 ? iw + S(8) : 0.0f), nb, sizeof(nb));
+    if (hov) TOut(dl, nf, npx, ImVec2(nx, a.y + S(7)), nb);
+    else T(dl, nf, npx, ImVec2(nx, a.y + S(7)), m.connected ? gInk : gRowText, nb);
+    if (iw > 0)
+        IconPlat(dl, ImVec2(nx + TW(nf, npx, nb) + S(8) + iw * 0.5f, a.y + S(7) + npx * 0.55f), ih, m.plat,
+                 hov ? IM_COL32_WHITE : gRowText, plate);
+    /* line 2: status, then role tags */
+    const float ly = a.y + S(39), lpx = S(17);
+    const char* ms = MemberStatus(m);
+    ImFont* sf = ImGui::GetFont();
+    T(dl, sf, lpx, ImVec2(nx, ly), hov ? IM_COL32_WHITE : MemberDotCard(m), ms);
+    float tx = nx + TW(sf, lpx, ms) + S(10);
     struct { const char* s; ImU32 fg; ImU32 bg; } tags[6];
     int nt = 0;
-    if (m.nosong)                           tags[nt++] = { "NO SONG", IM_COL32_WHITE, IM_COL32(226, 44, 96, 255) };
-    if (you)                                tags[nt++] = { "YOU",    kCardInk, kCyan };
-    if (strcmp(m.cid, sn.ownerCid) == 0)    tags[nt++] = { "OWNER",  kCardInk, kGold };
-    if (strcmp(m.cid, sn.leaderCid) == 0)   tags[nt++] = { "LEADER", kCardInk, kGreen };
-    if (m.autoplay)                         tags[nt++] = { "AUTO",   IM_COL32_WHITE, kPink };
-    if (sn.assignedCid[0] && strcmp(sn.assignedCid, "null") != 0 &&
-        strcmp(m.cid, sn.assignedCid) == 0 && strcmp(m.cid, sn.leaderCid) != 0)
-        tags[nt++] = { "PICKER", kCardInk, kYellow };
-    for (int i = 0; i < nt; i++)
-        nx += Tag(dl, ImVec2(nx, tyy), th, tags[i].s, tags[i].fg,
-                  tags[i].bg) + S(4);
-    dl->PopClipRect();
+    if (you)                              tags[nt++] = { "YOU",     IM_COL32_WHITE, IM_COL32(0, 176, 182, 255) };
+    if (strcmp(m.cid, sn.ownerCid) == 0)  tags[nt++] = { "OWNER",   kCardInk, kGold };
+    if (strcmp(m.cid, sn.leaderCid) == 0) tags[nt++] = { "PICKER",  IM_COL32_WHITE, IM_COL32(0, 141, 213, 255) };
+    if (m.nosong)                         tags[nt++] = { "NO SONG", IM_COL32_WHITE, IM_COL32(226, 44, 96, 255) };
+    if (m.autoplay)                       tags[nt++] = { "AUTO",    IM_COL32_WHITE, gPinkTag };
+    for (int i = 0; i < nt; i++) {
+        if (tx + TxtW(tags[i].s, 0.78f) + S(20) > xr) break;
+        tx += Tag(dl, ImVec2(tx, ly + S(1)), S(17), tags[i].s, tags[i].fg, tags[i].bg) + S(5);
+    }
     return clk;
 }
 
-static float LobbyTab(const Snapshot& sn, ImVec2 a, ImVec2 b) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float y = a.y;
+/* what the room is doing right now (the help band's idle text) */
+static ImU32 StatusText(const Snapshot& sn, char* foot, int n) {
+    ImU32 col = IM_COL32_WHITE;
+    if (!sn.code[0]) {
+        MpStatus mst;
+        mp::GetStatus(&mst);
+        if (mst.state == MpState::Connected)
+            snprintf(foot, n, "%s  %s  %d ms - create a room or join one with its code",
+                     mp::StateName(mst.state), mst.server, mst.rtt_ms);
+        else if (mst.last_error[0])
+            snprintf(foot, n, "%s  %s  (%s)", mp::StateName(mst.state), mst.server, mst.last_error);
+        else
+            snprintf(foot, n, "%s  %s", mp::StateName(mst.state), mst.server);
+        return col;
+    }
+    const char* leadName = "";
+    for (int i = 0; i < sn.memberCount; i++)
+        if (strcmp(sn.members[i].cid, sn.leaderCid) == 0) leadName = sn.members[i].name;
+    char noSong[120] = ""; int noSongN = 0;
+    for (int i = 0, off = 0; i < sn.memberCount && off < (int)sizeof(noSong) - 44; i++)
+        if (sn.members[i].nosong)
+            off += snprintf(noSong + off, sizeof(noSong) - off, "%s%s", noSongN++ ? ", " : "",
+                            strcmp(sn.members[i].cid, sn.myCid) == 0 ? "You" : sn.members[i].name);
+    if (!sn.connected) {
+        int left = sn.offlineMs >= 0 ? 30 - sn.offlineMs / 1000 : 30;
+        snprintf(foot, n, "Connection lost - reconnecting (leaving the room in %ds)", left < 0 ? 0 : left);
+        col = IM_COL32(255, 232, 120, 255);
+    } else if (sn.voteKind[0])
+        snprintf(foot, n, "%s vote: %d/%d agreed (%ds left)",
+                 strcmp(sn.voteKind, "pause") == 0 ? "Pause" : "Resume",
+                 sn.voteAgreed, sn.voteNeed, sn.voteEndsIn);
+    else if (sn.groupPaused)
+        snprintf(foot, n, "GROUP PAUSED");
+    else if (noSongN > 0) {
+        snprintf(foot, n, "%s %s have this song", noSong, noSongN == 1 ? "doesn't" : "don't");
+        col = IM_COL32(255, 196, 224, 255);
+    } else if (sn.notReady[0])
+        snprintf(foot, n, "Not ready: %s", sn.notReady);
+    else if (sn.statusLine[0] && sn.phase != 1)
+        snprintf(foot, n, "%s", sn.statusLine);
+    else if (strcmp(sn.leaderCid, sn.myCid) == 0)
+        snprintf(foot, n, "You're picking the song");
+    else
+        snprintf(foot, n, "%s is picking the song", leadName[0] ? leadName : "The leader");
+    return col;
+}
 
-    /* --- player name (top of the left column) --- */
+static const float kRowStep = 90.0f, kRowW = 900.0f, kRowStagger = 20.0f;
+struct RowCur { int i; float y; };
+static ImVec2 RowPos(RowCur& c) {
+    ImVec2 p(X(64.0f + c.i * kRowStagger), c.y);
+    c.i++; c.y += S(kRowStep);
+    return p;
+}
+
+/* ---------------- Room page ---------------- */
+static void RoomPage(const Snapshot& sn, RowCur& rc) {
+    const float w = S(kRowW);
     if (!s_nameInit) {
         strncpy(s_nameBuf, Config::mpPlayerName.c_str(), sizeof(s_nameBuf) - 1);
         s_nameInit = true;
     }
-    Txt(dl, ImVec2(a.x, y + S(5)), "PLAYER NAME", 0.85f, kMuted);
-    bool submit = DivaInput(ImVec2(a.x + S(110), y), S(170), "##pname",
-                            s_nameBuf, sizeof(s_nameBuf),
-                            ImGuiInputTextFlags_EnterReturnsTrue);
-    if (DivaBtn(ImVec2(a.x + S(290), y), ImVec2(a.x + S(344), y + S(26)),
-                "Save", BT_DARK, true, 0.8f) || submit) {
-        if (s_nameBuf[0] && strncmp(s_nameBuf, Config::mpPlayerName.c_str(),
-                                    sizeof(s_nameBuf)) != 0) {
-            PanelSE(0);
-            CmdSetName(s_nameBuf);
-        }
+    const bool nameDirty = s_nameBuf[0] &&
+        strncmp(s_nameBuf, Config::mpPlayerName.c_str(), sizeof(s_nameBuf)) != 0;
+    if (FieldRow("name", RowPos(rc), w, "Player Name", s_nameBuf, sizeof(s_nameBuf),
+                 ImGuiInputTextFlags_EnterReturnsTrue, nullptr, "Save", nameDirty,
+                 "The name the other players see") && nameDirty) {
+        PanelSE(0);
+        CmdSetName(s_nameBuf);
     }
-    y += S(38);
-
     if (!sn.code[0]) {
-        /* --- not in a room --- */
-        SectionHdr(dl, ImVec2(a.x, y), "ROOM");
-        y += S(30);
-        if (DivaBtn(ImVec2(a.x, y), ImVec2(a.x + S(180), y + S(40)),
-                    "CREATE ROOM", BT_TEAL, true, 1.0f)) {
+        if (ActionRow("##create", RowPos(rc), w, "Create Room", "Open a new room and get its 4-letter code")) {
             PanelSE(0);
             CmdLobbyCreate();
         }
-        bool codeEnter = DivaInput(ImVec2(a.x + S(196), y + S(5)), S(120),
-                  "##code", s_codeBuf, sizeof(s_codeBuf),
-                  ImGuiInputTextFlags_CharsUppercase |
-                  ImGuiInputTextFlags_EnterReturnsTrue, "CODE");
-        if (DivaBtn(ImVec2(a.x + S(330), y), ImVec2(a.x + S(400), y + S(40)),
-                    "JOIN", BT_DARK, s_codeBuf[0] != 0, 1.0f) ||
-            (codeEnter && s_codeBuf[0])) {
-            if (s_codeBuf[0]) {
-                PanelSE(0);
-                CmdLobbyJoin(s_codeBuf);
-            }
-        }
-        y += S(56);
-        Txt(dl, ImVec2(a.x, y), "Create a room or join one with a code.",
-            0.9f, kDim);
-        y += S(24);
-        /* connection status */
-        MpStatus mst;
-        mp::GetStatus(&mst);
-        char st[160];
-        if (mst.state == MpState::Connected)
-            snprintf(st, sizeof(st), "%s  %s  %d ms",
-                     mp::StateName(mst.state), mst.server, mst.rtt_ms);
-        else if (mst.last_error[0])
-            snprintf(st, sizeof(st), "%s  %s  (%s)",
-                     mp::StateName(mst.state), mst.server, mst.last_error);
-        else
-            snprintf(st, sizeof(st), "%s  %s", mp::StateName(mst.state),
-                     mst.server);
-        ImU32 stc = mst.state == MpState::Connected ? kGreen :
-                    mst.state == MpState::Error ? kRed : kMuted;
-        StatusDot(dl, ImVec2(a.x + S(6), y + S(7)), S(4), stc);
-        Txt(dl, ImVec2(a.x + S(16), y), st, 0.9f, stc);
-        return y + S(18);
-    }
-
-    /* --- in a room: left = podium + room settings, right = member cards --- */
-    bool owner = strcmp(sn.myCid, sn.ownerCid) == 0 && sn.connected;
-    int order[8];
-    SessionOrder(sn, order);
-    float splitX = a.x + S(360);
-    float lx = a.x, rx = splitX + S(16);
-
-    /* LEFT: podium directly under the name row */
-    float ly = y;
-    if (sn.memberCount >= 2)
-        ly = DrawPodium(dl, sn, order, ImVec2(lx, ly),
-                        ImVec2(splitX, ly + S(148))) + S(8);
-    /* LEFT: room settings */
-    SectionHdr(dl, ImVec2(lx, ly), "ROOM");
-    ly += S(28);
-    const char* modes[] = { "rotate", "owner", "assigned" };
-    int mi = strncmp(sn.pickMode, "assigned", 8) == 0 ? 2 :
-             strncmp(sn.pickMode, "owner", 5) == 0 ? 1 : 0;
-    if (owner) {
-        const float ctlX = lx + S(104), ctlW = S(190);
-        Txt(dl, ImVec2(lx, ly + S(4)), "Pick mode", 0.9f, kText);
-        ImGui::SetCursorScreenPos(ImVec2(ctlX, ly));
-        ImGui::SetNextItemWidth(ctlW);
-        if (ImGui::Combo("##pickmode", &mi, modes, 3)) {
-            PanelSE(2);
-            if (mi == 2) {
-                const char* who =
-                    (sn.assignedCid[0] && strcmp(sn.assignedCid, "null") != 0)
-                        ? sn.assignedCid
-                        : (sn.leaderCid[0] && strcmp(sn.leaderCid, "null") != 0)
-                            ? sn.leaderCid : sn.myCid;
-                CmdPickMode("assigned", who);
-            } else {
-                CmdPickMode(modes[mi], nullptr);
-            }
-        }
-        ly += S(36);
-        Txt(dl, ImVec2(lx, ly + S(4)), "Assignee", 0.9f, kText);
-        ImGui::SetCursorScreenPos(ImVec2(ctlX, ly));
-        ImGui::SetNextItemWidth(ctlW);
-        const char* assignedName = "(none)";
-        if (sn.assignedCid[0] && strcmp(sn.assignedCid, "null") != 0)
-            for (int i = 0; i < sn.memberCount; i++)
-                if (strcmp(sn.members[i].cid, sn.assignedCid) == 0)
-                    assignedName = sn.members[i].name;
-        ImGui::BeginDisabled(mi != 2);
-        if (ImGui::BeginCombo("##assign", assignedName)) {
-            for (int i = 0; i < sn.memberCount; i++) {
-                if (ImGui::Selectable(sn.members[i].name)) {
-                    PanelSE(2);
-                    CmdPickMode("assigned", sn.members[i].cid);
-                }
-            }
-            ImGui::EndCombo();
-        }
-        ImGui::EndDisabled();
-        ly += S(36);
-        if (mi == 2) {
-            Txt(dl, ImVec2(ctlX, ly),
-                "Click a member to make them the song picker", 0.8f, kDim);
-            ly += S(22);
-        }
-    } else {
-        Txt(dl, ImVec2(lx, ly + S(4)), "Pick mode", 0.9f, kText);
-        char pm[32];
-        snprintf(pm, sizeof(pm), "%c%s",
-                 sn.pickMode[0] >= 'a' && sn.pickMode[0] <= 'z'
-                     ? sn.pickMode[0] - 32 : sn.pickMode[0],
-                 sn.pickMode + 1);
-        Txt(dl, ImVec2(lx + S(104), ly + S(4)), pm, 0.9f, kMuted);
-        ly += S(36);
-        if (mi == 2) {
-            const char* who = "(none)";
-            if (sn.assignedCid[0] && strcmp(sn.assignedCid, "null") != 0)
-                for (int i = 0; i < sn.memberCount; i++)
-                    if (strcmp(sn.members[i].cid, sn.assignedCid) == 0)
-                        who = sn.members[i].name;
-            Txt(dl, ImVec2(lx, ly + S(4)), "Assignee", 0.9f, kText);
-            Txt(dl, ImVec2(lx + S(104), ly + S(4)), who, 0.9f, kMuted);
-            ly += S(36);
-        }
-    }
-    /* room option: everyone plays the song picker's difficulty */
-    Txt(dl, ImVec2(lx, ly + S(4)), "Difficulty", 0.9f, kText);
-    if (owner) {
-        const char* dopts[] = { "Free - everyone picks", "Same as the song picker" };
-        int di = sn.sameDiff ? 1 : 0;
-        ImGui::SetCursorScreenPos(ImVec2(lx + S(104), ly));
-        ImGui::SetNextItemWidth(S(190));
-        if (ImGui::Combo("##samediff", &di, dopts, 2)) {
-            PanelSE(2);
-            CmdSameDiff(di == 1);
-        }
-    } else {
-        Txt(dl, ImVec2(lx + S(104), ly + S(4)),
-            sn.sameDiff ? "Same as the song picker" : "Free", 0.9f, kMuted);
-    }
-    ly += S(36);
-    if (sn.selPv > 0) {
-        char sl[128];
-        snprintf(sl, sizeof(sl), "Song  pv %d  %s", sn.selPv, sn.selName);
-        Txt(dl, ImVec2(lx, ly), sl, 0.85f, kMuted);
-        ly += S(24);
-    }
-
-    /* RIGHT: member cards */
-    bool assignMode = owner && strcmp(sn.pickMode, "assigned") == 0;
-    float ry = a.y;
-    for (int i = 0; i < sn.memberCount; i++) {
-        const MemberInfo& m = sn.members[order[i]];
-        ImVec2 ra(rx, ry), rb(b.x, ry + S(48));
-        if (MemberRow(dl, sn, m, i, ra, rb, owner,
-                      assignMode && !m.is_leader)) {
-            PanelSE(2);
-            CmdPickMode("assigned", m.cid);
-        }
-        ry += S(56);
-    }
-    /* kick confirmation modal */
-    if (ImGui::BeginPopupModal("Kick?", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
-        const char* who = s_kickCid;
-        for (int i = 0; i < sn.memberCount; i++)
-            if (strcmp(sn.members[i].cid, s_kickCid) == 0)
-                who = sn.members[i].name;
-        ImGui::Text("Kick %s from the room?", who);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(8), S(6)));
-        if (ImGui::Button("Kick", ImVec2(S(100), 0))) {
+        if (FieldRow("code", RowPos(rc), w, "Join Room", s_codeBuf, sizeof(s_codeBuf),
+                     ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_EnterReturnsTrue,
+                     "CODE", "Join", s_codeBuf[0] != 0, "Type a room's 4-letter code to join it") &&
+            s_codeBuf[0]) {
             PanelSE(0);
-            CmdKick(s_kickCid);
-            ImGui::CloseCurrentPopup();
+            CmdLobbyJoin(s_codeBuf);
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(S(100), 0))) {
-            PanelSE(1);
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::PopStyleVar();
-        ImGui::EndPopup();
+        return;
     }
-    return ly > ry - S(8) ? ly : ry - S(8);
+    const bool owner = strcmp(sn.myCid, sn.ownerCid) == 0 && sn.connected;
+    static const char* const modes[] = { "rotate", "owner", "assigned" };
+    static const char* const modeNames[] = { "Rotate", "Owner", "Assigned" };
+    int mi = strncmp(sn.pickMode, "assigned", 8) == 0 ? 2 : strncmp(sn.pickMode, "owner", 5) == 0 ? 1 : 0;
+    const bool hasAssigned = sn.assignedCid[0] && strcmp(sn.assignedCid, "null") != 0;
+    if (int d = OptRow("##pick", RowPos(rc), w, "Song Picker", modeNames[mi],
+                       owner ? "Who picks the song: everyone in turn, the room owner, or one chosen player"
+                             : "Who picks the song (the room owner can change this)", owner)) {
+        PanelSE(2);
+        mi = (mi + d + 3) % 3;
+        if (mi == 2)
+            CmdPickMode("assigned", hasAssigned ? sn.assignedCid
+                                    : (sn.leaderCid[0] && strcmp(sn.leaderCid, "null") != 0) ? sn.leaderCid
+                                    : sn.myCid);
+        else
+            CmdPickMode(modes[mi], nullptr);
+    }
+    if (mi == 2) {
+        int ai = -1;
+        for (int i = 0; i < sn.memberCount; i++)
+            if (hasAssigned && strcmp(sn.members[i].cid, sn.assignedCid) == 0) ai = i;
+        if (int d = OptRow("##assignee", RowPos(rc), w, "Assigned Player",
+                           ai >= 0 ? sn.members[ai].name : "(none)",
+                           owner ? "The player who picks every song - or click a player on the right"
+                                 : "The player who picks every song", owner && sn.memberCount > 0)) {
+            PanelSE(2);
+            ai = ((ai < 0 ? 0 : ai) + d + sn.memberCount) % sn.memberCount;
+            CmdPickMode("assigned", sn.members[ai].cid);
+        }
+    }
+    if (OptRow("##samediff", RowPos(rc), w, "Difficulty", sn.sameDiff ? "Same" : "Free",
+               owner ? "Free: everyone picks their own difficulty. Same: everyone plays the song picker's"
+                     : (sn.sameDiff ? "Everyone plays the song picker's difficulty"
+                                    : "Everyone picks their own difficulty"), owner)) {
+        PanelSE(2);
+        CmdSameDiff(!sn.sameDiff);
+    }
+    if (sn.selPv > 0 && sn.selName[0])
+        OptRow("##song", RowPos(rc), w, "Selected Song", sn.selName[0] ? sn.selName : "-",
+               "The song the picker has selected", false);
+    {
+        static double s_leaveUntil = 0.0;
+        const bool armed = s_confirmLeave && ImGui::GetTime() < s_leaveUntil;
+        if (!armed) s_confirmLeave = false;
+        if (ActionRow("##leave", RowPos(rc), w, armed ? "Click again to leave" : "Leave Room",
+                      "Leave this room")) {
+            if (armed) { s_confirmLeave = false; PanelSE(1); CmdLobbyLeave(); }
+            else { s_confirmLeave = true; s_leaveUntil = ImGui::GetTime() + 3.0; PanelSE(2); }
+        }
+    }
 }
 
-/* ---------------- Settings tab ---------------- */
-static float SettingsTab(const Snapshot& sn, ImVec2 a, ImVec2 b) {
-    (void)b;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float y = a.y;
-
-    SectionHdr(dl, ImVec2(a.x, y), "SERVER");
-    y += S(28);
-    /* server mode: three slanted pills */
-    int mode = Config::mpServerMode == "cloud" ? 2 :
-               Config::mpServerMode == "off" ? 0 : 1;
-    const char* mnames[3] = { "OFF", "LOCAL", "ONLINE" };
-    for (int i = 0; i < 3; i++) {
-        ImVec2 pa(a.x + S(20) + i * S(120), y),
-               pb(pa.x + S(110), pa.y + S(30));
-        if (DivaBtn(pa, pb, mnames[i],
-                    i == mode ? BT_TEAL : BT_DARK, true, 0.95f) && i != mode) {
-            PanelSE(2);
-            mp::SetServerMode(i == 2 ? kServerCloud :
-                              i == 1 ? kServerLocal : kServerOff);
-        }
+/* ---------------- Settings page ---------------- */
+static void SettingsPage(RowCur& rc) {
+    const float w = S(kRowW);
+    static const char* const srv[] = { "Off", "Local", "Online" };
+    int mode = Config::mpServerMode == "cloud" ? 2 : Config::mpServerMode == "off" ? 0 : 1;
+    static char s_srvHelp[160];
+    snprintf(s_srvHelp, sizeof(s_srvHelp),
+             "Off, a server on this network (LAN search + %s:%d), or the online server",
+             Config::mpServerIp.c_str(), Config::mpServerPort);
+    if (int d = OptRow("##srv", RowPos(rc), w, "Server", srv[mode], s_srvHelp)) {
+        PanelSE(2);
+        mode = (mode + d + 3) % 3;
+        mp::SetServerMode(mode == 2 ? kServerCloud : mode == 1 ? kServerLocal : kServerOff);
     }
-    y += S(44);
     if (mode == 2) {
         if (!s_urlInit) {
             strncpy(s_urlBuf, Config::mpCloudUrl.c_str(), sizeof(s_urlBuf) - 1);
             s_urlInit = true;
         }
-        Txt(dl, ImVec2(a.x, y + S(4)), "ONLINE ADDRESS", 0.85f, kMuted);
-        bool ap = DivaInput(ImVec2(a.x + S(140), y), S(280), "##url",
-                            s_urlBuf, sizeof(s_urlBuf),
-                            ImGuiInputTextFlags_EnterReturnsTrue);
-        if (DivaBtn(ImVec2(a.x + S(430), y), ImVec2(a.x + S(500), y + S(26)),
-                    "Apply", BT_DARK, true, 0.85f) || ap) {
+        if (FieldRow("url", RowPos(rc), w, "Online Address", s_urlBuf, sizeof(s_urlBuf),
+                     ImGuiInputTextFlags_EnterReturnsTrue, nullptr, "Apply", true,
+                     "Address of the online server (host[:port][/path])", 330.0f)) {
             PanelSE(0);
             mp::SetCloudUrl(s_urlBuf);
         }
-        y += S(40);
-    } else {
-        char li[96];
-        snprintf(li, sizeof(li), "Local: LAN discovery + server_ip %s:%d",
-                 Config::mpServerIp.c_str(), Config::mpServerPort);
-        Txt(dl, ImVec2(a.x + S(4), y), li, 0.85f, kDim);
-        y += S(32);
     }
-
-    SectionHdr(dl, ImVec2(a.x, y), "NOTIFICATIONS");
-    y += S(28);
-    Txt(dl, ImVec2(a.x + S(20), y + S(4)), "Style", 0.9f, kText);
-    ImGui::SetCursorScreenPos(ImVec2(a.x + S(140), y));
-    ImGui::SetNextItemWidth(S(160));
-    const char* styles[] = { "Portraits", "Text", "Off" };
-    int st = Config::mpNotifyStyle == "text" ? 1 :
-             Config::mpNotifyStyle == "off" ? 2 : 0;
-    if (ImGui::Combo("##notify", &st, styles, 3)) {
+    static const char* const styles[] = { "Portraits", "Text", "Off" };
+    int st = Config::mpNotifyStyle == "text" ? 1 : Config::mpNotifyStyle == "off" ? 2 : 0;
+    if (int d = OptRow("##notify", RowPos(rc), w, "Notifications", styles[st],
+                       "How other players' events show up during a song")) {
         PanelSE(2);
+        st = (st + d + 3) % 3;
         Config::mpNotifyStyle = st == 1 ? "text" : st == 2 ? "off" : "avatars";
         Config::Save();
     }
-    y += S(38);
-    ImGui::SetCursorScreenPos(ImVec2(a.x + S(20), y));
-    bool ra = Config::mpRemoteAvatars;
-    if (ImGui::Checkbox("Custom portraits", &ra)) {
+    if (OptRow("##ravatars", RowPos(rc), w, "Custom Portraits", Config::mpRemoteAvatars ? "ON" : "OFF",
+               "Show portraits other players send for modules this game doesn't have")) {
         PanelSE(2);
-        Config::mpRemoteAvatars = ra;
+        Config::mpRemoteAvatars = !Config::mpRemoteAvatars;
         Config::Save();
     }
-    y += S(28);
-    ImGui::SetCursorScreenPos(ImVec2(a.x + S(20), y));
-    bool chip = Config::mpShowStatus;
-    if (ImGui::Checkbox("Status chip", &chip)) {
+    if (OptRow("##chip", RowPos(rc), w, "Status Chip", Config::mpShowStatus ? "ON" : "OFF",
+               "The small connection status box in the corner")) {
         PanelSE(2);
-        Config::mpShowStatus = chip;
+        Config::mpShowStatus = !Config::mpShowStatus;
         Config::Save();
     }
-    y += S(36);
-
-    SectionHdr(dl, ImVec2(a.x, y), "AUTOPLAY");
-    y += S(28);
-    ImGui::SetCursorScreenPos(ImVec2(a.x + S(20), y));
-    bool apOn = AutoPlay::g_enabled;
-    if (ImGui::Checkbox("##autoplay", &apOn)) {
+    if (OptRow("##ap", RowPos(rc), w, "AutoPlay", AutoPlay::g_enabled ? "ON" : "OFF",
+               "Let the game hit the notes (shown to the other players)")) {
         PanelSE(2);
-        AutoPlay::g_enabled = apOn;
-        ReportAutoPlay(apOn);
+        AutoPlay::g_enabled = !AutoPlay::g_enabled;
+        ReportAutoPlay(AutoPlay::g_enabled);
     }
-    Txt(dl, ImVec2(a.x + S(52), y + S(4)), "Enable AutoPlay", 0.9f, kText);
-    y += S(34);
     if (AutoPlay::g_enabled) {
         static const char* const kApModes[] = {
             "Custom", "Auto", "Pro", "97", "Streak", "Human", "Clutch", "Tie"
         };
-        Txt(dl, ImVec2(a.x + S(20), y + S(4)), "Mode", 0.9f, kText);
-        ImGui::SetCursorScreenPos(ImVec2(a.x + S(140), y));
         int am = AutoPlay::g_mode;
         if (am < 0 || am >= AutoPlay::Mode_Count) am = AutoPlay::Mode_Auto;
-        ImGui::SetNextItemWidth(S(160));
-        if (ImGui::Combo("##apmode", &am, kApModes, AutoPlay::Mode_Count)) {
+        if (int d = OptRow("##apmode", RowPos(rc), w, "AutoPlay Mode", kApModes[am],
+                           "How AutoPlay plays: perfect, human-like, a fixed hit rate...")) {
             PanelSE(2);
-            AutoPlay::g_mode = am;
+            AutoPlay::g_mode = (am + d + AutoPlay::Mode_Count) % AutoPlay::Mode_Count;
             ReportAutoPlay(true);
         }
-        y += S(38);
         if (AutoPlay::g_mode == AutoPlay::Mode_Custom) {
-            Txt(dl, ImVec2(a.x + S(20), y + S(4)), "Hit %", 0.9f, kText);
-            ImGui::SetCursorScreenPos(ImVec2(a.x + S(140), y));
-            int pct = AutoPlay::g_hitPct;
-            ImGui::SetNextItemWidth(S(220));
-            if (ImGui::SliderInt("##appct", &pct, 0, 100)) {
+            char pv[16];
+            snprintf(pv, sizeof(pv), "%d%%", AutoPlay::g_hitPct);
+            if (int d = OptRow("##appct", RowPos(rc), w, "Hit Rate", pv,
+                               "Share of the notes AutoPlay hits (hold Ctrl for steps of 1)")) {
                 PanelSE(2);
-                AutoPlay::g_hitPct = pct;
+                int p = AutoPlay::g_hitPct + d * (ImGui::GetIO().KeyCtrl ? 1 : 5);
+                AutoPlay::g_hitPct = p < 0 ? 0 : (p > 100 ? 100 : p);
                 ReportAutoPlay(true);
             }
-            y += S(34);
         }
     }
-    (void)sn;
-    return y;
 }
 
 /* ---------------- main panel ---------------- */
-static bool s_dragging = false;
-
 void DrawPanel() {
     static bool s_prevOpen = false;
     bool open = OverlayOpen();
@@ -1073,286 +1098,170 @@ void DrawPanel() {
     if (!open) return;
 
     ImGuiIO& io = ImGui::GetIO();
-    s_sc = io.DisplaySize.y / 1080.0f;
-    if (s_sc < 1.0f) s_sc = 1.0f;
-    ImVec2 sz(S(1160), S(620));
-    ImGui::SetNextWindowSize(sz, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(S(760), S(320)),
-                                        ImVec2(io.DisplaySize.x,
-                                               io.DisplaySize.y));
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f,
-                                   io.DisplaySize.y * 0.5f),
-                            ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+    const ImVec2 ds = io.DisplaySize;
+    /* laid out on a 1920x1080 canvas centred in the window */
+    s_sc = ds.x / 1920.0f < ds.y / 1080.0f ? ds.x / 1920.0f : ds.y / 1080.0f;
+    s_ox = (ds.x - 1920.0f * s_sc) * 0.5f;
+    const float oy = (ds.y - 1080.0f * s_sc) * 0.5f;
+    auto Y = [&](float v) { return oy + v * s_sc; };
 
     Snapshot sn;
     GetSnapshot(&sn);
 
-    /* DIVA chrome colours for the stock widgets that remain (combos,
-     * checkboxes, modal) */
-    const ImVec4 kWin(0.040f, 0.086f, 0.150f, 0.96f);   /* deep navy */
-    const ImVec4 kFrame(0.070f, 0.135f, 0.210f, 0.95f);
-    const ImVec4 kTeal4(0.224f, 0.773f, 0.733f, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, kWin);
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.31f, 0.82f, 0.86f, 0.35f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.03f, 0.06f, 0.12f, 0.95f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.07f, 0.16f, 0.26f, 0.95f));
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.05f, 0.12f, 0.20f, 0.95f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(kTeal4.x, kTeal4.y, kTeal4.z, 0.35f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(kTeal4.x, kTeal4.y, kTeal4.z, 0.55f));
-    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(kTeal4.x, kTeal4.y, kTeal4.z, 0.25f));
-    ImGui::PushStyleColor(ImGuiCol_Button, kFrame);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.82f, 0.77f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kTeal4);
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.05f, 0.10f, 0.17f, 0.98f));
-    ImGui::PushStyleColor(ImGuiCol_CheckMark, kTeal4);
-    ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImVec4(0.18f, 0.62f, 0.58f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, kTeal4);
-    ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, ImVec4(kTeal4.x, kTeal4.y, kTeal4.z, 0.35f));
-    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0, 0, 0, 0.55f));
-    ImGui::PushStyleColor(ImGuiCol_ResizeGrip, ImVec4(kTeal4.x, kTeal4.y, kTeal4.z, 0.25f));
-    ImGui::PushStyleColor(ImGuiCol_ResizeGripHovered, ImVec4(0.30f, 0.82f, 0.77f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ResizeGripActive, kTeal4);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.94f, 0.96f, 0.99f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_TextDisabled, ImVec4(0.55f, 0.60f, 0.68f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, S(6));
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ds, ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(8), S(5)));
-
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
-        ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoScrollWithMouse;
-    bool popen = ImGui::Begin("##mppanel", nullptr, flags);
-    if (popen) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground |
+        ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("##mppanel", nullptr, flags)) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
-        ImVec2 wr(wp.x + ws.x, wp.y + ws.y);
+        ImFont* bf = BoldF();
+        const char* prevHelp = s_help;      /* last frame's hover, for the band */
+        s_help = nullptr;
 
-        /* light backdrop */
-        ImGui::GetBackgroundDrawList()->AddRectFilled(
-            ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 90));
+        /* the Options screens' teal backdrop over the game, with a couple
+         * of their diagonal light bands */
+        dl->AddRectFilledMultiColor(ImVec2(0, 0), ds, IM_COL32(0, 150, 214, 238), IM_COL32(0, 186, 222, 238),
+                                    IM_COL32(0, 212, 210, 238), IM_COL32(0, 176, 206, 238));
+        dl->AddQuadFilled(ImVec2(X(1180), 0), ImVec2(X(1300), 0), ImVec2(X(2100), Y(800)), ImVec2(X(1980), Y(800)),
+                          IM_COL32(255, 255, 255, 22));
+        dl->AddQuadFilled(ImVec2(X(1500), 0), ImVec2(X(1540), 0), ImVec2(X(2340), Y(800)), ImVec2(X(2300), Y(800)),
+                          IM_COL32(255, 255, 255, 30));
+        dl->AddQuadFilled(ImVec2(X(1100), Y(1080)), ImVec2(X(1190), Y(1080)), ImVec2(X(1990), Y(280)),
+                          ImVec2(X(1900), Y(280)), IM_COL32(255, 255, 255, 16));
 
-        /* ===== header: slanted blue->cyan banner (Rhythm Game bar) ===== */
-        float hh = S(58);
-        SlantGradH(dl, wp, ImVec2(wr.x, wp.y + hh), -S(26), kHdrL, kHdrR);
-        /* dark rim along the bottom edge */
-        SlantGrad(dl, ImVec2(wp.x, wp.y + hh - S(3)),
-                  ImVec2(wr.x, wp.y + hh), -S(26),
-                  IM_COL32(10, 26, 66, 255), IM_COL32(8, 20, 52, 255));
-        TxtBig(dl, ImVec2(wp.x + S(19), wp.y + (hh - S(30)) * 0.5f + S(1)),
-               "MULTIPLAYER", S(30), IM_COL32(8, 16, 40, 200));
-        TxtBig(dl, ImVec2(wp.x + S(18), wp.y + (hh - S(30)) * 0.5f),
-               "MULTIPLAYER", S(30), IM_COL32_WHITE);
-
-        float hx = wr.x - S(16);
-        /* close X */
-        {
-            float r = S(13);
-            ImVec2 cc(hx - r, wp.y + hh * 0.5f);
-            ImGui::SetCursorScreenPos(ImVec2(cc.x - r, cc.y - r));
-            bool xc = ImGui::InvisibleButton("##x", ImVec2(r * 2, r * 2));
-            bool xh = ImGui::IsItemHovered();
-            dl->AddCircleFilled(cc, r, xh ? IM_COL32(200, 60, 75, 255)
-                                          : IM_COL32(30, 46, 66, 235), 24);
-            dl->AddCircle(cc, r, xh ? kPink : kLineTeal, 24, 1.4f);
-            float d2 = r * 0.42f;
-            dl->AddLine(ImVec2(cc.x - d2, cc.y - d2), ImVec2(cc.x + d2, cc.y + d2),
-                        xh ? IM_COL32_WHITE : kMuted, 2.0f);
-            dl->AddLine(ImVec2(cc.x - d2, cc.y + d2), ImVec2(cc.x + d2, cc.y - d2),
-                        xh ? IM_COL32_WHITE : kMuted, 2.0f);
-            if (xc) { SetOverlayOpen(false); ImGui::End();
-                      ImGui::PopStyleVar(5); ImGui::PopStyleColor(22); return; }
-            hx -= r * 2 + S(8);
+        /* ===== header tab + page tabs ===== */
+        const float hy0 = Y(30), hy1 = Y(88);
+        const float tabW = S(96) + TW(bf, S(38), "Multiplayer") + S(40);
+        dl->AddQuadFilled(ImVec2(0, hy0), ImVec2(X(0) + tabW, hy0), ImVec2(X(0) + tabW - S(26), hy1),
+                          ImVec2(0, hy1), gBlue);
+        {   /* two-player glyph in a white disc */
+            ImVec2 c(X(48), (hy0 + hy1) * 0.5f);
+            dl->AddCircleFilled(c, S(19), IM_COL32_WHITE, 24);
+            dl->AddCircleFilled(ImVec2(c.x - S(6), c.y - S(5)), S(5), gBlue, 12);
+            dl->AddCircleFilled(ImVec2(c.x + S(7), c.y - S(3)), S(4), gBlue, 12);
+            dl->AddRectFilled(ImVec2(c.x - S(13), c.y + S(2)), ImVec2(c.x + S(1), c.y + S(11)), gBlue, S(4));
+            dl->AddRectFilled(ImVec2(c.x + S(2), c.y + S(3)), ImVec2(c.x + S(13), c.y + S(11)), gBlue, S(4));
         }
-        /* leave room button (in a room, before the X) */
-        if (sn.code[0]) {
-            float bw = S(104), bh2 = S(30);
-            ImVec2 la(hx - bw, wp.y + (hh - bh2) * 0.5f), lb(la.x + bw, la.y + bh2);
-            if (DivaBtn(la, lb, s_confirmLeave ? "Confirm?" : "Leave room",
-                        BT_DANGER, true, 0.85f)) {
-                if (s_confirmLeave) {
-                    s_confirmLeave = false;
-                    PanelSE(1);
-                    CmdLobbyLeave();
-                } else {
-                    s_confirmLeave = true;
-                    PanelSE(2);
-                }
-            }
-            hx -= bw + S(10);
-            if (s_confirmLeave && ImGui::IsMouseClicked(0) &&
-                !ImGui::IsItemHovered() &&
-                !(io.MousePos.x >= la.x - S(10) && io.MousePos.x <= lb.x &&
-                  io.MousePos.y >= la.y && io.MousePos.y <= lb.y))
-                s_confirmLeave = false;
-        }
-        /* room chip: ROOM VZAB + copy */
-        if (sn.code[0]) {
-            char rb[24];
-            snprintf(rb, sizeof(rb), "ROOM %s", sn.code);
-            float cw = TxtBigW(rb, S(20)) + S(26);
-            float ch2 = S(30);
-            ImVec2 ca(hx - cw, wp.y + (hh - ch2) * 0.5f),
-                   cb(ca.x + cw, ca.y + ch2);
-            float sk = ch2 * 0.35f;
-            SlantGrad(dl, ca, cb, sk, IM_COL32(18, 34, 64, 240),
-                      IM_COL32(10, 22, 48, 240));
-            SlantLine(dl, ca, cb, sk, IM_COL32(200, 220, 255, 150), 1.4f);
-            dl->AddText(FontLoader::Big() ? FontLoader::Big() : ImGui::GetFont(),
-                        S(20), ImVec2(ca.x + S(14), ca.y + (ch2 - S(20)) * 0.5f - S(1)),
-                        kTealHi, rb);
-            hx -= cw + S(6);
-            /* copy chip */
-            float cw2 = S(52);
-            ImVec2 cca(hx - cw2, ca.y), ccb(cca.x + cw2, cb.y);
-            if (DivaBtn(cca, ccb, "Copy", BT_DARK, true, 0.85f)) {
-                PanelSE(2);
-                ImGui::SetClipboardText(sn.code);
-            }
-            hx -= cw2 + S(12);
-            /* round number */
-            char rd[16];
-            snprintf(rd, sizeof(rd), "round %d", sn.round);
-            Txt(dl, ImVec2(hx - TxtW(rd, 0.85f), wp.y + (hh - ImGui::GetFontSize() * 0.85f) * 0.5f),
-                rd, 0.85f, kDim);
-        }
-
-        /* ===== tab pills ===== */
-        float ty = wp.y + hh + S(8);
-        const char* tabs[2] = { "LOBBY", "SETTINGS" };
+        T(dl, bf, S(38), ImVec2(X(84), (hy0 + hy1) * 0.5f - S(21)), IM_COL32_WHITE, "Multiplayer");
+        float hx = X(0) + tabW + S(26);
+        static const char* const tabs[2] = { "Room", "Settings" };
         for (int i = 0; i < 2; i++) {
-            ImVec2 ta(wp.x + S(18) + i * S(130), ty),
-                   tb(ta.x + S(118), ta.y + S(30));
-            if (DivaBtn(ta, tb, tabs[i], i == s_tab ? BT_YELLOW : BT_GREY,
-                        true, 0.95f) && i != s_tab) {
+            char id[16]; snprintf(id, sizeof(id), "##tab%d", i);
+            if (MiniBtn(id, ImVec2(hx, hy0 + S(7)), ImVec2(hx + S(178), hy1 - S(7)), tabs[i],
+                        i == s_tab ? 0 : 2, true,
+                        i == 0 ? "Your name, the room and its players" : "Server, notifications and AutoPlay") &&
+                i != s_tab) {
                 s_tab = i;
                 PanelSE(2);
             }
+            hx += S(178) + S(16);
         }
-
-        /* header drag (grab anywhere on the bar that isn't a control) */
-        {
-            ImVec2 da(wp.x, wp.y), db(wr.x, wp.y + hh);
-            bool hovHdr = io.MousePos.x >= da.x && io.MousePos.x <= db.x &&
-                          io.MousePos.y >= da.y && io.MousePos.y <= db.y;
-            if (hovHdr && ImGui::IsMouseClicked(0) &&
-                !ImGui::IsAnyItemHovered()) {
-                s_dragging = true;
-            }
-            if (s_dragging) {
-                if (ImGui::IsMouseDown(0)) {
-                    ImVec2 d = ImGui::GetMouseDragDelta(0);
-                    ImVec2 np(wp.x + d.x, wp.y + d.y);
-                    float mg = S(60);
-                    if (np.x < mg - ws.x) np.x = mg - ws.x;
-                    if (np.x > io.DisplaySize.x - mg) np.x = io.DisplaySize.x - mg;
-                    if (np.y < 0.0f) np.y = 0.0f;
-                    if (np.y > io.DisplaySize.y - mg) np.y = io.DisplaySize.y - mg;
-                    ImGui::SetWindowPos(np);
-                    ImGui::ResetMouseDragDelta(0);
-                } else s_dragging = false;
-            }
-        }
-
-        /* ===== content ===== */
-        ImVec2 ca(wp.x + S(22), ty + S(40)),
-               cb(wr.x - S(22), wr.y - S(46));
-        float cbot = (s_tab == 0) ? LobbyTab(sn, ca, cb)
-                                  : SettingsTab(sn, ca, cb);
-        /* fit the window to its content */
-        float want = cbot - wp.y + S(48);
-        if (want < S(300)) want = S(300);
-        float maxh = io.DisplaySize.y - S(40);
-        if (want > maxh) want = maxh;
-        float wantW = (s_tab == 0 && sn.code[0]) ? S(1160) : S(640);
-        if (fabsf(ws.y - want) > S(24) || fabsf(ws.x - wantW) > S(24))
-            ImGui::SetWindowSize(ImVec2(wantW, want));
-
-        /* ===== footer (Switch DrawRoom priority) ===== */
-        float fy = wr.y - S(38);
-        dl->AddLine(ImVec2(wp.x + S(18), fy), ImVec2(wr.x - S(18), fy),
-                    kLineTeal, 1.0f);
-        char foot[220];
-        ImU32 footCol = kMuted;
         if (sn.code[0]) {
-            const char* leadName = "";
-            for (int i = 0; i < sn.memberCount; i++)
-                if (strcmp(sn.members[i].cid, sn.leaderCid) == 0)
-                    leadName = sn.members[i].name;
-            char noSong[120] = ""; int noSongN = 0;
-            for (int i = 0, off = 0; i < sn.memberCount && off < (int)sizeof(noSong) - 44; i++)
-                if (sn.members[i].nosong)
-                    off += snprintf(noSong + off, sizeof(noSong) - off, "%s%s",
-                                    noSongN++ ? ", " : "",
-                                    strcmp(sn.members[i].cid, sn.myCid) == 0
-                                        ? "You" : sn.members[i].name);
-            if (!sn.connected) {
-                int left = sn.offlineMs >= 0 ? 30 - sn.offlineMs / 1000 : 30;
-                snprintf(foot, sizeof(foot),
-                         "Connection lost - reconnecting (leaving the room in %ds)",
-                         left < 0 ? 0 : left);
-                footCol = kYellow;
-            } else if (sn.voteKind[0])
-                snprintf(foot, sizeof(foot), "%s vote: %d/%d agreed (%ds left)",
-                         strcmp(sn.voteKind, "pause") == 0 ? "Pause" : "Resume",
-                         sn.voteAgreed, sn.voteNeed, sn.voteEndsIn);
-            else if (sn.groupPaused)
-                snprintf(foot, sizeof(foot), "GROUP PAUSED");
-            else if (noSongN > 0) {
-                snprintf(foot, sizeof(foot), "%s %s have this song", noSong,
-                         noSongN == 1 ? "doesn't" : "don't");
-                footCol = kRed;
-            } else if (sn.notReady[0])
-                snprintf(foot, sizeof(foot), "Not ready: %s", sn.notReady);
-            else if (sn.statusLine[0] && sn.phase != 1)
-                snprintf(foot, sizeof(foot), "%s", sn.statusLine);
-            else {
-                const char* mode = strcmp(sn.pickMode, "owner") == 0 ? "Owner picks"
-                                 : (strcmp(sn.pickMode, "assigned") == 0 ? "Assigned" : "Rotate");
-                const char* sd = sn.sameDiff ? "  |  Same difficulty" : "";
-                if (strcmp(sn.leaderCid, sn.myCid) == 0)
-                    snprintf(foot, sizeof(foot), "You're picking the song  |  %s%s", mode, sd);
-                else
-                    snprintf(foot, sizeof(foot), "%s is picking the song  |  %s%s",
-                             leadName[0] ? leadName : "The leader", mode, sd);
+            char rb[24];
+            snprintf(rb, sizeof(rb), "ROOM %s", sn.code);
+            hx += S(22);
+            TOut(dl, bf, S(38), ImVec2(hx, (hy0 + hy1) * 0.5f - S(21)), rb, IM_COL32(0, 96, 150, 255));
+            hx += TW(bf, S(38), rb) + S(18);
+            if (MiniBtn("##copy", ImVec2(hx, hy0 + S(10)), ImVec2(hx + S(116), hy1 - S(10)), "Copy", 2, true,
+                        "Copy the room code to the clipboard")) {
+                PanelSE(2);
+                ImGui::SetClipboardText(sn.code);
             }
-        } else {
-            MpStatus mst;
-            mp::GetStatus(&mst);
-            if (mst.state == MpState::Connected)
-                snprintf(foot, sizeof(foot), "%s  %s  %d ms",
-                         mp::StateName(mst.state), mst.server, mst.rtt_ms);
-            else if (mst.last_error[0])
-                snprintf(foot, sizeof(foot), "%s  %s  (%s)",
-                         mp::StateName(mst.state), mst.server, mst.last_error);
-            else
-                snprintf(foot, sizeof(foot), "%s  %s",
-                         mp::StateName(mst.state), mst.server);
+            hx += S(116) + S(18);
+            if (sn.round > 0) {
+                char rd[20];
+                snprintf(rd, sizeof(rd), "Round %d", sn.round);
+                TOut(dl, bf, S(26), ImVec2(hx, (hy0 + hy1) * 0.5f - S(14)), rd, IM_COL32(0, 96, 150, 255));
+            }
         }
-        Txt(dl, ImVec2(wp.x + S(22), fy + S(9)), foot, 0.88f, footCol);
-        /* own status + F8 hint, right side */
-        float rx = wr.x - S(22);
-        Txt(dl, ImVec2(rx - TxtW("F8 close", 0.82f), fy + S(10)), "F8 close",
-            0.82f, kDim);
-        rx -= TxtW("F8 close", 0.82f) + S(14);
+
+        /* ===== body: light slanted sheet with a blue foot strip ===== */
+        dl->AddQuadFilled(ImVec2(0, hy1), ImVec2(X(1060), hy1), ImVec2(X(1196), Y(912)), ImVec2(0, Y(912)),
+                          gBody0);
+        dl->AddQuadFilled(ImVec2(0, Y(600)), ImVec2(X(1145), Y(600)), ImVec2(X(1196), Y(912)), ImVec2(0, Y(912)),
+                          IM_COL32(176, 244, 248, 70));
+        dl->AddQuadFilled(ImVec2(X(190), Y(912)), ImVec2(X(1196), Y(912)), ImVec2(X(1199), Y(930)),
+                          ImVec2(X(190), Y(930)), gBlue);
+
+        RowCur rc = { 0, Y(112) };
+        if (s_tab == 0) RoomPage(sn, rc);
+        else SettingsPage(rc);
+
+        /* ===== players (right of the sheet) ===== */
+        if (sn.code[0]) {
+            const bool owner = strcmp(sn.myCid, sn.ownerCid) == 0 && sn.connected;
+            const bool assignMode = owner && strcmp(sn.pickMode, "assigned") == 0;
+            int order[8];
+            SessionOrder(sn, order);
+            const float px0 = X(1236), pw = S(652);
+            float py = Y(108);
+            char ph[24];
+            snprintf(ph, sizeof(ph), "Players  %d", sn.memberCount);
+            const float phw = TW(bf, S(28), ph) + S(60);
+            dl->AddQuadFilled(ImVec2(px0, py), ImVec2(px0 + phw, py), ImVec2(px0 + phw - S(18), py + S(42)),
+                              ImVec2(px0, py + S(42)), gBlue);
+            T(dl, bf, S(28), ImVec2(px0 + S(20), py + S(5)), IM_COL32_WHITE, ph);
+            py += S(54);
+            if (sn.memberCount >= 2) {
+                /* the podium helper is laid out for a small window: draw it
+                 * 1.5x with a matching font size */
+                const float keep = s_sc;
+                s_sc *= 1.5f;
+                ImGui::SetWindowFontScale(S(20) / ImGui::GetFont()->FontSize);
+                py = DrawPodium(dl, sn, order, ImVec2(px0, py), ImVec2(px0 + pw, py + S(148))) + keep * 12.0f;
+                ImGui::SetWindowFontScale(1.0f);
+                s_sc = keep;
+            }
+            for (int i = 0; i < sn.memberCount; i++) {
+                const MemberInfo& m = sn.members[order[i]];
+                if (py + S(68) > Y(934)) break;
+                if (PlayerRow(dl, sn, m, i, ImVec2(px0, py), pw, owner, assignMode && !m.is_leader)) {
+                    PanelSE(2);
+                    CmdPickMode("assigned", m.cid);
+                }
+                py += S(75);
+            }
+        }
+
+        /* ===== help band + title tag ===== */
+        const float by0 = Y(938), by1 = Y(1002);
+        dl->AddRectFilled(ImVec2(0, by0), ImVec2(ds.x, by1), gBand);
+        dl->AddQuadFilled(ImVec2(X(1318), Y(930)), ImVec2(ds.x, Y(930)), ImVec2(ds.x, by1),
+                          ImVec2(X(1284), by1), gTitleTag);
+        TOut(dl, bf, S(62), ImVec2(X(1372), Y(931)), "Multiplayer", IM_COL32(0, 104, 196, 255));
+        {
+            char st[220];
+            ImU32 col = IM_COL32_WHITE;
+            const char* text = prevHelp;
+            if (!text) { col = StatusText(sn, st, sizeof(st)); text = st; }
+            ImFont* hf = FontFor(text);
+            char fb[220];
+            Fit(hf, S(27), text, X(1260) - X(70), fb, sizeof(fb));
+            T(dl, hf, S(27), ImVec2(X(70), (by0 + by1) * 0.5f - S(15)), col, fb);
+        }
+
+        /* ===== footer: own status, key hints ===== */
+        dl->AddRectFilled(ImVec2(0, by1), ds, gFooter);
+        const float fcy = (by1 + ds.y) * 0.5f;
+        float rx = ds.x - (s_ox + S(44));
+        rx = KeyHint(dl, rx, fcy, "Esc", "Back");
+        rx = KeyHint(dl, rx, fcy, "F8", "Close");
+        rx = KeyHint(dl, rx, fcy, "Click", "Select");
         if (sn.code[0])
             for (int i = 0; i < sn.memberCount; i++)
                 if (strcmp(sn.members[i].cid, sn.myCid) == 0) {
                     const char* ms = MemberStatus(sn.members[i]);
-                    StatusDot(dl, ImVec2(rx - TxtW(ms, 0.88f) - S(9),
-                                         fy + S(15)), S(4), MemberDot(sn.members[i]));
-                    Txt(dl, ImVec2(rx - TxtW(ms, 0.88f), fy + S(9)), ms,
-                        0.88f, MemberDot(sn.members[i]));
+                    StatusDot(dl, ImVec2(X(56), fcy), S(7), MemberDot(sn.members[i]));
+                    T(dl, bf, S(25), ImVec2(X(74), fcy - S(14)), gKeyText, ms);
                     break;
                 }
-        ImGui::End();
-    } else {
-        ImGui::End();
     }
-    ImGui::PopStyleVar(5);
-    ImGui::PopStyleColor(22);
+    ImGui::End();
+    ImGui::PopStyleVar(2);
 }
 
 } // namespace mp::lobby

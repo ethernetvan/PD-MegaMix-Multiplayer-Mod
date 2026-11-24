@@ -1080,7 +1080,7 @@ void DrawBanners() {
      * the note area clear); otherwise top-centre (above the overlay panel
      * while it is open, else below the top UI) */
     const bool song = s.inSong && !OverlayOpen();
-    float top = song ? 62 * k : (OverlayOpen() ? 6 * k : 60 * k);
+    float top = song ? 62 * k : (OverlayOpen() ? 548 * k : 60 * k);
     if (song && AutoPlay::IndicatorVisible())
         top += 30 * k;   /* banners stack below the AUTO pill */
     int i0 = song && s.bannerCount > 2 ? s.bannerCount - 2 : 0;
