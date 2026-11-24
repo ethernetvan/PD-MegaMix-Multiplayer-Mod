@@ -60,7 +60,9 @@ void DrawSelBadge(ImVec2 hudOff);
 
 /* Commands from panel buttons / dbg_cmd. */
 void CmdLobbyCreate();
-void CmdLobbyJoin(const char* code);
+/* quiet: the caller's screen shows the outcome itself (Snapshot.join*),
+ * so a refusal only becomes a banner when the overlay isn't open */
+void CmdLobbyJoin(const char* code, bool quiet = false);
 void CmdLobbyLeave();
 
 /* Emergency exit path: drop the group-pause state and release any held
@@ -84,6 +86,8 @@ void DbgSelLists(const int32_t* pvs, int n);
 
 /* which version of the mod a member runs (lobby `plat`) */
 enum { PLAT_UNKNOWN = 0, PLAT_SWITCH = 1, PLAT_PC = 2 };
+/* a room join asked with CmdLobbyJoin (Snapshot.joinState) */
+enum { JOIN_IDLE = 0, JOIN_PENDING = 1, JOIN_FAILED = 2 };
 
 /* For MpUi: snapshot getters (copies; safe to call on UI thread). */
 struct MemberInfo { char cid[20]; char name[40]; bool connected, is_leader,
@@ -158,6 +162,11 @@ struct Snapshot {
     int32_t  resPanelMs;
     bool     resCanReopen;
     int      myDiff, myEd;    /* this console's song-select difficulty */
+    /* the last CmdLobbyJoin: JOIN_*, the code it asked for and, once it
+     * failed, why (the join screen shows it) */
+    int      joinState;
+    char     joinCode[8];
+    char     joinErr[72];
 };
 
 /* group pause / pick mode commands */

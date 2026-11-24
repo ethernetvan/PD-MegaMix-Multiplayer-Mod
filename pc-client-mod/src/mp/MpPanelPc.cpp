@@ -516,6 +516,13 @@ static float Tag(ImDrawList* dl, ImVec2 p, float h, const char* s,
 static char s_nameBuf[40] = "";
 static bool s_nameInit = false;
 static char s_codeBuf[8] = "";
+/* Join Room keeps showing what became of the code as it was submitted,
+ * until it is edited: a line for the help band + a marked field */
+static char  s_codeSent[8] = "";
+static bool  s_joinShown = false;
+static char  s_joinNote[80] = "";
+static ImU32 s_joinNoteCol = 0;
+static bool  s_joinBad = false;
 static char s_urlBuf[160] = "";
 static bool s_urlInit = false;
 static bool s_confirmLeave = false;
@@ -609,6 +616,9 @@ static const ImU32 gRow0      = IM_COL32(255, 255, 255, 255);  /* white row */
 static const ImU32 gRow1      = IM_COL32(238, 240, 241, 255);
 static const ImU32 gRowShadow = IM_COL32(120, 170, 180, 120);
 static const ImU32 gRowText   = IM_COL32(139, 141, 147, 255);  /* grey label */
+static const ImU32 gRowOff    = IM_COL32(198, 201, 205, 255);  /* label of a row that can't be used */
+static const ImU32 gWarn      = IM_COL32(255, 232, 120, 255);  /* warning text on the help band */
+static const ImU32 gBad       = IM_COL32(226, 44, 96, 255);    /* refused input */
 static const ImU32 gInk       = IM_COL32(74, 80, 92, 255);     /* dark text on white */
 static const ImU32 gSel0      = IM_COL32(0, 208, 214, 255);    /* selected teal */
 static const ImU32 gSel1      = IM_COL32(0, 186, 192, 255);
@@ -701,12 +711,13 @@ static void RowPlate(ImDrawList* dl, ImVec2 a, ImVec2 b, bool sel) {
         HexBar(dl, a, b, gRow0, gRow1);
     }
 }
-static void RowLabel(ImDrawList* dl, ImVec2 a, ImVec2 b, const char* label, bool sel, float px = 0.0f) {
+static void RowLabel(ImDrawList* dl, ImVec2 a, ImVec2 b, const char* label, bool sel, float px = 0.0f,
+                     ImU32 col = gRowText) {
     if (px <= 0.0f) px = S(38);
     ImFont* f = BoldF();
     ImVec2 p(a.x + S(46), (a.y + b.y) * 0.5f - px * 0.5f - S(1));
     if (sel) TOut(dl, f, px, p, label);
-    else T(dl, f, px, p, gRowText, label);
+    else T(dl, f, px, p, col, label);
 }
 static void Tri(ImDrawList* dl, ImVec2 c, float r, bool left, ImU32 col) {
     const float d = left ? -1.0f : 1.0f;
@@ -779,7 +790,7 @@ static bool MiniBtn(const char* id, ImVec2 a, ImVec2 b, const char* label, int k
 /* "Label  [text field]  [button]" row; returns true on Enter or the button */
 static bool FieldRow(const char* id, ImVec2 a, float w, const char* label, char* buf, int n,
                      ImGuiInputTextFlags flags, const char* hint, const char* btn,
-                     bool btnEnabled, const char* help, float labelW = 300.0f) {
+                     bool btnEnabled, const char* help, float labelW = 300.0f, bool bad = false) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 b(a.x + w, a.y + S(kRowH));
     const bool over = ImGui::IsMouseHoveringRect(a, b);
@@ -811,7 +822,8 @@ static bool FieldRow(const char* id, ImVec2 a, float w, const char* label, char*
     ImGui::PopStyleColor(6);
     ImGui::SetWindowFontScale(1.0f);
     ImGui::PopFont();
-    dl->AddRect(fa, fb, act ? gSel1 : IM_COL32(196, 200, 202, 255), S(8), 0, act ? S(3) : S(1.5f));
+    dl->AddRect(fa, fb, bad ? gBad : act ? gSel1 : IM_COL32(196, 200, 202, 255), S(8), 0,
+                bad || act ? S(3) : S(1.5f));
     if (btn) {
         char bid[48];
         snprintf(bid, sizeof(bid), "##b%s", id);
@@ -830,9 +842,9 @@ static bool ActionRow(const char* id, ImVec2 a, float w, const char* label, cons
     ImGui::SetCursorScreenPos(a);
     bool clicked = ImGui::InvisibleButton(id, ImVec2(w, S(kRowH)));
     bool hov = enabled && ImGui::IsItemHovered();
-    if (hov && help) s_help = help;
+    if (ImGui::IsItemHovered() && help) s_help = help;   /* a disabled row still says why */
     RowPlate(dl, a, b, hov);
-    RowLabel(dl, a, b, label, hov);
+    RowLabel(dl, a, b, label, hov, 0.0f, enabled ? gRowText : gRowOff);
     return enabled && clicked;
 }
 
@@ -960,6 +972,10 @@ static bool PlayerRow(ImDrawList* dl, const Snapshot& sn, const MemberInfo& m, i
 static ImU32 StatusText(const Snapshot& sn, char* foot, int n) {
     ImU32 col = IM_COL32_WHITE;
     if (!sn.code[0]) {
+        if (s_joinNote[0]) {
+            snprintf(foot, n, "%s", s_joinNote);
+            return s_joinNoteCol;
+        }
         MpStatus mst;
         mp::GetStatus(&mst);
         if (mst.state == MpState::Connected)
@@ -1003,6 +1019,29 @@ static ImU32 StatusText(const Snapshot& sn, char* foot, int n) {
     return col;
 }
 
+/* what became of the code as Join Room submitted it; empty once the code
+ * is edited or the room opened */
+static void UpdateJoinNote(const Snapshot& sn) {
+    static int s_prevJoin = JOIN_IDLE;
+    if (sn.joinState == JOIN_FAILED && s_prevJoin == JOIN_PENDING && s_joinShown)
+        PanelSE(1);                       /* the server refused the code */
+    s_prevJoin = sn.joinState;
+    s_joinNote[0] = 0;
+    s_joinBad = false;
+    s_joinNoteCol = gWarn;
+    if (sn.code[0]) s_joinShown = false;  /* in a room: that join is over */
+    if (!s_joinShown || strcmp(s_codeBuf, s_codeSent) != 0) return;
+    if (sn.joinState == JOIN_PENDING) {
+        snprintf(s_joinNote, sizeof(s_joinNote), "Joining room %s...", sn.joinCode);
+        s_joinNoteCol = IM_COL32_WHITE;
+    } else if (sn.joinState == JOIN_FAILED) {
+        snprintf(s_joinNote, sizeof(s_joinNote), "%s", sn.joinErr);
+        s_joinBad = true;
+    } else if (!sn.connected) {
+        snprintf(s_joinNote, sizeof(s_joinNote), "Not connected to a server yet - can't join a room");
+    }
+}
+
 static const float kRowStep = 90.0f, kRowW = 900.0f, kRowStagger = 20.0f;
 struct RowCur { int i; float y; };
 static ImVec2 RowPos(RowCur& c) {
@@ -1027,16 +1066,26 @@ static void RoomPage(const Snapshot& sn, RowCur& rc) {
         CmdSetName(s_nameBuf);
     }
     if (!sn.code[0]) {
-        if (ActionRow("##create", RowPos(rc), w, "Create Room", "Open a new room and get its 4-letter code")) {
+        /* rooms live on the server: both rows are off until it is reached */
+        const bool online = sn.connected;
+        static const char* const kOffHelp = "Not connected to a server yet - see the Settings page";
+        if (ActionRow("##create", RowPos(rc), w, "Create Room",
+                      online ? "Open a new room and get its 4-letter code" : kOffHelp, online)) {
             PanelSE(0);
             CmdLobbyCreate();
         }
+        /* Enter in the field still submits while offline or with the button
+         * off: the outcome goes to the help band either way */
         if (FieldRow("code", RowPos(rc), w, "Join Room", s_codeBuf, sizeof(s_codeBuf),
                      ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_EnterReturnsTrue,
-                     "CODE", "Join", s_codeBuf[0] != 0, "Type a room's 4-letter code to join it") &&
+                     "CODE", "Join", s_codeBuf[0] != 0 && online,
+                     s_joinNote[0] ? s_joinNote : online ? "Type a room's 4-letter code to join it" : kOffHelp,
+                     300.0f, s_joinBad) &&
             s_codeBuf[0]) {
-            PanelSE(0);
-            CmdLobbyJoin(s_codeBuf);
+            PanelSE(online ? 0 : 1);
+            CmdLobbyJoin(s_codeBuf, true);
+            memcpy(s_codeSent, s_codeBuf, sizeof(s_codeSent));
+            s_joinShown = true;
         }
         return;
     }
@@ -1190,6 +1239,7 @@ void DrawPanel() {
             s_nameInit = false;
             s_urlInit = false;
             s_confirmLeave = false;
+            s_joinShown = false;
         }
     }
     if (!open) return;
@@ -1204,6 +1254,7 @@ void DrawPanel() {
 
     Snapshot sn;
     GetSnapshot(&sn);
+    UpdateJoinNote(sn);
 
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ds, ImGuiCond_Always);
@@ -1368,7 +1419,8 @@ void DrawPanel() {
             char st[220];
             ImU32 col = IM_COL32_WHITE;
             const char* text = prevHelp;
-            if (!text) { col = StatusText(sn, st, sizeof(st)); text = st; }
+            if (!text || !*text) { col = StatusText(sn, st, sizeof(st)); text = st; }
+            else if (text == s_joinNote) col = s_joinNoteCol;
             ImFont* hf = FontFor(text);
             char fb[220];
             Fit(hf, S(27), text, X(1260) - X(70), fb, sizeof(fb));

@@ -211,6 +211,14 @@ static char  s_voteKind[8] = "";
 static int   s_voteAgreed = 0, s_voteNeed = 0, s_voteEndsIn = 0;
 static bool  s_voteExpired = false;
 static bool  s_overlayOpen = false;
+/* the last room join (Snapshot.join*): the server answers a good one
+ * with `lobby`, a bad one with `lobby_error`, a lost one not at all */
+static int   s_joinState = JOIN_IDLE;
+static char  s_joinCode[8] = "";
+static char  s_joinErr[72] = "";
+static int64_t s_joinAt = 0;
+static bool  s_joinQuiet = false;     /* asked from the join screen */
+static const int64_t kJoinTimeoutMs = 6000;
 static int64_t s_ovlClosedAt = -1;   /* ms; suppresses ZR re-open in Hints */
 
 struct InSlot { uint16_t len; char data[4094]; };
@@ -355,6 +363,18 @@ static void PushBanner(const char* fmt, ...) {
     va_end(ap);
     b.ttl = 3.0f;
     WriteLog("[MP-L] banner: %s\n", b.text);
+}
+
+/* the join didn't happen: keep why for the join screen, and say it in a
+ * banner unless that screen is up to show it */
+static void JoinFail(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s_joinErr, sizeof(s_joinErr), fmt, ap);
+    va_end(ap);
+    s_joinState = JOIN_FAILED;
+    WriteLog("[MP-L] join '%s' failed: %s\n", s_joinCode, s_joinErr);
+    if (!s_joinQuiet || !s_overlayOpen) PushBanner("%s", s_joinErr);
 }
 
 static void SetPhase(LPhase p, const char* status) {
@@ -869,6 +889,7 @@ static void ProcessLine(const char* line) {
     if (strcmp(t, "lobby") == 0) {
         HandleLobby(line, tok, ntok);
         s_expectLobby = false;
+        s_joinState = JOIN_IDLE;
         if (s_phase == L_NONE || s_phase == L_DROPPED) {
             ReportAutoPlay(AutoPlay::g_enabled);
             ReportScene();
@@ -893,6 +914,21 @@ static void ProcessLine(const char* line) {
     if (strcmp(t, "lobby_error") == 0) {
         char r[24] = ""; int i = mpjson::Find(line, tok, ntok, "code");
         if (i >= 0) mpjson::Copy(line, tok[i], r, sizeof(r));
+        /* the answer to our join */
+        if (s_joinState == JOIN_PENDING) {
+            if (strcmp(r, "not_found") == 0) {
+                JoinFail("Room %s not found - check the code", s_joinCode);
+                return;
+            }
+            if (strcmp(r, "full") == 0) {
+                JoinFail("Room %s is full", s_joinCode);
+                return;
+            }
+            if (strcmp(r, "already_in_lobby") == 0) {
+                JoinFail("You're already in a room");
+                return;
+            }
+        }
         PushBanner("Lobby error: %s", r);
         return;
     }
@@ -1264,6 +1300,11 @@ void Pump() {
     if (!s_connected && s_code[0] && s_offlineSince > 0 &&
         (int64_t)now - s_offlineSince >= 30000)
         LocalLeave("Disconnected for 30 seconds - left the room");
+    if (s_joinState == JOIN_PENDING) {
+        if (!s_connected) JoinFail("Connection lost - try again");
+        else if ((int64_t)now - s_joinAt >= kJoinTimeoutMs)
+            JoinFail("No answer from the server - try again");
+    }
 
     for (int i = 0; i < s_bannerCount; i++)
         s_banners[i].ttl -= 1.0f / 60.0f;
@@ -2296,6 +2337,9 @@ void GetSnapshot(Snapshot* out) {
     memset(out, 0, sizeof(*out));
     out->phase = (int)s_phase;
     out->connected = s_connected;
+    out->joinState = s_joinState;
+    strncpy(out->joinCode, s_joinCode, sizeof(out->joinCode) - 1);
+    strncpy(out->joinErr, s_joinErr, sizeof(out->joinErr) - 1);
     out->offlineMs = (!s_connected && s_offlineSince > 0)
         ? (int32_t)((int64_t)NowMs() - s_offlineSince) : -1;
     out->inSongSelect = s_selActive;
@@ -2432,7 +2476,16 @@ void Init() {
 }
 
 /* panel/dbg commands */
-void CmdLobbyCreate() { SendLine("{\"t\":\"lobby_create\"}"); }
+/* never queued while offline: the request would reach the server
+ * whenever the session comes back, long after it was asked for */
+void CmdLobbyCreate() {
+    std::lock_guard<std::recursive_mutex> lk(s_mtx);
+    if (!s_connected) {
+        PushBanner("Not connected to the server");
+        return;
+    }
+    SendLine("{\"t\":\"lobby_create\"}");
+}
 
 void DbgSelLists(const int32_t* pvs, int n) {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
@@ -2441,13 +2494,36 @@ void DbgSelLists(const int32_t* pvs, int n) {
     s_slN = m;
     s_slPending = true;
 }
-void CmdLobbyJoin(const char* code) {
-    char m[80];
+void CmdLobbyJoin(const char* code, bool quiet) {
+    std::lock_guard<std::recursive_mutex> lk(s_mtx);
+    if (s_joinState == JOIN_PENDING) return;   /* one at a time */
     char up[8] = "";
-    for (int i = 0; code && code[i] && i < 6; i++)
-        up[i] = (code[i] >= 'a' && code[i] <= 'z') ? code[i] - 32 : code[i];
+    int n = 0;
+    bool ok = code && code[0];
+    for (; code && code[n] && n < 7; n++) {
+        char ch = code[n];
+        up[n] = (ch >= 'a' && ch <= 'z') ? ch - 32 : ch;
+        /* letters / digits only (also keeps the JSON line valid) */
+        if (!((up[n] >= 'A' && up[n] <= 'Z') || (up[n] >= '0' && up[n] <= '9')))
+            ok = false;
+    }
+    memcpy(s_joinCode, up, sizeof(s_joinCode));
+    s_joinQuiet = quiet;
+    if (!ok) { JoinFail("Room codes are 4 letters"); return; }
+    if (!s_connected) {
+        /* nothing was asked, so nothing failed: the join screen shows the
+         * offline state for as long as it lasts */
+        s_joinState = JOIN_IDLE;
+        WriteLog("[MP-L] join '%s' not sent: offline\n", s_joinCode);
+        if (!quiet || !s_overlayOpen) PushBanner("Not connected to the server");
+        return;
+    }
+    char m[80];
     snprintf(m, sizeof(m), "{\"t\":\"lobby_join\",\"code\":\"%s\"}", up);
     SendLine(m);
+    s_joinState = JOIN_PENDING;
+    s_joinErr[0] = 0;
+    s_joinAt = (int64_t)NowMs();
 }
 void CmdLobbyLeave() {
     std::lock_guard<std::recursive_mutex> lk(s_mtx);
