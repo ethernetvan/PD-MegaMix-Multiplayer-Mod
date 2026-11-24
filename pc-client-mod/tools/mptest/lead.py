@@ -113,6 +113,22 @@ def dbg_last():
     if not ls: return {}
     d=dict(re.findall(r"(\w+)=([-\d.]+)",ls[-1])); d["t"]=ls[-1][1:9]; return d
 
+def nopause():
+    """Never pause on focus loss: exe+0x2B8120 is the only reader of the
+    background-pause byte (movzx eax,[exe+0x14AB9E8]; ret) — patch it to
+    `mov eax,1; ret; nop`. The MP mod rewrites the byte every frame but
+    never this code, so the patch sticks for the process lifetime."""
+    p = k.OpenProcess(0x38, False, pid())          # VM_OP|VM_READ|VM_WRITE
+    addr = ctypes.c_void_p(0x140000000 + 0x2B8120)
+    old = ctypes.c_ulong(0)
+    k.VirtualProtectEx(p, addr, 7, 0x40, ctypes.byref(old))  # RWX
+    buf = ctypes.create_string_buffer(b"\xB8\x01\x00\x00\x00\xC3\x90")
+    w = ctypes.c_size_t(0)
+    k.WriteProcessMemory(p, addr, buf, 7, ctypes.byref(w))
+    k.VirtualProtectEx(p, addr, 7, old.value, ctypes.byref(old))
+    k.CloseHandle(p)
+    return w.value == 7
+
 def unfocus_game():
     """Test aid: if the game window is foreground, minimize it through its
     own system menu (Windows then activates the previously used window) and
