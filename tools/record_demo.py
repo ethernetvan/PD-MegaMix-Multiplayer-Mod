@@ -223,7 +223,7 @@ KB_KEYS = {c: (x, 531) for c, x in KB_ROW1.items()}
 KB_KEYS.update({c: (x, 575) for c, x in KB_ROW2.items()})
 KB_KEYS.update({c: (x, 619) for c, x in KB_ROW3.items()})
 
-BOT_NAMES = ["Rin", "Len", "Luka", "Kaito", "Neru"]
+BOT_NAMES = ["Rin", "Len", "Luka", "Kaito", "Meiko"]
 # demo song + fallbacks: Ievan Polkka (~2:27), Blackjack (~2:41),
 # The World is Mine (~2:50). Note: 637 Senbonzakura -F edition- measured
 # ~3:38 in-game - too long for the demo.
