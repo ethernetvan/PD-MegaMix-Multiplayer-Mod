@@ -515,7 +515,7 @@ enum class MpCmdType : uint8_t {
     LobbyCreate, LobbyJoin, LobbyLeave, SetName, Overlay, Cursor, PeekAvatar,
     PauseReq, ResumeReq,
     PokeAvatar, DumpAvatar, MenuCursor, SelLists, Autoplay, MenuHolds,
-    Glow, SprTest, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode, CloudUrl, Keylog, RawTap, VkTap, WatchP, WatchOff, DevTap, TraceTap, SprTrace
+    Glow, SprTest, NotifyStyle, PopupTest, ModuleDump, RemoteAvatars, ServerMode, CloudUrl, SameDiff, Keylog, RawTap, VkTap, WatchP, WatchOff, DevTap, TraceTap, SprTrace
 };
 struct MpCmd {
     MpCmdType type;
@@ -617,6 +617,11 @@ static void PushDbgCmd(const char* line, jsmntok_t* tok, int ntok) {
     } else if (strcmp(cmd, "remote_avatars") == 0) {
         /* {cmd:remote_avatars, on:bool} - same as the overlay toggle */
         c.type = MpCmdType::RemoteAvatars;
+        int o = mpjson::Find(line, tok, ntok, "on");
+        c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
+    } else if (strcmp(cmd, "same_diff") == 0) {
+        /* {cmd:same_diff, on:bool} - the ROOM CONFIG toggle (owner only) */
+        c.type = MpCmdType::SameDiff;
         int o = mpjson::Find(line, tok, ntok, "on");
         c.a = (o >= 0 && line[tok[o].start] == 't') ? 1 : 0;
     } else if (strcmp(cmd, "cloud_url") == 0) {
@@ -841,6 +846,7 @@ void OnFrame() {
                 break;
             case MpCmdType::ModuleDump:  moduledb::DbgDump(); break;
             case MpCmdType::RemoteAvatars: lobby::SetRemoteAvatars(c.a != 0); break;
+            case MpCmdType::SameDiff: lobby::CmdSameDiff(c.a != 0); break;
             case MpCmdType::ServerMode:  SetServerMode((ServerMode)c.a); break;
             case MpCmdType::CloudUrl:    SetCloudUrl(c.str); break;
             default: break;
@@ -1202,7 +1208,7 @@ static bool SayHello() {
     mpjson::EscapeInto(escId, sizeof(escId), Config::mpClientId.c_str());
     char line[256];
     snprintf(line, sizeof(line),
-             "{\"t\":\"hello\",\"proto\":1,\"mod\":\"%s\",\"game\":\"mm+1.03\",\"cid\":\"%s\",\"name\":\"%s\"}\n",
+             "{\"t\":\"hello\",\"proto\":1,\"mod\":\"%s\",\"game\":\"mm+1.03\",\"plat\":\"pc\",\"cid\":\"%s\",\"name\":\"%s\"}\n",
              "pc-0.1.0-dev+" __DATE__ " " __TIME__, escId, escName);
     if (!SendAll(line, strlen(line))) { SetError("hello send failed"); return false; }
 

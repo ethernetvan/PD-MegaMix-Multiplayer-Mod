@@ -106,6 +106,7 @@ constexpr size_t STATE      = 0x68;
 constexpr size_t BUSY       = 0x2587C;
 constexpr size_t INDEX      = 0x25960;
 constexpr size_t LISTS      = 0x25DD0;   /* libcxx_vector_base<pvsel::PvData>[32] */
+constexpr size_t RANDOM_PV  = 0x260D8;   /* pvsel::PvData: the Random row's rolled song */
 constexpr size_t PV_ID      = 0x2617C;
 constexpr size_t SORT_MODE  = 0x26198;
 constexpr size_t DIFF       = 0x261A0;
@@ -147,6 +148,9 @@ static void BuildShadow(void* real, const selmap::Map& m) {
     *(int32_t*)(s_shadow + sh::SORT_MODE) = *(const int32_t*)(r + m.sort_mode);
     *(int32_t*)(s_shadow + sh::DIFF)      = *(const int32_t*)(r + m.difficulty);
     *(int32_t*)(s_shadow + sh::EDITION)   = *(const int32_t*)(r + m.edition);
+    /* the Random row keeps pv_id -2; its rolled song is random_pv.data2
+     * (first field of the PvData, same on both UIs) */
+    *(uintptr_t*)(s_shadow + sh::RANDOM_PV) = *(const uintptr_t*)(r + m.random_pv);
     /* Copy the 32 vector headers so the lobby's sel_lists / iteration sees
      * live begin_/end_ pointers into the real elements. On FT the element
      * stride differs (0x50 vs 0x48) so leave them empty (n = -1). */

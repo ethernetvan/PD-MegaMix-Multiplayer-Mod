@@ -273,6 +273,92 @@ static void Sparkle(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
     dl->AddConvexPolyFilled(h, 4, col);
 }
 
+/* ---- platform icon, difficulty chip, slanted plates (shared by the room,
+ * results and song-select draws) ---- */
+/* which version of the mod a member runs: a Joy-Con pair for the Switch
+ * game (Mega Mix), a monitor for the PC game (Mega Mix+). h tall, centred
+ * on c; cut = the colour behind it (for the screen / stick cut-outs). */
+static void IconPlat(ImDrawList* dl, ImVec2 c, float h, int plat, ImU32 col, ImU32 cut) {
+    if (plat == PLAT_PC) {
+        const float w = h * 1.22f, sh = h * 0.70f;
+        ImVec2 a(c.x - w * 0.5f, c.y - h * 0.5f), b(c.x + w * 0.5f, c.y - h * 0.5f + sh);
+        dl->AddRectFilled(a, b, col, h * 0.12f);
+        const float in = h * 0.115f;
+        dl->AddRectFilled(ImVec2(a.x + in, a.y + in), ImVec2(b.x - in, b.y - in), cut, h * 0.04f);
+        dl->AddRectFilled(ImVec2(c.x - h * 0.09f, b.y), ImVec2(c.x + h * 0.09f, c.y + h * 0.40f), col);
+        dl->AddRectFilled(ImVec2(c.x - h * 0.34f, c.y + h * 0.36f), ImVec2(c.x + h * 0.34f, c.y + h * 0.5f),
+                          col, h * 0.06f);
+    } else if (plat == PLAT_SWITCH) {
+        const float w = h * 0.90f, gap = h * 0.09f, r = h * 0.24f;
+        ImVec2 a(c.x - w * 0.5f, c.y - h * 0.5f), b(c.x + w * 0.5f, c.y + h * 0.5f);
+        dl->AddRectFilled(a, ImVec2(c.x - gap * 0.5f, b.y), col, r, ImDrawFlags_RoundCornersLeft);
+        dl->AddRectFilled(ImVec2(c.x + gap * 0.5f, a.y), b, col, r, ImDrawFlags_RoundCornersRight);
+        const float hw = (w - gap) * 0.5f;
+        dl->AddCircleFilled(ImVec2(a.x + hw * 0.52f, a.y + h * 0.30f), h * 0.11f, cut, 12);
+        dl->AddCircleFilled(ImVec2(b.x - hw * 0.52f, a.y + h * 0.62f), h * 0.11f, cut, 12);
+    }
+}
+static float IconPlatW(float h, int plat) {
+    return plat == PLAT_PC ? h * 1.22f : (plat == PLAT_SWITCH ? h * 0.90f : 0.0f);
+}
+
+/* parallelogram a..b leaning right by sk, vertical gradient top -> bot */
+static void SlantPlate(ImDrawList* dl, ImVec2 a, ImVec2 b, float sk, ImU32 top, ImU32 bot) {
+    const ImVec2 white = ImGui::GetFontTexUvWhitePixel();
+    dl->PrimReserve(6, 4);
+    const ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
+    dl->PrimWriteVtx(ImVec2(a.x + sk, a.y), white, top);
+    dl->PrimWriteVtx(ImVec2(b.x, a.y), white, top);
+    dl->PrimWriteVtx(ImVec2(b.x - sk, b.y), white, bot);
+    dl->PrimWriteVtx(ImVec2(a.x, b.y), white, bot);
+    dl->PrimWriteIdx(base); dl->PrimWriteIdx((ImDrawIdx)(base + 1)); dl->PrimWriteIdx((ImDrawIdx)(base + 2));
+    dl->PrimWriteIdx(base); dl->PrimWriteIdx((ImDrawIdx)(base + 2)); dl->PrimWriteIdx((ImDrawIdx)(base + 3));
+}
+static void SlantOutline(ImDrawList* dl, ImVec2 a, ImVec2 b, float sk, ImU32 col, float th) {
+    ImVec2 q[4] = { ImVec2(a.x + sk, a.y), ImVec2(b.x, a.y), ImVec2(b.x - sk, b.y), ImVec2(a.x, b.y) };
+    dl->AddPolyline(q, 4, col, ImDrawFlags_Closed, th);
+}
+static ImU32 WithAlpha(ImU32 c, float a) {
+    a = a < 0.0f ? 0.0f : (a > 1.0f ? 1.0f : a);
+    return (c & 0x00FFFFFFu) | ((ImU32)(((c >> 24) & 0xFF) * a + 0.5f) << 24);
+}
+
+/* the game's difficulty names and colours (song select's bottom row) */
+static const char* DiffLabel(int d, int e, bool compact = false) {
+    static const char* N[] = { "EASY", "NORMAL", "HARD", "EXTREME" };
+    if (d < 0 || d > 3) return "";
+    return (d == 3 && e) ? (compact ? "EXEX" : "EX EXTREME") : N[d];
+}
+static void DiffCols(int d, int e, ImU32* top, ImU32* bot, ImU32* fg) {
+    *fg = IM_COL32(255, 255, 255, 255);
+    switch ((d == 3 && e) ? 4 : d) {
+        case 0:  *top = IM_COL32(64, 208, 255, 255);  *bot = IM_COL32(0, 160, 236, 255);  break;
+        case 1:  *top = IM_COL32(104, 228, 64, 255);  *bot = IM_COL32(40, 178, 28, 255);  break;
+        case 2:  *top = IM_COL32(255, 212, 48, 255);  *bot = IM_COL32(246, 164, 0, 255);
+                 *fg = IM_COL32(92, 56, 0, 255); break;
+        case 3:  *top = IM_COL32(255, 88, 138, 255);  *bot = IM_COL32(234, 28, 96, 255);  break;
+        default: *top = IM_COL32(196, 116, 252, 255); *bot = IM_COL32(132, 56, 212, 255); break;
+    }
+}
+/* slanted difficulty tag, top-left at p, h tall; returns its width (0 when
+ * the difficulty is unknown). draw = false only measures. */
+static float DiffChip(ImDrawList* dl, ImFont* f, ImVec2 p, float h, int d, int e,
+                      float alpha = 1.0f, bool draw = true, bool compact = false) {
+    if (d < 0 || d > 3) return 0.0f;
+    const char* s = DiffLabel(d, e, compact);
+    const float fsz = h * 0.82f, sk = h * 0.30f, pad = h * 0.40f;
+    ImVec2 ts = f->CalcTextSizeA(fsz, FLT_MAX, 0.0f, s);
+    const float w = ts.x + pad * 2 + sk;
+    if (!draw) return w;
+    ImU32 top, bot, fg;
+    DiffCols(d, e, &top, &bot, &fg);
+    ImVec2 a = p, b(p.x + w, p.y + h);
+    SlantPlate(dl, a, b, sk, WithAlpha(top, alpha), WithAlpha(bot, alpha));
+    SlantOutline(dl, a, b, sk, IM_COL32(24, 14, 36, (int)(210 * alpha)), h * 0.09f);
+    dl->AddText(f, fsz, ImVec2(p.x + pad + sk * 0.5f, p.y + (h - ts.y) * 0.5f), WithAlpha(fg, alpha), s);
+    return w;
+}
+
 static void DrawAvatar(const Ui& u, ImVec2 c, float r, const mp::avatar::Ref& av, bool you, bool connected,
                        bool sparkle) {
     ImDrawList* dl = u.dl;
@@ -494,6 +580,15 @@ void DrawResultsAvatars() {
             gCount[nRows]++;
         nRows++;
     }
+    /* difficulty tags only say something when the players weren't all on
+     * the same chart (consoles that report none don't count) */
+    bool mixedDiff = false;
+    for (int i = 0, first = -1; i < sn.standingCount; i++) {
+        if (sn.standing[i].diff < 0) continue;
+        int key = sn.standing[i].diff * 2 + sn.standing[i].ed;
+        if (first < 0) first = key;
+        else if (key != first) mixedDiff = true;
+    }
     int meRank = 0;
     for (int i = 0; i < sn.standingCount; i++)
         if (sn.standing[i].me) { meRank = sn.standing[i].rank; break; }
@@ -595,6 +690,24 @@ void DrawResultsAvatars() {
                           i == 0 && m == 0,          /* top group sparkles */
                           shown > 1 ? 0.0f : 0.15f,
                           cnt >= 4 && m == 2);       /* "+" = the others */
+        }
+        /* the chart each player was on: a tag in the game's difficulty
+         * colour sitting on the bottom edge of their hexagon (drawn after
+         * the whole cluster so a neighbour never covers it) */
+        if (mixedDiff) {
+            const bool small = shown > 1;
+            const float ch = (shown == 1 ? 14.0f : shown == 2 ? 11.5f : 10.5f) * k;
+            ImFont* tf = ImGui::GetFont();
+            for (int m = 0; m < shown; m++) {
+                if (cnt >= 4 && m == 2) continue;     /* the "+" hexagon */
+                const auto& st = sn.standing[ord[m]];
+                const float cw = DiffChip(u.dl, tf, ImVec2(0, 0), ch, st.diff, st.ed, 1.0f, false, small);
+                if (cw <= 0.0f) continue;
+                float cx = hp[m].x * k - cw * 0.5f;
+                if (cx + cw > ds.x - 3.0f * k) cx = ds.x - 3.0f * k - cw;
+                DiffChip(u.dl, tf, ImVec2(cx, (hp[m].y + 0.866f * r720) * k - ch * 0.75f),
+                         ch, st.diff, st.ed, alpha, true, small);
+            }
         }
 
         /* names stacked one per line under the cluster (local reads YOU);
@@ -1742,11 +1855,13 @@ void DrawSelBadge(ImVec2 hudOff) {
         drawList->AddText(font, fsz, ImVec2(rx - ts2.x - 8 * s, y + 4 * s),
             IM_COL32(255, 235, 170, 255), line);
 
-        /* leader: second pill listing who can't play the pick */
+        /* everyone: who doesn't have the picker's song (or that we don't) */
+        float y2 = y + ts2.y + 8 * s + 5.0f * s;
+        y2 += DrawNoSongTag(drawList, font, rx, y2, s);
+        /* leader: a pill listing who has the song but can't select it */
         if (sn.connected && meLeader && sn.unavailFor[0]) {
-            float y2 = y + ts2.y + 8 * s + 4.0f * s;
             char line2[140];
-            snprintf(line2, sizeof(line2), "Not available for: %.96s",
+            snprintf(line2, sizeof(line2), "Can't select it: %.96s",
                      sn.unavailFor);
             int l2 = (int)strlen(line2);
             while (l2 > 0 && font->CalcTextSizeA(fsz, FLT_MAX, 0, line2).x > maxW) {
@@ -1765,6 +1880,147 @@ void DrawSelBadge(ImVec2 hudOff) {
     if (hovered && ImGui::IsMouseClicked(0)) {
         SetOverlayOpen(true);
     }
+}
+
+/* ================================================================
+ * Song select: "doesn't have this song" tag
+ * ============================================================== */
+/* A slanted plate in the DIVA warm gradient under the "picking a song"
+ * pill, for everyone in the room: who lacks the picker's song (portraits
+ * on the right), or that this console does. Right edge at rx, top at y;
+ * returns the height used (0 when everybody has the song). */
+float DrawNoSongTag(ImDrawList* dl, ImFont* font, float rx, float y, float s) {
+    static uint64_t s_shownAt = 0;      /* ms the tag appeared (slide-in) */
+    Snapshot sn;
+    GetSnapshot(&sn);
+    int idx[8], n = 0;
+    bool me = false;
+    if (sn.connected && sn.code[0])
+        for (int i = 0; i < sn.memberCount && n < 8; i++)
+            if (sn.members[i].nosong) {
+                if (strcmp(sn.members[i].cid, sn.myCid) == 0) me = true;
+                idx[n++] = i;
+            }
+    if (n == 0) { s_shownAt = 0; return 0.0f; }
+    const uint64_t now = NavNowMs();
+    if (!s_shownAt) s_shownAt = now;
+    float p = (float)(now - s_shownAt) / 220.0f;
+    if (p > 1.0f) p = 1.0f;
+    const float ease = 1.0f - (1.0f - p) * (1.0f - p);
+    const float alpha = ease;
+    const float t = (float)ImGui::GetTime();
+    const float pulse = 0.5f + 0.5f * sinf(t * 6.28318f * 0.9f);
+
+    const float fs1 = font->FontSize * 1.2f, fs2 = font->FontSize * 0.98f;
+    const float maxText = 320.0f * s;
+    auto width = [&](const char* txt, float fsz) {
+        return font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, txt).x;
+    };
+    char l1[112], l2[112];
+    const bool meLeader = strcmp(sn.leaderCid, sn.myCid) == 0;
+    /* our selector can't show the song, so name it: "<song> - you'll sit
+     * this round out", trimming the name, never the message */
+    auto mine = [&]() {
+        const char* nm = sn.selName;
+        int len = (int)strlen(nm);
+        if (!len) { snprintf(l2, sizeof(l2), "You'll sit this round out"); return; }
+        for (;;) {
+            snprintf(l2, sizeof(l2), "%.*s%s - you'll sit this round out", len, nm,
+                     len < (int)strlen(nm) ? ".." : "");
+            if (len <= 4 || width(l2, fs2) <= maxText) break;
+            do { len--; } while (len > 0 && ((unsigned char)nm[len] & 0xC0) == 0x80);
+        }
+    };
+    if (me && n == 1) {
+        snprintf(l1, sizeof(l1), "You don't have this song");
+        mine();
+    } else if (me) {
+        snprintf(l1, sizeof(l1), "You and %d other%s don't have this song", n - 1, n == 2 ? "" : "s");
+        mine();
+    } else if (n == 1) {
+        /* trim the name, never the message (UTF-8 safe) */
+        const char* nm = sn.members[idx[0]].name;
+        int len = (int)strlen(nm);
+        for (;;) {
+            snprintf(l1, sizeof(l1), "%.*s%s doesn't have this song", len, nm,
+                     len < (int)strlen(nm) ? ".." : "");
+            if (len == 0 || width(l1, fs1) <= maxText) break;
+            do { len--; } while (len > 0 && ((unsigned char)nm[len] & 0xC0) == 0x80);
+        }
+        snprintf(l2, sizeof(l2), "%s", meLeader ? "They'll sit out - or pick another song"
+                                                : "They'll sit this round out");
+    } else {
+        snprintf(l1, sizeof(l1), "%d players don't have this song", n);
+        int off = 0;
+        for (int i = 0; i < n && off < (int)sizeof(l2) - 44; i++)
+            off += snprintf(l2 + off, sizeof(l2) - off, "%s%s", i ? ", " : "", sn.members[idx[i]].name);
+        int len = (int)strlen(l2);
+        while (len > 0 && width(l2, fs2) > maxText) {
+            do { len--; } while (len > 0 && ((unsigned char)l2[len] & 0xC0) == 0x80);
+            snprintf(l2 + len, sizeof(l2) - len, "..");
+        }
+    }
+    ImVec2 t1 = font->CalcTextSizeA(fs1, FLT_MAX, 0.0f, l1);
+    ImVec2 t2 = font->CalcTextSizeA(fs2, FLT_MAX, 0.0f, l2);
+    const float textW = t1.x > t2.x ? t1.x : t2.x;
+
+    /* portraits of the players without the song (not our own) */
+    int av[3], nav = 0;
+    for (int i = 0; i < n && nav < 3; i++)
+        if (strcmp(sn.members[idx[i]].cid, sn.myCid) != 0) av[nav++] = idx[i];
+    const float ar = 13.0f * s, astep = 19.0f * s;
+    const float avW = nav ? 2 * ar + (nav - 1) * astep + 8.0f * s : 0.0f;
+
+    const float padX = 10.0f * s, iconR = 12.0f * s;
+    const float h = 6.0f * s + t1.y + 3.0f * s + t2.y + 6.0f * s;
+    const float sk = h * 0.22f;
+    const float w = sk + padX + 2 * iconR + 8.0f * s + textW + avW + padX + sk * 0.5f;
+    const float xoff = (1.0f - ease) * 36.0f * s;
+    ImVec2 a(rx - w + xoff, y), b(rx + xoff, y + h);
+
+    /* plate: drop shadow, warm gradient, sheen, white keyline, pulsing rim */
+    SlantPlate(dl, ImVec2(a.x + 3 * s, a.y + 3 * s), ImVec2(b.x + 3 * s, b.y + 3 * s), sk,
+               IM_COL32(0, 0, 0, (int)(110 * alpha)), IM_COL32(0, 0, 0, (int)(110 * alpha)));
+    SlantPlate(dl, a, b, sk, IM_COL32(255, 122, 66, (int)(246 * alpha)),
+               IM_COL32(238, 48, 128, (int)(246 * alpha)));
+    SlantPlate(dl, a, ImVec2(b.x - sk * 0.55f, a.y + h * 0.45f), sk * 0.45f,
+               IM_COL32(255, 255, 255, (int)(46 * alpha)), IM_COL32(255, 255, 255, (int)(8 * alpha)));
+    SlantOutline(dl, ImVec2(a.x - 2.5f * s, a.y - 2.5f * s), ImVec2(b.x + 2.5f * s, b.y + 2.5f * s), sk,
+                 IM_COL32(255, 96, 150, (int)((50 + 110 * pulse) * alpha)), 2.5f * s);
+    SlantOutline(dl, a, b, sk, IM_COL32(255, 255, 255, (int)(235 * alpha)), 1.6f * s);
+
+    /* "!" disc */
+    const float my = (a.y + b.y) * 0.5f;
+    ImVec2 ic(a.x + sk + padX + iconR, my);
+    const float ir = iconR * (1.0f + 0.07f * pulse);
+    dl->AddCircleFilled(ic, ir, IM_COL32(255, 255, 255, (int)(255 * alpha)), 24);
+    const float es = font->FontSize * 1.35f;
+    ImVec2 ex = font->CalcTextSizeA(es, FLT_MAX, 0.0f, "!");
+    dl->AddText(font, es, ImVec2(ic.x - ex.x * 0.5f, ic.y - ex.y * 0.5f),
+                IM_COL32(236, 44, 120, (int)(255 * alpha)), "!");
+    dl->AddText(font, es, ImVec2(ic.x - ex.x * 0.5f + 0.7f * s, ic.y - ex.y * 0.5f),
+                IM_COL32(236, 44, 120, (int)(255 * alpha)), "!");
+
+    /* two lines, soft dark shadow for contrast on the warm plate */
+    const float tx = ic.x + iconR + 8.0f * s;
+    const float ty = a.y + 6.0f * s;
+    const ImU32 sh = IM_COL32(110, 12, 50, (int)(170 * alpha));
+    dl->AddText(font, fs1, ImVec2(tx + 1 * s, ty + 1 * s), sh, l1);
+    dl->AddText(font, fs1, ImVec2(tx, ty), IM_COL32(255, 255, 255, (int)(255 * alpha)), l1);
+    dl->AddText(font, fs2, ImVec2(tx + 1 * s, ty + t1.y + 4 * s), sh, l2);
+    dl->AddText(font, fs2, ImVec2(tx, ty + t1.y + 3 * s), IM_COL32(255, 238, 214, (int)(255 * alpha)), l2);
+
+    if (nav && alpha > 0.6f) {
+        Ui u;
+        u.dl = dl; u.font = font; u.k = s; u.fs = font->FontSize;
+        u.mouse = ImVec2(-1, -1); u.clicked = false; u.down = false; u.t = t;
+        float ax = b.x - padX - sk * 0.5f - ar - (nav - 1) * astep;
+        for (int i = 0; i < nav; i++) {
+            const MemberInfo& m = sn.members[av[i]];
+            DrawAvatar(u, ImVec2(ax + i * astep, my), ar, MemberRef(sn, m), false, m.connected, false);
+        }
+    }
+    return h + 5.0f * s;
 }
 
 } // namespace mp::lobby

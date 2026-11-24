@@ -251,6 +251,7 @@ static ImU32 RaceColor(const Snapshot& s, const char* cid) {
 }
 static const char* MemberStatus(const MemberInfo& m) {
     if (!m.connected) return "disconnected";
+    if (m.nosong) return "no song";
     if (m.ready) return "ready";
     if (strcmp(m.reason, "modules") == 0) return "choosing modules";
     if (strcmp(m.reason, "wrong_song") == 0) return "wrong song";
@@ -259,11 +260,12 @@ static const char* MemberStatus(const MemberInfo& m) {
     return "not ready";
 }
 static ImU32 MemberDot(const MemberInfo& m) {
-    return !m.connected ? kDim : (m.ready ? kGreen : kYellow);
+    return !m.connected ? kDim : (m.nosong ? kRed : (m.ready ? kGreen : kYellow));
 }
 /* darker status colours that read on the light member plates */
 static ImU32 MemberDotCard(const MemberInfo& m) {
-    return !m.connected ? kDotGrey : (m.ready ? kDotGreen : kDotAmber);
+    return !m.connected ? kDotGrey
+         : (m.nosong ? IM_COL32(214, 40, 84, 255) : (m.ready ? kDotGreen : kDotAmber));
 }
 /* session ranking order: srPos, join order for unknowns (stable sort) */
 static int SessionOrder(const Snapshot& s, int* order) {
@@ -415,6 +417,33 @@ static void StatusDot(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
     dl->AddCircle(c, r, IM_COL32(8, 14, 24, 255), 16, 1.6f * s_sc);
 }
 
+/* which version of the mod a member runs: a Joy-Con pair for the Switch
+ * game (Mega Mix), a monitor for the PC game (Mega Mix+). h tall, centred
+ * on c; cut = the colour behind it (for the screen / stick cut-outs). */
+static float IconPlatW(float h, int plat) {
+    return plat == PLAT_PC ? h * 1.22f : (plat == PLAT_SWITCH ? h * 0.90f : 0.0f);
+}
+static void IconPlat(ImDrawList* dl, ImVec2 c, float h, int plat, ImU32 col, ImU32 cut) {
+    if (plat == PLAT_PC) {
+        const float w = h * 1.22f, sh = h * 0.70f;
+        ImVec2 a(c.x - w * 0.5f, c.y - h * 0.5f), b(c.x + w * 0.5f, c.y - h * 0.5f + sh);
+        dl->AddRectFilled(a, b, col, h * 0.12f);
+        const float in = h * 0.115f;
+        dl->AddRectFilled(ImVec2(a.x + in, a.y + in), ImVec2(b.x - in, b.y - in), cut, h * 0.04f);
+        dl->AddRectFilled(ImVec2(c.x - h * 0.09f, b.y), ImVec2(c.x + h * 0.09f, c.y + h * 0.40f), col);
+        dl->AddRectFilled(ImVec2(c.x - h * 0.34f, c.y + h * 0.36f), ImVec2(c.x + h * 0.34f, c.y + h * 0.5f),
+                          col, h * 0.06f);
+    } else if (plat == PLAT_SWITCH) {
+        const float w = h * 0.90f, gap = h * 0.09f, r = h * 0.24f;
+        ImVec2 a(c.x - w * 0.5f, c.y - h * 0.5f), b(c.x + w * 0.5f, c.y + h * 0.5f);
+        dl->AddRectFilled(a, ImVec2(c.x - gap * 0.5f, b.y), col, r, ImDrawFlags_RoundCornersLeft);
+        dl->AddRectFilled(ImVec2(c.x + gap * 0.5f, a.y), b, col, r, ImDrawFlags_RoundCornersRight);
+        const float hw = (w - gap) * 0.5f;
+        dl->AddCircleFilled(ImVec2(a.x + hw * 0.52f, a.y + h * 0.30f), h * 0.11f, cut, 12);
+        dl->AddCircleFilled(ImVec2(b.x - hw * 0.52f, a.y + h * 0.62f), h * 0.11f, cut, 12);
+    }
+}
+
 /* slanted role tag; returns its width */
 static float Tag(ImDrawList* dl, ImVec2 p, float h, const char* s,
                  ImU32 fg, ImU32 bg) {
@@ -553,8 +582,17 @@ static float DrawPodium(ImDrawList* dl, const Snapshot& sn, const int* order,
         /* name + role caption + trophies stacked below the plate */
         const char* nm = m.name[0] ? m.name : "(unnamed)";
         float ny = pb.y + S(4);
-        TxtShadow(dl, ImVec2(cx - TxtW(nm, 1.0f) * 0.5f, ny), nm, 1.0f,
-                  m.connected ? kText : kDim);
+        {
+            const float ih = S(12), iw = IconPlatW(ih, m.plat);
+            const float gw = TxtW(nm, 1.0f) + (iw > 0 ? iw + S(6) : 0.0f);
+            TxtShadow(dl, ImVec2(cx - gw * 0.5f, ny), nm, 1.0f,
+                      m.connected ? kText : kDim);
+            if (iw > 0)
+                IconPlat(dl, ImVec2(cx + gw * 0.5f - iw * 0.5f,
+                                    ny + ImGui::GetFontSize() * 0.5f + S(1)),
+                         ih, m.plat, m.connected ? kMuted : kDim,
+                         IM_COL32(14, 22, 36, 255));
+        }
         ny += ImGui::GetFontSize() + S(2);
         char cap[48];
         RoleCaption(sn, m, cap, sizeof(cap));
@@ -661,9 +699,18 @@ static bool MemberRow(ImDrawList* dl, const Snapshot& sn, const MemberInfo& m,
     Txt(dl, ImVec2(nx, my - ImGui::GetFontSize() * 0.575f), nm, 1.15f,
         m.connected ? ink : dim);
     nx += TxtW(nm, 1.15f) + S(6);
+    {   /* Switch or PC version of the mod */
+        const float ih = S(14), iw = IconPlatW(ih, m.plat);
+        if (iw > 0) {
+            IconPlat(dl, ImVec2(nx + iw * 0.5f, my + S(0.5f)), ih, m.plat,
+                     m.connected ? IM_COL32(70, 84, 104, 255) : dim, cB);
+            nx += iw + S(7);
+        }
+    }
     float th = S(16), tyy = my - th * 0.5f;
-    struct { const char* s; ImU32 fg; ImU32 bg; } tags[5];
+    struct { const char* s; ImU32 fg; ImU32 bg; } tags[6];
     int nt = 0;
+    if (m.nosong)                           tags[nt++] = { "NO SONG", IM_COL32_WHITE, IM_COL32(226, 44, 96, 255) };
     if (you)                                tags[nt++] = { "YOU",    kCardInk, kCyan };
     if (strcmp(m.cid, sn.ownerCid) == 0)    tags[nt++] = { "OWNER",  kCardInk, kGold };
     if (strcmp(m.cid, sn.leaderCid) == 0)   tags[nt++] = { "LEADER", kCardInk, kGreen };
@@ -828,6 +875,22 @@ static float LobbyTab(const Snapshot& sn, ImVec2 a, ImVec2 b) {
             ly += S(36);
         }
     }
+    /* room option: everyone plays the song picker's difficulty */
+    Txt(dl, ImVec2(lx, ly + S(4)), "Difficulty", 0.9f, kText);
+    if (owner) {
+        const char* dopts[] = { "Free - everyone picks", "Same as the song picker" };
+        int di = sn.sameDiff ? 1 : 0;
+        ImGui::SetCursorScreenPos(ImVec2(lx + S(104), ly));
+        ImGui::SetNextItemWidth(S(190));
+        if (ImGui::Combo("##samediff", &di, dopts, 2)) {
+            PanelSE(2);
+            CmdSameDiff(di == 1);
+        }
+    } else {
+        Txt(dl, ImVec2(lx + S(104), ly + S(4)),
+            sn.sameDiff ? "Same as the song picker" : "Free", 0.9f, kMuted);
+    }
+    ly += S(36);
     if (sn.selPv > 0) {
         char sl[128];
         snprintf(sl, sizeof(sl), "Song  pv %d  %s", sn.selPv, sn.selName);
@@ -1218,6 +1281,13 @@ void DrawPanel() {
             for (int i = 0; i < sn.memberCount; i++)
                 if (strcmp(sn.members[i].cid, sn.leaderCid) == 0)
                     leadName = sn.members[i].name;
+            char noSong[120] = ""; int noSongN = 0;
+            for (int i = 0, off = 0; i < sn.memberCount && off < (int)sizeof(noSong) - 44; i++)
+                if (sn.members[i].nosong)
+                    off += snprintf(noSong + off, sizeof(noSong) - off, "%s%s",
+                                    noSongN++ ? ", " : "",
+                                    strcmp(sn.members[i].cid, sn.myCid) == 0
+                                        ? "You" : sn.members[i].name);
             if (!sn.connected) {
                 int left = sn.offlineMs >= 0 ? 30 - sn.offlineMs / 1000 : 30;
                 snprintf(foot, sizeof(foot),
@@ -1230,18 +1300,23 @@ void DrawPanel() {
                          sn.voteAgreed, sn.voteNeed, sn.voteEndsIn);
             else if (sn.groupPaused)
                 snprintf(foot, sizeof(foot), "GROUP PAUSED");
-            else if (sn.notReady[0])
+            else if (noSongN > 0) {
+                snprintf(foot, sizeof(foot), "%s %s have this song", noSong,
+                         noSongN == 1 ? "doesn't" : "don't");
+                footCol = kRed;
+            } else if (sn.notReady[0])
                 snprintf(foot, sizeof(foot), "Not ready: %s", sn.notReady);
             else if (sn.statusLine[0] && sn.phase != 1)
                 snprintf(foot, sizeof(foot), "%s", sn.statusLine);
             else {
                 const char* mode = strcmp(sn.pickMode, "owner") == 0 ? "Owner picks"
                                  : (strcmp(sn.pickMode, "assigned") == 0 ? "Assigned" : "Rotate");
+                const char* sd = sn.sameDiff ? "  |  Same difficulty" : "";
                 if (strcmp(sn.leaderCid, sn.myCid) == 0)
-                    snprintf(foot, sizeof(foot), "You're picking the song  |  %s", mode);
+                    snprintf(foot, sizeof(foot), "You're picking the song  |  %s%s", mode, sd);
                 else
-                    snprintf(foot, sizeof(foot), "%s is picking the song  |  %s",
-                             leadName[0] ? leadName : "The leader", mode);
+                    snprintf(foot, sizeof(foot), "%s is picking the song  |  %s%s",
+                             leadName[0] ? leadName : "The leader", mode, sd);
             }
         } else {
             MpStatus mst;
