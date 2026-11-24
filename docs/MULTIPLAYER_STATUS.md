@@ -377,6 +377,25 @@ Server, web, Switch and PC (`pc-client-mod/`), all on `main` (pc-port was merged
   second display it runs at 60. Both games render on the RTX 3060 (Ryujinx `preferred_gpu`, MM+ got
   `GpuPreference=2` in HKCU\Software\Microsoft\DirectX\UserGpuPreferences).
 
+## Round 15: gauge ticks over the race bars, expanded results panel (2026-11-24)
+- **Gauge ticks (Switch):** the opponents' lead bars are ImGui (drawn after the game), so they covered the
+  BORDER / G / E ticks. `DrawGaugeRace` now leaves a slot open at each tick (-1.4 .. +3.3 units around
+  130 + 11 * pct, measured) and the game's own tick shows through. Tick % = `clear_border_eff` and
+  `clear_border_eff * great|excellent % / clear_border` (game fns 0x17a410 / 0x17a440 read the difficulty
+  tables at 0xb12774 / 0xb12760; same maths as the gauge's tick placement at 0x689530). The PC client
+  already draws its fill through the sprite queue under the markers.
+- **Expanded results panel (`DrawResultsPanel`, identical in both `MpUi.cpp`):** `standings` rows carry
+  `jc:[5]` and `autoplay`. On the results screen in a room the first A never reaches the game: it opens a
+  panel the hexagons fly out into, one card per player (rank, portrait, platform, chart, verdict, score,
+  COOL/GOOD/SAFE/BAD/MISS bar + counts, max combo, cool rate, clear %, final %). Switch: 4 per page, L/R
+  or Left/Right flip, A/B close, Y reopens. PC: 8 on one page (two columns), Enter / F7; no reopen on the
+  Retry / Return page (that menu reads the keyboard device, which the block mask doesn't cover). State in
+  `MpLobby.cpp` (`s_resPanel` 0 none / 1 armed / 2 open / 3 closed, `kResPerPage`); the auto-return driver
+  is unaffected (its forced taps pass the block).
+- **Verified:** Ryujinx, 4 and 6 players (two pages, a player still playing, DROPxOUT, AUTO tag), close ->
+  Y reopen -> close -> A reaches the game (`dbg_menu` res_score -> res_vp); MM+ with 8 players on one page,
+  Enter / F7 / Esc. NOT verified: a real Switch, a real pad or keyboard on PC (admin taps only).
+
 ## Known quirks
 - Different routed subnets (PC 10.169.x, Switch 10.167.x): found automatically once the console has connected to the PC on that network before (remembered servers) or `server_ip` is within the PC's /22; otherwise set `server_ip` once.
 - Commit `8e4dc28`'s message also lists lobby fixes that actually landed in `35c196e`.
