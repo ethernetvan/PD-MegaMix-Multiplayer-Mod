@@ -1138,6 +1138,22 @@ static void RoomPage(const Snapshot& sn, RowCur& rc) {
     if (sn.selPv > 0 && sn.selName[0])
         OptRow("##song", RowPos(rc), w, "Selected Song", sn.selName[0] ? sn.selName : "-",
                "The song the picker has selected", false);
+    if (owner) {
+        /* the key that opens this room's host controls on the web dashboard */
+        if (!sn.webKey[0]) {
+            if (ActionRow("##webkey", RowPos(rc), w, "Show Web Key",
+                          "Get the key that lets you manage this room from the web dashboard")) {
+                PanelSE(0);
+                CmdWebKey();
+            }
+        } else {
+            static char s_wkHelp[200];
+            snprintf(s_wkHelp, sizeof(s_wkHelp),
+                     "Room key for the web dashboard%s%s - press Login there. Only you can see it",
+                     sn.webUrl[0] ? " at " : "", sn.webUrl);
+            OptRow("##webkeyv", RowPos(rc), w, "Web Key", sn.webKey, s_wkHelp, false);
+        }
+    }
     {
         static double s_leaveUntil = 0.0;
         const bool armed = s_confirmLeave && ImGui::GetTime() < s_leaveUntil;
